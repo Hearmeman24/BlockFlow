@@ -47,20 +47,10 @@ import { abortAllActivePolls } from './serverless-poller'
 const PIPELINE_PREFIX = 'pipeline_v1_'
 const PIPELINE_RUNTIME_PREFIX = 'pipeline_runtime_v1_'
 
-const DEFAULT_PIPELINE: Pipeline = {
-  id: 'default',
-  blocks: [
-    { id: 'block-pw', type: 'promptWriter' },
-    { id: 'block-lora', type: 'loraSelector' },
-    { id: 'block-gen', type: 'generation' },
-    { id: 'block-vid', type: 'videoViewer' },
-  ],
-}
-
 const EMPTY_PIPELINE: Pipeline = { id: 'default', blocks: [] }
 
 function loadPipeline(tabId: string): Pipeline {
-  if (typeof window === 'undefined') return DEFAULT_PIPELINE
+  if (typeof window === 'undefined') return EMPTY_PIPELINE
   try {
     const raw = sessionStorage.getItem(`${PIPELINE_PREFIX}${tabId}`)
     if (raw) {
@@ -72,7 +62,7 @@ function loadPipeline(tabId: string): Pipeline {
       return parsed
     }
   } catch { /* ignore */ }
-  return DEFAULT_PIPELINE
+  return EMPTY_PIPELINE
 }
 
 function savePipeline(tabId: string, pipeline: Pipeline) {

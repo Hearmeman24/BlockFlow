@@ -109,17 +109,6 @@ function loadTabsFromStorage(): { tabs: PipelineTab[]; activeTabId: string } | n
 function createDefaultTabs(): { tabs: PipelineTab[]; activeTabId: string } {
   const id = generateTabId()
   const tabs: PipelineTab[] = [{ id, label: DEFAULT_TAB_LABEL }]
-
-  // Migrate from localStorage if present
-  try {
-    const oldPipeline = localStorage.getItem('pipeline_v1')
-    if (oldPipeline) {
-      sessionStorage.setItem(`${PIPELINE_PREFIX}${id}`, oldPipeline)
-    }
-  } catch {
-    // ignore
-  }
-
   return { tabs, activeTabId: id }
 }
 

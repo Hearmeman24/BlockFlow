@@ -334,7 +334,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   return (
     <div className="space-y-3">
       {!hasApiKey && (
-        <span className="text-xs text-yellow-500">(no API key configured)</span>
+        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
       )}
 
       <div className="flex gap-2 items-end">
@@ -429,7 +429,7 @@ export const blockDef: BlockDef = {
   size: 'lg',
   canStart: true,
   starterPrereqs: ['uploadImageToTmpfiles'],
-  inputs: [{ name: 'image', kind: PORT_IMAGE }],
+  inputs: [{ name: 'image', kind: PORT_IMAGE, required: false }],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],
   configKeys: ['local_settings', 'variants', 'user_prompt', 'output'],
   component: I2VPromptWriterBlock,

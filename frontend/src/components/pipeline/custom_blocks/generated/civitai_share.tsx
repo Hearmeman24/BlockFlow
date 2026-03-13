@@ -229,6 +229,9 @@ function CivitAIShareBlock({
 
   return (
     <div className="space-y-3">
+      {!token && (
+        <span className="text-xs text-yellow-500">CIVITAI_API_KEY missing — configure it in your .env file or enter below</span>
+      )}
       <div className="space-y-1">
         <Label className="text-xs">CivitAI API Key</Label>
         <Input

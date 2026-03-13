@@ -64,7 +64,6 @@ Create a `.env` file in the project root. The app reads it automatically on star
 
 ```env
 RUNPOD_API_KEY=rpa_...              # RunPod API key
-RUNPOD_ENDPOINT_ID=abc123           # Your deployed serverless endpoint ID
 OPENROUTER_API_KEY=sk-or-v1-...     # OpenRouter API key for prompt generation
 ```
 
@@ -73,6 +72,7 @@ OPENROUTER_API_KEY=sk-or-v1-...     # OpenRouter API key for prompt generation
 ```env
 TOPAZ_API_KEY=                      # Topaz Labs API key (for upscaling blocks)
 CIVITAI_API_KEY=                    # CivitAI API key (for sharing, advanced mode)
+RUNPOD_ENDPOINT_ID=                 # Override comfy-gen's configured endpoint ID
 ```
 
 ### Optional Customization
@@ -197,6 +197,7 @@ sgs-ui/
 ├── custom_blocks/          # Self-contained block definitions
 │   ├── <block>/frontend.block.tsx   # Block UI + logic
 │   └── <block>/backend.block.py     # Block API routes (optional)
+├── skills/                 # AI agent skills for extending BlockFlow
 ├── flows/                  # Saved pipeline files
 └── output/                 # Downloaded generation outputs
 ```
@@ -213,6 +214,46 @@ Blocks are self-contained modules. Each block lives in `custom_blocks/<name>/` w
 ## Privacy Note
 
 Some pipeline blocks need to send local files (images, videos) to remote services like RunPod for processing. When this happens, files are temporarily uploaded to [tmpfiles.org](https://tmpfiles.org) to make them accessible to the remote GPU. Uploaded files are automatically deleted by tmpfiles.org after a short period. No files are uploaded unless you explicitly run a pipeline that requires remote processing.
+
+## Extensibility — Build Your Own Blocks
+
+BlockFlow is designed to be extended. Every block is a self-contained module — drop a folder into `custom_blocks/` and restart the app.
+
+```
+custom_blocks/my_block/
+├── frontend.block.tsx    # Required — UI component + execute logic
+└── backend.block.py      # Optional — server-side API routes
+```
+
+Your `frontend.block.tsx` exports a `blockDef` that declares the block's name, ports, size, and React component. The app discovers it automatically — no manual wiring needed.
+
+### Using AI Agents to Build Blocks
+
+The fastest way to create new blocks is with an AI coding agent. We provide a **BlockFlow Block Builder** skill that teaches agents the full block architecture — port types, execute functions, state persistence, backend sidecars, and UI conventions.
+
+**With [Claude Code](https://claude.com/claude-code):**
+
+Install the skill, then ask naturally:
+
+```
+"Add a block that takes a video URL and extracts frames as images"
+"Create a block that calls the Replicate API to run a model"
+"I need a block that watermarks videos before they go to the viewer"
+```
+
+Claude will generate the complete block files, following all BlockFlow conventions.
+
+The skill is included in this repo at [`skills/blockflow-block-builder/`](skills/blockflow-block-builder/).
+
+### Block Quick Reference
+
+| Concept | Details |
+|---------|---------|
+| **Port types** | `text`, `video`, `image`, `loras`, `metadata` (or any custom string) |
+| **Sizes** | `sm` (280x220), `md` (360x320), `lg` (440x460), `huge` (540x580) |
+| **State** | Use `useSessionState` for persistent config, `useState` for transient UI |
+| **Backend** | Export `router = APIRouter()`, auto-mounted at `/api/blocks/<slug>/` |
+| **Validation** | `npm run gen:custom-blocks` validates your block, `npm run build` checks types |
 
 ## Troubleshooting
 

@@ -26,7 +26,6 @@ import {
   type BlockDef,
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
-import { useBlockBindings, MANUAL_SOURCE } from '@/lib/pipeline/block-bindings'
 
 const SETTINGS_ENDPOINT = '/api/blocks/i2v_prompt_writer/settings'
 const MODELS_ENDPOINT = '/api/blocks/i2v_prompt_writer/models'
@@ -145,12 +144,8 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
     max_parallel: DEFAULT_MAX_PARALLEL,
   })
 
-  // Image binding from upstream or local
-  const { get: getBinding } = useBlockBindings(blockId, 'i2vPromptWriter', inputs)
-  const imageBinding = getBinding('image')
-  const inputImage = String(imageBinding?.value ?? '')
-  const isImageWired = Boolean(imageBinding?.usesUpstreamAtRuntime)
-  const imageSourceLabel = imageBinding?.sourceLabel
+  // Image comes from upstream (Upload Image block)
+  const inputImage = asImageInput(inputs?.image)
 
   useEffect(() => {
     let cancelled = false
@@ -172,7 +167,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
           setLocalSettings({
             system_prompt: videoPrompt,
             video_system_prompt: videoPrompt,
-            model: String(server.model || ''),
+            model: String(server.model || 'x-ai/grok-4.1-fast'),
             temperature: Number(server.temperature ?? 0.9),
             max_tokens: Number(server.max_tokens ?? 600),
           })
@@ -248,10 +243,8 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
   useEffect(() => {
     registerExecute(async (freshInputs) => {
-      // Resolve image URL
-      const runImage = isImageWired
-        ? asImageInput(freshInputs?.image)
-        : String(imageBinding?.localValue ?? '')
+      // Resolve image URL from upstream
+      const runImage = asImageInput(freshInputs?.image)
       if (!runImage) throw new Error('Image URL is required')
       if (!userPrompt.trim()) throw new Error('User prompt is required')
       if (!s.model) throw new Error('Select a writer model')
@@ -343,41 +336,8 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   return (
     <div className="space-y-3">
       {!hasApiKey && (
-        <span className="text-xs text-yellow-500">(no API key configured)</span>
+        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
       )}
-
-      {/* Image input with binding selector */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between">
-          <Label className="text-xs">Input Image</Label>
-          <Select
-            value={imageBinding?.selectedSourceValue || MANUAL_SOURCE}
-            onValueChange={(value) => imageBinding?.setSelectedSource?.(value)}
-          >
-            <SelectTrigger className="h-7 min-w-[170px] text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(imageBinding?.sourceOptions ?? []).map((option) => (
-                <SelectItem key={option.value} value={option.value} className="text-xs">
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <Input
-          value={inputImage}
-          readOnly={isImageWired}
-          onChange={(e) => imageBinding?.setLocalValue(e.target.value)}
-          placeholder={
-            isImageWired
-              ? `Will be provided by ${imageSourceLabel ?? 'upstream block'} at runtime`
-              : 'https://example.com/image.png'
-          }
-          className="h-8 text-xs"
-        />
-      </div>
 
       <div className="flex gap-2 items-end">
         <div className="space-y-1.5 flex-1 min-w-0">
@@ -466,20 +426,13 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
 export const blockDef: BlockDef = {
   type: 'i2vPromptWriter',
-  label: 'I2V Prompt Writer',
+  label: 'I2V Prompt Writer (OpenRouter)',
   description: 'Generate a video prompt from an image using a vision LLM',
   size: 'lg',
-  canStart: false,
+  canStart: true,
+  starterPrereqs: ['uploadImageToTmpfiles'],
   inputs: [{ name: 'image', kind: PORT_IMAGE, required: false }],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],
-  bindings: [
-    {
-      field: 'image',
-      input: 'image',
-      mode: 'upstream_or_local',
-      allowOverride: true,
-    },
-  ],
   configKeys: ['local_settings', 'variants', 'user_prompt', 'output'],
   component: I2VPromptWriterBlock,
 }

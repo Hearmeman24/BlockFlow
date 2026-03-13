@@ -359,6 +359,9 @@ function ImageUpscaleBlock({
 
   return (
     <div className="space-y-3">
+      {!hasEnvApiKey && !apiKey.trim() && (
+        <span className="text-xs text-yellow-500">TOPAZ_API_KEY missing — configure it in your .env file</span>
+      )}
       <div className="space-y-1.5">
         <Label className="text-xs">Topaz API Key</Label>
         <Input

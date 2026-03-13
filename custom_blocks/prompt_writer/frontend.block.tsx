@@ -362,7 +362,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
   return (
     <div className="space-y-3">
       {!hasApiKey && (
-        <span className="text-xs text-yellow-500">(no API key configured)</span>
+        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
       )}
 
       <div className="flex gap-2 items-end">

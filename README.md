@@ -159,25 +159,6 @@ Blocks connect automatically based on compatible data types (text, image, video,
 |-------|-------------|
 | **Human-in-the-Loop** | Manual approval gate. Pauses the pipeline and shows the latest output for you to review before continuing or stopping. |
 
-## Advanced Mode
-
-Some blocks are hidden by default. Enable them with:
-
-```bash
-uv run app.py --advanced
-```
-
-This unlocks:
-
-| Block | Description |
-|-------|-------------|
-| **Wan 2.2 Text-To-Video** | Direct T2V generation via RunPod Wan 2.2 endpoint with full parameter control. |
-| **Wan 2.2 Image-To-Video** | Direct I2V generation with image input, prompt, and LoRA composition. |
-| **LoRA Selector** | Browse and select LoRA adapters from your RunPod workspace with per-LoRA strength controls. |
-| **CivitAI Share** | Publish generated media to CivitAI with auto-extracted generation metadata. |
-
-You can also set `SGS_ADVANCED=1` in your `.env` file.
-
 ## Pipeline Features
 
 - **Tabs** — Work on multiple pipelines simultaneously. Double-click a tab to rename it.

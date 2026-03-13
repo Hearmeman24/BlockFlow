@@ -516,7 +516,9 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       }
 
       const id = `block-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-      blocks.push({ id, type })
+      // When prereqs were just inserted, append after them; otherwise insert at requested position
+      const finalIndex = (prereqs && prereqs.length > 0 && prev.blocks.length === 0) ? blocks.length : insertAt
+      blocks.splice(finalIndex, 0, { id, type })
       return { ...prev, blocks }
     })
   }, [updatePipeline])

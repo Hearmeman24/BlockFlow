@@ -1,0 +1,23 @@
+__pycache__/
+.DS_Store
+.env
+node_modules/
+.next/
+venv/
+.venv/
+
+# Runtime data (local only)
+run_history.db
+job_history.json
+output/
+prompt_writer_settings.json
+
+# Flow data (gitignored, personal pipelines)
+flows/*.flow.json
+
+# Dev artifacts
+architecture.md
+frontend/architecture.md
+issues.md
+frontend/issues.md
+logs.txt

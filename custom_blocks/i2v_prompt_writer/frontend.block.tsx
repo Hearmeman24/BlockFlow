@@ -338,7 +338,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   return (
     <div className="space-y-3">
       {!hasApiKey && (
-        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
+        <span className="text-xs text-yellow-500">No LLM API key found — set OPENROUTER_API_KEY or MINIMAX_API_KEY in your .env file</span>
       )}
 
       <div className="flex gap-2 items-end">
@@ -428,7 +428,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
 export const blockDef: BlockDef = {
   type: 'i2vPromptWriter',
-  label: 'I2V Prompt Writer (OpenRouter)',
+  label: 'I2V Prompt Writer',
   description: 'Generate a video prompt from an image using a vision LLM',
   size: 'lg',
   canStart: true,

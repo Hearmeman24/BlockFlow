@@ -52,9 +52,12 @@ You'll need accounts for the services your workflow uses:
 | Service | Required? | What For |
 |---------|-----------|----------|
 | [RunPod](https://runpod.io) | Yes | GPU serverless endpoints for generation |
-| [OpenRouter](https://openrouter.ai) | Yes | LLM-powered prompt generation |
+| [OpenRouter](https://openrouter.ai) | One LLM required | LLM-powered prompt generation (100+ models) |
+| [MiniMax](https://www.minimaxi.com) | One LLM required | Direct LLM access — MiniMax-M2.5 with 204K context |
 | [Topaz Labs](https://www.topazlabs.com/topaz-video-ai) | Optional | Video & image AI upscaling |
 | [CivitAI](https://civitai.com) | Optional | Share generated media (advanced mode) |
+
+> **Note:** You need at least one LLM provider (OpenRouter or MiniMax) for the Prompt Writer blocks. You can configure both — models from all configured providers appear in the model picker.
 
 ## Configuration
 
@@ -65,6 +68,7 @@ Create a `.env` file in the project root. The app reads it automatically on star
 ```env
 RUNPOD_API_KEY=rpa_...              # RunPod API key
 OPENROUTER_API_KEY=sk-or-v1-...     # OpenRouter API key for prompt generation
+MINIMAX_API_KEY=                    # MiniMax API key (alternative to OpenRouter)
 ```
 
 ### Optional Services
@@ -85,7 +89,7 @@ DEFAULT_FRAMES=81                   # Default frame count (must be 4n+1: 81, 121
 DEFAULT_FPS=16                      # Default frames per second
 
 # Prompt writer
-DEFAULT_WRITER_MODEL=               # OpenRouter model ID (leave empty for model picker)
+DEFAULT_WRITER_MODEL=               # Model ID for prompt generation (leave empty for model picker)
 DEFAULT_WRITER_TEMPERATURE=0.6      # LLM temperature
 DEFAULT_WRITER_MAX_TOKENS=100000    # Max token limit
 
@@ -193,7 +197,7 @@ Blocks are self-contained modules. Each block lives in `custom_blocks/<name>/` w
 - **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS, shadcn/ui
 - **Backend**: Python 3.12+, FastAPI, uvicorn
 - **Database**: SQLite (run history)
-- **External**: RunPod API, OpenRouter API, Topaz Labs API, comfy-gen CLI
+- **External**: RunPod API, OpenRouter API, MiniMax API, Topaz Labs API, comfy-gen CLI
 
 ## Privacy Note
 

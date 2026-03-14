@@ -39,6 +39,9 @@ OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "").strip()
 OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", APP_TITLE).strip()
 OPENROUTER_MODEL_CACHE_TTL_SEC = int(os.getenv("OPENROUTER_MODEL_CACHE_TTL_SEC", "300"))
 
+MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
+MINIMAX_API_BASE = os.getenv("MINIMAX_API_BASE", "https://api.minimax.io/v1")
+
 DEFAULT_WRITER_SYSTEM_PROMPT = os.getenv("DEFAULT_WRITER_SYSTEM_PROMPT", """You are an expert Cinematic Prompt Engineer for high-end AI video generation. Your goal is to transform a vague user concept into a hyper-realistic, 8–10 second continuous cinematic shot portraying an intimate, adult moment in a woman's life.
 1. Stylistic Translation
 Translate user-defined directors, eras, or movements into concrete cinematic mechanics. Style must influence lens choice, lighting physics, color grading, camera behavior, environmental atmosphere, and emotional pacing. Do not reference style superficially — embody it through visual execution.

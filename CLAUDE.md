@@ -15,7 +15,17 @@ The `/generate` page uses a linear left-to-right pipeline with a tree branching 
 - **Block** is the canonical term (not node, step, or stage)
 - One global "Run Pipeline" button — no per-block actions
 - Accumulator data model: outputs collected by `PortKind`, resolved as inputs to downstream blocks
-- Execute functions receive fresh `inputs` parameter from the pipeline runner
+- Execute functions receive fresh `inputs` parameter and an `AbortSignal` from the pipeline runner
+- **Parallel pipelines**: Multiple tabs can run pipelines simultaneously. Each tab's PipelineProvider is always mounted. Cancellation is tab-scoped (only aborts polls for that tab's blocks). A floating job manager appears when 2+ tabs are running.
+- **Pipeline cancellation**: AbortSignal propagated to execute functions. Blocks like ComfyGen register abort listeners to cancel backend jobs (kills subprocess + cancels remote RunPod job).
+- **Job manager**: Floating panel (top-right) appears when 2+ tabs are running simultaneously. Shows each running tab's name, current block, and a per-tab stop button. Collapsible.
+
+## ComfyGen Block
+
+The `comfy_gen` block submits ComfyUI workflows to a RunPod serverless endpoint.
+
+- **LoRA detection**: Automatically detects `LoraLoader` and `LoraLoaderModelOnly` nodes in parsed workflows. Shows a collapsible "LoRAs" section with per-LoRA name override (dropdown or text input) and strength sliders.
+- **LoRA list caching**: Dual-layer cache — backend in-memory + frontend localStorage (`comfygen_lora_cache`), both with 24h TTL. Fetching spawns a RunPod job via `comfy-gen list loras` (up to 90s). Stale cache auto-prompts refresh.
 
 ## Adding a Block
 
@@ -37,6 +47,7 @@ sm (280x220, blue), md (360x320, emerald), lg (440x460, violet), huge (540x580, 
 | `custom_blocks/` | Self-contained block definitions |
 | `backend/main.py` | FastAPI app, auto-loads block sidecars |
 | `backend/routes.py` | Shared routes: flows + runs only |
+| `frontend/src/components/pipeline/job-manager.tsx` | Floating job manager for parallel pipeline runs |
 
 ## Conventions
 

@@ -30,6 +30,12 @@ export interface TabActions {
 
 export type TabRunState = 'idle' | 'running' | 'done'
 
+/** Live runtime info pushed up from each PipelineProvider for the job manager. */
+export interface TabRuntimeInfo {
+  runningBlockLabel?: string
+  statusMessage?: string
+}
+
 interface PipelineTabsContextValue {
   tabs: PipelineTab[]
   activeTabId: string
@@ -43,6 +49,9 @@ interface PipelineTabsContextValue {
   registerTabActions: (tabId: string, actions: TabActions) => void
   unregisterTabActions: (tabId: string) => void
   setTabRunState: (tabId: string, state: TabRunState) => void
+  tabRuntimeInfos: Record<string, TabRuntimeInfo>
+  setTabRuntimeInfo: (tabId: string, info: TabRuntimeInfo) => void
+  cancelTabPipeline: (tabId: string) => void
   runActivePipeline: () => void
   continueActivePipeline: () => void
   cancelActivePipeline: () => void
@@ -140,8 +149,8 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
     [SSR_TAB_ID]: 'idle',
   })
   const [availableFlows, setAvailableFlows] = useState<FlowEntry[]>([])
+  const [tabRuntimeInfos, setTabRuntimeInfos] = useState<Record<string, TabRuntimeInfo>>({})
   const tabActionsRef = useRef<Map<string, TabActions>>(new Map())
-  const runLockRef = useRef(false)
   const hydrated = useRef(false)
 
   const refreshAvailableFlows = useCallback(async () => {
@@ -217,6 +226,12 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
   }, [setTabs])
 
   const removeTab = useCallback((id: string) => {
+    // Cancel running pipeline before removing the tab
+    const actions = tabActionsRef.current.get(id)
+    if (actions && (tabRunStates[id] === 'running')) {
+      actions.cancelPipeline()
+    }
+
     setTabState((prev) => {
       if (prev.tabs.length <= 1) return prev // can't remove last tab
       const nextTabs = prev.tabs.filter((t) => t.id !== id)
@@ -242,9 +257,14 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
         delete nextStates[id]
         return nextStates
       })
+      setTabRuntimeInfos((prevInfos) => {
+        const nextInfos = { ...prevInfos }
+        delete nextInfos[id]
+        return nextInfos
+      })
       return { tabs: nextTabs, activeTabId: nextActive }
     })
-  }, [])
+  }, [tabRunStates])
 
   const renameTab = useCallback((id: string, label: string) => {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, label } : t)))
@@ -265,36 +285,38 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  const setTabRuntimeInfo = useCallback((tabId: string, info: TabRuntimeInfo) => {
+    setTabRuntimeInfos((prev) => {
+      const existing = prev[tabId]
+      if (existing?.runningBlockLabel === info.runningBlockLabel && existing?.statusMessage === info.statusMessage) return prev
+      return { ...prev, [tabId]: info }
+    })
+  }, [])
+
+  const cancelTabPipeline = useCallback((tabId: string) => {
+    const actions = tabActionsRef.current.get(tabId)
+    if (!actions) return
+    actions.cancelPipeline()
+  }, [])
+
   const isAnyRunning = Object.values(tabRunStates).some((state) => state === 'running')
 
   const runActivePipeline = useCallback(async () => {
-    if (runLockRef.current) return
     if ((tabRunStates[activeTabId] ?? 'idle') === 'running') return
 
     const actions = tabActionsRef.current.get(activeTabId)
     if (!actions) return
 
-    runLockRef.current = true
-    try {
-      await actions.runPipeline()
-    } finally {
-      runLockRef.current = false
-    }
+    await actions.runPipeline()
   }, [activeTabId, tabRunStates])
 
   const continueActivePipeline = useCallback(async () => {
-    if (runLockRef.current) return
     if ((tabRunStates[activeTabId] ?? 'idle') === 'running') return
 
     const actions = tabActionsRef.current.get(activeTabId)
     if (!actions) return
 
-    runLockRef.current = true
-    try {
-      await actions.runPipeline({ continueFromExisting: true })
-    } finally {
-      runLockRef.current = false
-    }
+    await actions.runPipeline({ continueFromExisting: true })
   }, [activeTabId, tabRunStates])
 
   const cancelActivePipeline = useCallback(() => {
@@ -390,6 +412,9 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
         registerTabActions,
         unregisterTabActions,
         setTabRunState,
+        tabRuntimeInfos,
+        setTabRuntimeInfo,
+        cancelTabPipeline,
         runActivePipeline,
         continueActivePipeline,
         cancelActivePipeline,

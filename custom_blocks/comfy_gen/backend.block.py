@@ -40,6 +40,45 @@ def health_check() -> JSONResponse:
     return JSONResponse({"ok": True, "path": path})
 
 
+_lora_cache: dict[str, Any] = {"loras": [], "fetched_at": 0}
+_LORA_CACHE_TTL = 24 * 60 * 60  # 24 hours
+
+
+@router.get("/list-loras")
+def list_loras(endpoint_id: str = "", force: bool = False) -> JSONResponse:
+    """List available LoRA files on the remote endpoint via comfy-gen CLI.
+
+    Cached for 24h. Pass force=true to bypass cache.
+    """
+    now = time.time()
+    if not force and _lora_cache["loras"] and (now - _lora_cache["fetched_at"]) < _LORA_CACHE_TTL:
+        return JSONResponse({
+            "ok": True,
+            "loras": _lora_cache["loras"],
+            "fetched_at": _lora_cache["fetched_at"],
+            "cached": True,
+        })
+
+    cmd = ["comfy-gen", "list", "loras"]
+    eid = endpoint_id.strip() or config.RUNPOD_ENDPOINT_ID or ""
+    if eid:
+        cmd.extend(["--endpoint-id", eid])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        if result.returncode != 0:
+            return JSONResponse({"ok": False, "error": result.stdout.strip() or result.stderr.strip()})
+        data = json.loads(result.stdout)
+        files = data.get("files", [])
+        filenames = [f["filename"] for f in files if isinstance(f, dict) and "filename" in f]
+        _lora_cache["loras"] = filenames
+        _lora_cache["fetched_at"] = now
+        return JSONResponse({"ok": True, "loras": filenames, "fetched_at": now, "cached": False})
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"ok": False, "error": "Timed out listing LoRAs (90s). The RunPod worker may still be starting up — try again shortly."})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
 # ---- Workflow parsing ----
 
 _IMAGE_OUTPUT_NODES = {"SaveImage", "PreviewImage", "SaveAnimatedWEBP"}
@@ -367,6 +406,74 @@ def _detect_frame_count(workflow: dict[str, Any]) -> list[dict[str, Any]]:
                 })
 
     return results
+
+
+_LORA_CLASS_TYPES = {"LoraLoader", "LoraLoaderModelOnly"}
+
+
+def _detect_lora_nodes(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    """Detect LoRA loader nodes and their current settings.
+
+    Returns list of {node_id, class_type, label, lora_name, strength_model, strength_clip?}
+    ordered by their chain position (follows model input wiring).
+    """
+    lora_nodes: dict[str, dict[str, Any]] = {}
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        class_type = node.get("class_type", "")
+        if class_type not in _LORA_CLASS_TYPES:
+            continue
+        inputs = node.get("inputs", {})
+        title = node.get("_meta", {}).get("title", "")
+        entry: dict[str, Any] = {
+            "node_id": node_id,
+            "class_type": class_type,
+            "label": title or class_type,
+            "lora_name": inputs.get("lora_name", ""),
+        }
+        sm = inputs.get("strength_model")
+        if isinstance(sm, (int, float)):
+            entry["strength_model"] = round(float(sm), 3)
+        sc = inputs.get("strength_clip")
+        if isinstance(sc, (int, float)) and class_type == "LoraLoader":
+            entry["strength_clip"] = round(float(sc), 3)
+        # Track which node feeds into this one (for ordering)
+        model_input = inputs.get("model")
+        if isinstance(model_input, list) and len(model_input) >= 2:
+            entry["_model_source"] = str(model_input[0])
+        lora_nodes[node_id] = entry
+
+    # Order by chain: start from nodes whose model source is not another LoRA
+    lora_ids = set(lora_nodes.keys())
+    ordered: list[dict[str, Any]] = []
+    remaining = dict(lora_nodes)
+
+    # Find roots (LoRAs whose model source is not another LoRA)
+    roots = [nid for nid, n in remaining.items()
+             if n.get("_model_source") not in lora_ids]
+    # Follow chains from roots
+    placed = set()
+    for root in roots:
+        current = root
+        while current and current in remaining and current not in placed:
+            node = remaining[current]
+            placed.add(current)
+            clean = {k: v for k, v in node.items() if not k.startswith("_")}
+            ordered.append(clean)
+            # Find next LoRA that uses this one as model source
+            current = next(
+                (nid for nid, n in remaining.items()
+                 if n.get("_model_source") == current and nid not in placed),
+                None,
+            )
+    # Add any remaining (disconnected) LoRAs
+    for nid, node in remaining.items():
+        if nid not in placed:
+            clean = {k: v for k, v in node.items() if not k.startswith("_")}
+            ordered.append(clean)
+
+    return ordered
 
 
 _REF_VIDEO_NODES = {"VHS_LoadVideo"}
@@ -941,6 +1048,7 @@ async def parse_workflow(request: Request) -> JSONResponse:
         resolution_nodes = _detect_resolution_nodes(workflow)
         frame_counts = _detect_frame_count(workflow)
         ref_video = _detect_reference_video(workflow)
+        lora_nodes = _detect_lora_nodes(workflow)
         output_type = _detect_output_type(workflow)
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to parse workflow: {e}"}, status_code=400)
@@ -953,6 +1061,7 @@ async def parse_workflow(request: Request) -> JSONResponse:
         "resolution_nodes": resolution_nodes,
         "frame_counts": frame_counts,
         "ref_video": ref_video,
+        "lora_nodes": lora_nodes,
         "output_type": output_type,
     })
 

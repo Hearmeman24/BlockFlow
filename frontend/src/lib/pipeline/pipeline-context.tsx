@@ -40,8 +40,8 @@ import {
 import { usePipelineTabs, type TabActions } from './tabs-context'
 import { saveRun } from '@/lib/api'
 import type { BlockResult, RunEntry } from '@/lib/types'
-import { hasAnyPendingPollingRuns } from './serverless-pending'
-import { abortAllActivePolls } from './serverless-poller'
+import { hasPendingServerlessRunForBlock } from './serverless-pending'
+import { abortPoll } from './serverless-poller'
 
 // ---- Persistence (sessionStorage, keyed by tabId) ----
 
@@ -92,7 +92,8 @@ function normalizeRecoveredRuntime(
     }
   }
 
-  const hasPendingJobs = hasAnyPendingPollingRuns()
+  // Check only this tab's blocks for pending polling runs (not global)
+  const hasPendingJobs = runtime.blockStates.some(([id]) => hasPendingServerlessRunForBlock(id))
   if (runtime.isRunning && hasPendingJobs) return runtime
   if (!runtime.isRunning && hasPendingJobs) {
     const firstRunning = runtime.blockStates.find(([, state]) => state.status === 'running')
@@ -315,7 +316,7 @@ interface PipelineProviderProps {
 }
 
 export function PipelineProvider({ tabId, flowJson, children }: PipelineProviderProps) {
-  const { registerTabActions, unregisterTabActions, setTabRunState, tabRunStates } = usePipelineTabs()
+  const { registerTabActions, unregisterTabActions, setTabRunState, setTabRuntimeInfo, tabRunStates } = usePipelineTabs()
   const tabMarkedRunning = (tabRunStates[tabId] ?? 'idle') === 'running'
   const initialRuntime = useRef<PersistedPipelineRuntime>(
     normalizeRecoveredRuntime(loadPipelineRuntime(tabId), tabMarkedRunning),
@@ -767,7 +768,10 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
 
   const cancelPipeline = useCallback(() => {
     cancelledRef.current = true
-    abortAllActivePolls()
+    // Abort only polls belonging to this tab's pipeline blocks (not all tabs)
+    for (const block of walkBlocks(pipelineRef.current.blocks)) {
+      abortPoll(block.id)
+    }
     runAbortControllerRef.current?.abort()
     runLockRef.current = false
     runningBlockIdRef.current = null
@@ -776,7 +780,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     setIsRunning(false)
     persistRuntimeSnapshot(blockStatesRef.current, false, null)
     setTabRunState(tabId, 'idle')
-  }, [persistRuntimeSnapshot, setTabRunState, tabId])
+    setTabRuntimeInfo(tabId, {})
+  }, [persistRuntimeSnapshot, setTabRunState, setTabRuntimeInfo, tabId])
 
   const runPipeline = useCallback(async (opts?: { continueFromExisting?: boolean }) => {
     if (runLockRef.current) return
@@ -889,6 +894,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         setRunningBlockId(block.id)
         persistRuntimeSnapshot(blockStatesRef.current, isRunningRef.current, block.id)
         setBlockStatus(block.id, 'running')
+        const blockDef_ = getNodeType(block.type)
+        setTabRuntimeInfo(tabId, { runningBlockLabel: block.label || blockDef_?.label || block.type })
 
         const executeFn = executeFns.current.get(block.id)
         const freshInputs = resolveInputs(block.id, blockStatesRef.current)
@@ -1101,8 +1108,9 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       setIsRunning(false)
       persistRuntimeSnapshot(blockStatesRef.current, false, null)
       setTabRunState(tabId, 'done')
+      setTabRuntimeInfo(tabId, {})
     }
-  }, [persistRuntimeSnapshot, resolveInputs, setBlockOutput, setBlockStatus, setBlockStatusMessage, setTabRunState, tabId])
+  }, [persistRuntimeSnapshot, resolveInputs, setBlockOutput, setBlockStatus, setBlockStatusMessage, setTabRunState, setTabRuntimeInfo, tabId])
 
   const getAddableTypes = useCallback((atIndex?: number): NodeTypeDef[] => {
     const blocks = pipeline.blocks

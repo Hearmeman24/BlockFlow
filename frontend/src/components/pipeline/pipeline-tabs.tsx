@@ -7,6 +7,7 @@ import { BlockLayoutProvider, useBlockLayout } from '@/lib/pipeline/block-layout
 import { PipelineProvider } from '@/lib/pipeline/pipeline-context'
 import { usePipelineTabs, type TabRunState } from '@/lib/pipeline/tabs-context'
 import { PipelineView } from './pipeline-view'
+import { JobManager } from './job-manager'
 
 export function PipelineTabs() {
   return (
@@ -82,6 +83,9 @@ function PipelineTabsContent() {
           )
         })}
       </div>
+
+      {/* Floating job manager (visible when 2+ pipelines running) */}
+      <JobManager />
 
       {/* Floating run pill */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40">

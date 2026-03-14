@@ -137,14 +137,14 @@ Blocks connect automatically based on compatible data types (text, image, video,
 
 | Block | Description |
 |-------|-------------|
-| **ComfyUI Gen** | Run any ComfyUI workflow on RunPod serverless. Load workflows from JSON or extract from PNG metadata. Supports resolution, seed, prompt, and frame count overrides. |
+| **ComfyUI Gen** | Run any ComfyUI workflow on RunPod serverless. Load workflows from JSON or extract from PNG metadata. Supports resolution, seed, prompt, and frame count overrides. Auto-detects LoRA loaders with per-LoRA enable/disable toggle, name swap, and strength controls. |
 
 ### Viewing
 
 | Block | Description |
 |-------|-------------|
-| **Video Viewer** | Display generated videos inline with multi-video navigation. |
-| **Image Viewer** | Display generated images in a grid with navigation. |
+| **Video Viewer** | Display generated videos inline with multi-video navigation. Accumulates outputs across runs and auto-selects the newest item. |
+| **Image Viewer** | Display generated images in a grid with navigation. Accumulates outputs across runs and auto-selects the newest item. |
 
 ### Post-Processing
 
@@ -162,6 +162,9 @@ Blocks connect automatically based on compatible data types (text, image, video,
 ## Pipeline Features
 
 - **Tabs** — Work on multiple pipelines simultaneously. Double-click a tab to rename it.
+- **Parallel execution** — Run pipelines in multiple tabs at the same time. Each tab has independent run state and cancellation.
+- **Loop mode** — Run a pipeline endlessly until stopped. Click "Loop" instead of "Run" to auto-repeat. Stops automatically on error. Pipelines with Human-in-the-Loop blocks are ineligible.
+- **Job manager** — When 2+ pipelines are running, a floating panel appears showing each running tab's name, current block, and a per-tab stop button.
 - **Branching** — Fork a pipeline into multiple parallel chains from any block.
 - **Continue mode** — After a run completes, add more blocks and click "Continue" to pick up where you left off.
 - **Save / Load** — Export pipelines as JSON files and reload them later via File menu.

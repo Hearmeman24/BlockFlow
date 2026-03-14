@@ -122,6 +122,7 @@ interface LoraOverride {
   lora_name: string
   strength_model: string
   strength_clip: string
+  enabled: boolean
 }
 
 interface ProgressInfo {
@@ -444,6 +445,7 @@ function ComfyGenBlock({
             lora_name: ln.lora_name,
             strength_model: ln.strength_model != null ? String(ln.strength_model) : '1',
             strength_clip: ln.strength_clip != null ? String(ln.strength_clip) : '1',
+            enabled: true,
           }
         }
         setLoraOverrides(initLoraOverrides)
@@ -561,6 +563,7 @@ function ComfyGenBlock({
               lora_name: prev[ln.node_id]?.lora_name ?? ln.lora_name,
               strength_model: prev[ln.node_id]?.strength_model ?? (ln.strength_model != null ? String(ln.strength_model) : '1'),
               strength_clip: prev[ln.node_id]?.strength_clip ?? (ln.strength_clip != null ? String(ln.strength_clip) : '1'),
+              enabled: prev[ln.node_id]?.enabled ?? true,
             }
           }
           return merged
@@ -733,9 +736,14 @@ function ComfyGenBlock({
         }
       }
 
+      const bypassLoras: string[] = []
       for (const ln of loraNodes) {
         const ov = loraOverrides[ln.node_id]
         if (!ov) continue
+        if (ov.enabled === false) {
+          bypassLoras.push(ln.node_id)
+          continue
+        }
         if (ov.lora_name && ov.lora_name !== ln.lora_name) {
           overrides[`${ln.node_id}.lora_name`] = ov.lora_name
         }
@@ -773,6 +781,7 @@ function ComfyGenBlock({
           file_inputs: fileInputs,
           overrides: Object.keys(overrides).length > 0 ? overrides : undefined,
           lock_seed: lockSeed || undefined,
+          bypass_loras: bypassLoras.length > 0 ? bypassLoras : undefined,
         }),
       })
       const data = await res.json()
@@ -1158,7 +1167,10 @@ function ComfyGenBlock({
       {loraNodes.length > 0 && (
         <CollapsibleSection
           label="LoRAs"
-          badge={`${loraNodes.length}`}
+          badge={(() => {
+            const enabledCount = loraNodes.filter((ln) => loraOverrides[ln.node_id]?.enabled !== false).length
+            return enabledCount === loraNodes.length ? `${loraNodes.length}` : `${enabledCount}/${loraNodes.length}`
+          })()}
           trailing={
             <div className="flex items-center gap-2">
               {lorasFetchedAt > 0 && (
@@ -1198,76 +1210,97 @@ function ComfyGenBlock({
           {loraNodes.map((ln) => {
             const ov = loraOverrides[ln.node_id]
             const hasClip = ln.class_type === 'LoraLoader'
+            const isEnabled = ov?.enabled !== false
             return (
               <div key={ln.node_id} className="space-y-1.5">
                 {loraNodes.length > 1 && (
                   <span className="text-[10px] text-muted-foreground">{ln.label}</span>
                 )}
-                {availableLoras.length > 0 ? (
-                  <Select
-                    value={ov?.lora_name || ln.lora_name}
-                    onValueChange={(v) => setLoraOverrides((prev) => ({
-                      ...prev,
-                      [ln.node_id]: { ...prev[ln.node_id], lora_name: v },
-                    }))}
-                  >
-                    <SelectTrigger className="h-7 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {availableLoras.map((name) => (
-                        <SelectItem key={name} value={name}>
-                          <span className="truncate">{name}</span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Input
-                    value={ov?.lora_name ?? ln.lora_name}
-                    onChange={(e) => setLoraOverrides((prev) => ({
-                      ...prev,
-                      [ln.node_id]: { ...prev[ln.node_id], lora_name: e.target.value },
-                    }))}
-                    placeholder={ln.lora_name}
-                    className="h-7 text-xs"
-                  />
-                )}
                 <div className="flex items-center gap-2">
-                  <div className="flex-1 space-y-0.5">
-                    <span className="text-[10px] text-muted-foreground">Model</span>
-                    <Input
-                      type="number"
-                      step="0.05"
-                      min="0"
-                      max="2"
-                      value={ov?.strength_model ?? ''}
-                      onChange={(e) => setLoraOverrides((prev) => ({
-                        ...prev,
-                        [ln.node_id]: { ...prev[ln.node_id], strength_model: e.target.value },
-                      }))}
-                      placeholder={ln.strength_model != null ? String(ln.strength_model) : '1'}
-                      className="h-7 text-xs"
-                    />
+                  <div className={`min-w-0 flex-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                    {availableLoras.length > 0 ? (
+                      <Select
+                        value={ov?.lora_name || ln.lora_name}
+                        onValueChange={(v) => setLoraOverrides((prev) => ({
+                          ...prev,
+                          [ln.node_id]: { ...prev[ln.node_id], lora_name: v },
+                        }))}
+                      >
+                        <SelectTrigger className="h-7 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableLoras.map((name) => (
+                            <SelectItem key={name} value={name}>
+                              <span className="truncate">{name}</span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <Input
+                        value={ov?.lora_name ?? ln.lora_name}
+                        onChange={(e) => setLoraOverrides((prev) => ({
+                          ...prev,
+                          [ln.node_id]: { ...prev[ln.node_id], lora_name: e.target.value },
+                        }))}
+                        placeholder={ln.lora_name}
+                        className="h-7 text-xs"
+                      />
+                    )}
                   </div>
-                  {hasClip && (
+                  <button
+                    type="button"
+                    onClick={() => setLoraOverrides((prev) => ({
+                      ...prev,
+                      [ln.node_id]: { ...prev[ln.node_id], enabled: !isEnabled },
+                    }))}
+                    className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${
+                      isEnabled ? 'bg-blue-600' : 'bg-muted-foreground/30'
+                    }`}
+                  >
+                    <span className={`absolute top-[2px] left-[2px] w-[14px] h-[14px] rounded-full bg-white transition-transform ${
+                      isEnabled ? 'translate-x-[14px]' : 'translate-x-0'
+                    }`} />
+                  </button>
+                </div>
+                <div className={isEnabled ? '' : 'opacity-50 pointer-events-none'}>
+                  <div className="flex items-center gap-2">
                     <div className="flex-1 space-y-0.5">
-                      <span className="text-[10px] text-muted-foreground">CLIP</span>
+                      <span className="text-[10px] text-muted-foreground">Model</span>
                       <Input
                         type="number"
                         step="0.05"
                         min="0"
                         max="2"
-                        value={ov?.strength_clip ?? ''}
+                        value={ov?.strength_model ?? ''}
                         onChange={(e) => setLoraOverrides((prev) => ({
                           ...prev,
-                          [ln.node_id]: { ...prev[ln.node_id], strength_clip: e.target.value },
+                          [ln.node_id]: { ...prev[ln.node_id], strength_model: e.target.value },
                         }))}
-                        placeholder={ln.strength_clip != null ? String(ln.strength_clip) : '1'}
+                        placeholder={ln.strength_model != null ? String(ln.strength_model) : '1'}
                         className="h-7 text-xs"
                       />
                     </div>
-                  )}
+                    {hasClip && (
+                      <div className="flex-1 space-y-0.5">
+                        <span className="text-[10px] text-muted-foreground">CLIP</span>
+                        <Input
+                          type="number"
+                          step="0.05"
+                          min="0"
+                          max="2"
+                          value={ov?.strength_clip ?? ''}
+                          onChange={(e) => setLoraOverrides((prev) => ({
+                            ...prev,
+                            [ln.node_id]: { ...prev[ln.node_id], strength_clip: e.target.value },
+                          }))}
+                          placeholder={ln.strength_clip != null ? String(ln.strength_clip) : '1'}
+                          className="h-7 text-xs"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )

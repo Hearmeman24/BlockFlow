@@ -30,7 +30,7 @@ function toImageUrls(value: unknown): string[] {
 }
 
 function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentProps) {
-  const { blockStates } = usePipeline()
+  const { blockStates, isLooping } = usePipeline()
   const imageUrls = toImageUrls(inputs.image)
   const ownOutputUrls = toImageUrls(blockStates.get(blockId)?.outputs.image)
   const [accumulatedUrls, setAccumulatedUrls] = useState<string[]>([])
@@ -43,16 +43,21 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
         ? [...accumulatedUrls, currentUrls[0]]
         : (currentUrls.length > 1 ? currentUrls : accumulatedUrls))
     : currentUrls
-  const isStale = currentUrls.length === 0 && accumulatedUrls.length > 0
+  const isStale = !isLooping && currentUrls.length === 0 && accumulatedUrls.length > 0
 
   useEffect(() => {
     const key = currentUrls.join('\n')
     if (key && key !== prevKeyRef.current) {
       prevKeyRef.current = key
       setAccumulatedUrls((prev) => {
-        if (currentUrls.length > 1) return currentUrls
+        if (currentUrls.length > 1) {
+          setSelectedIndex(currentUrls.length - 1)
+          return currentUrls
+        }
         if (currentUrls.length === 1) {
-          return prev.includes(currentUrls[0]) ? prev : [...prev, currentUrls[0]]
+          if (prev.includes(currentUrls[0])) return prev
+          setSelectedIndex(prev.length) // index of the newly appended item
+          return [...prev, currentUrls[0]]
         }
         return prev
       })

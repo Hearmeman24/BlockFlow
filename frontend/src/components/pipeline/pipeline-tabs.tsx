@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Plus, X, Play, Square, Loader2, Check, FastForward } from 'lucide-react'
+import { Plus, X, Play, Square, Loader2, Check, FastForward, Repeat } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { BlockLayoutProvider, useBlockLayout } from '@/lib/pipeline/block-layout-context'
 import { PipelineProvider } from '@/lib/pipeline/pipeline-context'
@@ -29,11 +29,17 @@ function PipelineTabsContent() {
     runActivePipeline,
     continueActivePipeline,
     cancelActivePipeline,
+    loopingTabs,
+    loopIterations,
+    startLoop,
+    stopLoop,
   } = usePipelineTabs()
   const { mode, setAutoFit, expandAll, reduceAll } = useBlockLayout()
 
   const activeRunState = tabRunStates[activeTabId] ?? 'idle'
   const isActiveRunning = activeRunState === 'running'
+  const isActiveLooping = loopingTabs[activeTabId] ?? false
+  const activeLoopIteration = loopIterations[activeTabId] ?? 0
 
   return (
     <div className="h-full flex flex-col relative">
@@ -46,6 +52,7 @@ function PipelineTabsContent() {
             label={tab.label}
             active={tab.id === activeTabId}
             runState={tabRunStates[tab.id] ?? 'idle'}
+            isLooping={loopingTabs[tab.id] ?? false}
             canClose={tabs.length > 1}
             onClick={() => setActiveTabId(tab.id)}
             onClose={() => removeTab(tab.id)}
@@ -120,7 +127,15 @@ function PipelineTabsContent() {
               className="h-8 px-5 rounded-full bg-red-600 hover:bg-red-700 text-white text-sm font-medium gap-1.5"
             >
               <Square className="w-3.5 h-3.5 fill-current" />
-              Stop Pipeline
+              {isActiveLooping ? `Stop Loop (${activeLoopIteration})` : 'Stop Pipeline'}
+            </Button>
+          ) : isActiveLooping ? (
+            <Button
+              onClick={() => stopLoop()}
+              className="h-8 px-5 rounded-full bg-red-600 hover:bg-red-700 text-white text-sm font-medium gap-1.5"
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+              Stop Loop ({activeLoopIteration})
             </Button>
           ) : (
             <div className="flex items-center gap-2">
@@ -140,6 +155,14 @@ function PipelineTabsContent() {
                 <Play className="w-3.5 h-3.5 fill-current" />
                 Run Pipeline
               </Button>
+              <Button
+                onClick={() => startLoop()}
+                className="h-8 px-5 rounded-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium gap-1.5"
+                title="Run pipeline in a loop until stopped"
+              >
+                <Repeat className="w-3.5 h-3.5" />
+                Loop
+              </Button>
             </div>
           )}
         </div>
@@ -155,6 +178,7 @@ function TabButton({
   label,
   active,
   runState,
+  isLooping,
   canClose,
   onClick,
   onClose,
@@ -164,6 +188,7 @@ function TabButton({
   label: string
   active: boolean
   runState: TabRunState
+  isLooping: boolean
   canClose: boolean
   onClick: () => void
   onClose: () => void
@@ -217,10 +242,13 @@ function TabButton({
       }}
       title="Double-click to rename"
     >
-      {runState === 'running' && (
+      {isLooping && (
+        <Repeat className="w-3 h-3 shrink-0 text-violet-400" />
+      )}
+      {!isLooping && runState === 'running' && (
         <Loader2 className="w-3 h-3 shrink-0 animate-spin text-blue-400" />
       )}
-      {runState === 'done' && (
+      {!isLooping && runState === 'done' && (
         <Check className="w-3 h-3 shrink-0 text-emerald-400" />
       )}
       <span className="truncate max-w-[120px]">{label}</span>

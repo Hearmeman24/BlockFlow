@@ -27,6 +27,8 @@ function useFeatureFlags() {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const flagsReady = useFeatureFlags()
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
   const pathname = usePathname()
   const isGenerateRoute = pathname === '/generate'
   const pipelineShellClass = isGenerateRoute
@@ -37,8 +39,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     <ErrorBoundary>
       <TooltipProvider>
         <PipelineTabsProvider>
-          <NavBar />
-          <Sidebar />
+          {mounted && <NavBar />}
+          {mounted && <Sidebar />}
           <main className={pipelineShellClass}>
             <PipelineTabs />
           </main>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import random
@@ -1066,6 +1067,42 @@ async def parse_workflow(request: Request) -> JSONResponse:
     })
 
 
+def _bypass_lora_nodes(workflow: dict, bypass_node_ids: list[str]) -> dict:
+    """Bypass LoRA loader nodes by rewiring downstream references to the LoRA's inputs.
+
+    For each bypassed LoRA node:
+    - References to [lora_id, 0] (MODEL) are replaced with the LoRA's model input
+    - References to [lora_id, 1] (CLIP, LoraLoader only) are replaced with the LoRA's clip input
+    - The LoRA node is deleted from the workflow
+    """
+    for lora_id in bypass_node_ids:
+        lora_node = workflow.get(lora_id)
+        if not lora_node:
+            continue
+        inputs = lora_node.get("inputs", {})
+        model_source = inputs.get("model")  # [source_node_id, output_index]
+        clip_source = inputs.get("clip")    # [source_node_id, output_index] or None
+
+        # Scan all nodes and rewire references
+        for node_id, node in workflow.items():
+            if node_id == lora_id:
+                continue
+            node_inputs = node.get("inputs", {})
+            for field, value in node_inputs.items():
+                if not isinstance(value, list) or len(value) != 2:
+                    continue
+                if str(value[0]) == str(lora_id):
+                    if value[1] == 0 and model_source:
+                        node_inputs[field] = list(model_source)
+                    elif value[1] == 1 and clip_source:
+                        node_inputs[field] = list(clip_source)
+
+        # Remove the bypassed LoRA node
+        del workflow[lora_id]
+
+    return workflow
+
+
 @router.post("/run")
 async def run(request: Request) -> JSONResponse:
     """Submit a ComfyUI workflow via comfy-gen CLI."""
@@ -1073,7 +1110,12 @@ async def run(request: Request) -> JSONResponse:
     workflow = body.get("workflow", {})
     raw_file_inputs = body.get("file_inputs", {})  # {node_id: {field, media_url}}
     raw_overrides = body.get("overrides", {})  # {"node_id.param": "value"}
+    bypass_loras = body.get("bypass_loras", [])  # list of node_id strings to bypass
     endpoint_id = str(body.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
+
+    # Apply LoRA bypass before processing
+    if bypass_loras:
+        workflow = _bypass_lora_nodes(copy.deepcopy(workflow), bypass_loras)
 
     if not workflow:
         return JSONResponse({"ok": False, "error": "workflow is required"}, status_code=400)

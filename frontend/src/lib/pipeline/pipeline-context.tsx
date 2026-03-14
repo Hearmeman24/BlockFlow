@@ -264,7 +264,7 @@ interface PipelineContextValue {
   registerBlockExecute: (blockId: string, fn: ExecuteFn) => void
   /** Hint which output port is active for a block (narrows add-block menu). */
   setOutputHint: (blockId: string, activePortName: string) => void
-  runPipeline: (opts?: { continueFromExisting?: boolean }) => Promise<void>
+  runPipeline: (opts?: { continueFromExisting?: boolean }) => Promise<{ hadError: boolean }>
   cancelPipeline: () => void
   /** Whether any block has completed outputs from a previous run (enables "Continue" mode). */
   hasCompletedBlocks: boolean
@@ -296,6 +296,8 @@ interface PipelineContextValue {
   getAddableTypesForBranch: (ancestors: PipelineBlock[], chain: PipelineBlock[], atIndex?: number) => NodeTypeDef[]
   /** Active iteration state for iterator blocks (null when no iteration is running). */
   iterationState: IterationState | null
+  /** Whether this tab's pipeline is running in loop mode. */
+  isLooping: boolean
 }
 
 const PipelineCtx = createContext<PipelineContextValue | null>(null)
@@ -316,7 +318,7 @@ interface PipelineProviderProps {
 }
 
 export function PipelineProvider({ tabId, flowJson, children }: PipelineProviderProps) {
-  const { registerTabActions, unregisterTabActions, setTabRunState, setTabRuntimeInfo, tabRunStates } = usePipelineTabs()
+  const { registerTabActions, unregisterTabActions, setTabRunState, setTabRuntimeInfo, tabRunStates, loopingTabs } = usePipelineTabs()
   const tabMarkedRunning = (tabRunStates[tabId] ?? 'idle') === 'running'
   const initialRuntime = useRef<PersistedPipelineRuntime>(
     normalizeRecoveredRuntime(loadPipelineRuntime(tabId), tabMarkedRunning),
@@ -783,8 +785,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     setTabRuntimeInfo(tabId, {})
   }, [persistRuntimeSnapshot, setTabRunState, setTabRuntimeInfo, tabId])
 
-  const runPipeline = useCallback(async (opts?: { continueFromExisting?: boolean }) => {
-    if (runLockRef.current) return
+  const runPipeline = useCallback(async (opts?: { continueFromExisting?: boolean }): Promise<{ hadError: boolean }> => {
+    if (runLockRef.current) return { hadError: false }
     runLockRef.current = true
     cancelledRef.current = false
     const continueMode = opts?.continueFromExisting ?? false
@@ -1097,6 +1099,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
 
       // Fire-and-forget — don't block the UI
       saveRun(run).catch(() => {})
+
+      return { hadError }
     } finally {
       runLockRef.current = false
       runAbortControllerRef.current = null
@@ -1274,6 +1278,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       cancelPipeline: () => cancelPipelineRef.current(),
       exportFlowJson,
       importFlowJson,
+      hasHitlBlocks: () => [...walkBlocks(pipelineRef.current.blocks)].some((b) => b.type === 'hitl'),
     }
     registerTabActions(tabId, actions)
     return () => unregisterTabActions(tabId)
@@ -1341,6 +1346,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         removeBranch,
         getAddableTypesForBranch,
         iterationState,
+        isLooping: loopingTabs[tabId] ?? false,
       }}
     >
       {children}

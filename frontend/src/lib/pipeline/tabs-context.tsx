@@ -22,10 +22,11 @@ export interface PipelineTab {
 }
 
 export interface TabActions {
-  runPipeline: (opts?: { continueFromExisting?: boolean }) => Promise<void>
+  runPipeline: (opts?: { continueFromExisting?: boolean }) => Promise<{ hadError: boolean }>
   cancelPipeline: () => void
   exportFlowJson: (name?: string) => string
   importFlowJson: (json: string) => void
+  hasHitlBlocks: () => boolean
 }
 
 export type TabRunState = 'idle' | 'running' | 'done'
@@ -52,6 +53,10 @@ interface PipelineTabsContextValue {
   tabRuntimeInfos: Record<string, TabRuntimeInfo>
   setTabRuntimeInfo: (tabId: string, info: TabRuntimeInfo) => void
   cancelTabPipeline: (tabId: string) => void
+  loopingTabs: Record<string, boolean>
+  loopIterations: Record<string, number>
+  startLoop: () => void
+  stopLoop: (tabId?: string) => void
   runActivePipeline: () => void
   continueActivePipeline: () => void
   cancelActivePipeline: () => void
@@ -150,6 +155,8 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
   })
   const [availableFlows, setAvailableFlows] = useState<FlowEntry[]>([])
   const [tabRuntimeInfos, setTabRuntimeInfos] = useState<Record<string, TabRuntimeInfo>>({})
+  const [loopingTabs, setLoopingTabs] = useState<Record<string, boolean>>({})
+  const [loopIterations, setLoopIterations] = useState<Record<string, number>>({})
   const tabActionsRef = useRef<Map<string, TabActions>>(new Map())
   const hydrated = useRef(false)
 
@@ -262,6 +269,18 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
         delete nextInfos[id]
         return nextInfos
       })
+      setLoopingTabs((prev) => {
+        if (!(id in prev)) return prev
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+      setLoopIterations((prev) => {
+        if (!(id in prev)) return prev
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
       return { tabs: nextTabs, activeTabId: nextActive }
     })
   }, [tabRunStates])
@@ -294,12 +313,57 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const cancelTabPipeline = useCallback((tabId: string) => {
+    setLoopingTabs((prev) => prev[tabId] ? { ...prev, [tabId]: false } : prev)
     const actions = tabActionsRef.current.get(tabId)
     if (!actions) return
     actions.cancelPipeline()
   }, [])
 
   const isAnyRunning = Object.values(tabRunStates).some((state) => state === 'running')
+
+  const stopLoop = useCallback((tabId?: string) => {
+    const id = tabId ?? activeTabId
+    setLoopingTabs((prev) => {
+      if (!prev[id]) return prev
+      return { ...prev, [id]: false }
+    })
+  }, [activeTabId])
+
+  const startLoop = useCallback(async () => {
+    const actions = tabActionsRef.current.get(activeTabId)
+    if (!actions) return
+    if (actions.hasHitlBlocks()) return // HITL pipelines can't loop
+    if ((tabRunStates[activeTabId] ?? 'idle') === 'running') return
+
+    setLoopingTabs((prev) => ({ ...prev, [activeTabId]: true }))
+    setLoopIterations((prev) => ({ ...prev, [activeTabId]: 1 }))
+    const result = await actions.runPipeline()
+    // If first run errors, stop looping immediately
+    if (result.hadError) {
+      setLoopingTabs((prev) => ({ ...prev, [activeTabId]: false }))
+    }
+  }, [activeTabId, tabRunStates])
+
+  // Auto-restart loop: when a looping tab finishes, start the next iteration
+  useEffect(() => {
+    for (const [tabId, isLooping] of Object.entries(loopingTabs)) {
+      if (!isLooping) continue
+      if (tabRunStates[tabId] !== 'done') continue
+
+      const actions = tabActionsRef.current.get(tabId)
+      if (!actions) continue
+
+      // Use a microtask to avoid calling runPipeline during render
+      const timer = setTimeout(async () => {
+        setLoopIterations((prev) => ({ ...prev, [tabId]: (prev[tabId] ?? 1) + 1 }))
+        const result = await actions.runPipeline()
+        if (result.hadError) {
+          setLoopingTabs((prev) => ({ ...prev, [tabId]: false }))
+        }
+      }, 0)
+      return () => clearTimeout(timer)
+    }
+  }, [tabRunStates, loopingTabs])
 
   const runActivePipeline = useCallback(async () => {
     if ((tabRunStates[activeTabId] ?? 'idle') === 'running') return
@@ -320,6 +384,7 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
   }, [activeTabId, tabRunStates])
 
   const cancelActivePipeline = useCallback(() => {
+    setLoopingTabs((prev) => prev[activeTabId] ? { ...prev, [activeTabId]: false } : prev)
     const actions = tabActionsRef.current.get(activeTabId)
     if (!actions) return
     actions.cancelPipeline()
@@ -415,6 +480,10 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
         tabRuntimeInfos,
         setTabRuntimeInfo,
         cancelTabPipeline,
+        loopingTabs,
+        loopIterations,
+        startLoop,
+        stopLoop,
         runActivePipeline,
         continueActivePipeline,
         cancelActivePipeline,

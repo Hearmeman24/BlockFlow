@@ -17,7 +17,9 @@ def get_settings() -> JSONResponse:
     settings = state._get_writer_settings()
     return JSONResponse({
         "ok": True,
-        "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_api_key": bool(config.OPENROUTER_API_KEY or config.MINIMAX_API_KEY),
+        "has_openrouter_key": bool(config.OPENROUTER_API_KEY),
+        "has_minimax_key": bool(config.MINIMAX_API_KEY),
         "settings": settings,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -32,7 +34,9 @@ async def save_settings(request: Request) -> JSONResponse:
     updated = state._update_writer_settings(**payload)
     return JSONResponse({
         "ok": True,
-        "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_api_key": bool(config.OPENROUTER_API_KEY or config.MINIMAX_API_KEY),
+        "has_openrouter_key": bool(config.OPENROUTER_API_KEY),
+        "has_minimax_key": bool(config.MINIMAX_API_KEY),
         "settings": updated,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -43,7 +47,7 @@ async def save_settings(request: Request) -> JSONResponse:
 
 @router.get("/models")
 def get_models(refresh: int = Query(0)) -> JSONResponse:
-    models, error, from_cache = services._get_openrouter_models(refresh=bool(refresh))
+    models, error, from_cache = services._get_llm_models(refresh=bool(refresh))
     resp: dict[str, Any] = {"ok": True, "models": models, "from_cache": from_cache}
     if error:
         resp["warning"] = error
@@ -65,7 +69,7 @@ async def generate(request: Request) -> JSONResponse:
     if not user_prompt and not raw_image_url:
         return JSONResponse({"ok": False, "error": "user_prompt or image_url is required"}, status_code=400)
 
-    # Convert local paths to base64 data URI for OpenRouter vision
+    # Convert local paths to base64 data URI for vision models
     image_url = raw_image_url
     if raw_image_url and tmpfiles.is_local_path(raw_image_url):
         from pathlib import Path
@@ -95,7 +99,7 @@ async def generate(request: Request) -> JSONResponse:
         messages.append({"role": "user", "content": user_prompt})
 
     try:
-        resp = services._openrouter_request_json("POST", "/chat/completions", {
+        resp = services._llm_chat_completion({
             "model": model,
             "messages": messages,
             "temperature": temperature,

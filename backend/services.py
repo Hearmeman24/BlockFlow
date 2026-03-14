@@ -75,6 +75,98 @@ def _openrouter_request_json(method: str, path: str, payload: dict[str, Any] | N
     return _request_json_with_headers(method, url, _openrouter_headers(), payload=payload, timeout=timeout)
 
 
+# ---------------------------------------------------------------------------
+# MiniMax direct API support
+# ---------------------------------------------------------------------------
+
+_MINIMAX_MODEL_PREFIX = "minimax/"
+
+MINIMAX_MODELS: list[dict[str, Any]] = [
+    {
+        "id": f"{_MINIMAX_MODEL_PREFIX}MiniMax-M2.5",
+        "name": "MiniMax M2.5",
+        "context_length": 204800,
+        "modality": "text->text",
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+    },
+    {
+        "id": f"{_MINIMAX_MODEL_PREFIX}MiniMax-M2.5-highspeed",
+        "name": "MiniMax M2.5 High Speed",
+        "context_length": 204800,
+        "modality": "text->text",
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+    },
+]
+
+
+def _is_minimax_model(model_id: str) -> bool:
+    return model_id.startswith(_MINIMAX_MODEL_PREFIX)
+
+
+def _minimax_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {config.MINIMAX_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _minimax_request_json(method: str, path: str, payload: dict[str, Any] | None = None, timeout: int = 60) -> dict[str, Any]:
+    if not config.MINIMAX_API_KEY:
+        raise RuntimeError("MINIMAX_API_KEY is missing")
+    url = f"{config.MINIMAX_API_BASE.rstrip('/')}/{path.lstrip('/')}"
+    if payload is not None:
+        # Strip the minimax/ prefix from the model id before sending
+        payload = dict(payload)
+        model = str(payload.get("model") or "")
+        if model.startswith(_MINIMAX_MODEL_PREFIX):
+            payload["model"] = model[len(_MINIMAX_MODEL_PREFIX):]
+        # MiniMax requires temperature in (0.0, 1.0] — clamp if needed
+        temp = payload.get("temperature")
+        if temp is not None:
+            temp = float(temp)
+            if temp <= 0.0:
+                payload["temperature"] = 0.01
+            elif temp > 1.0:
+                payload["temperature"] = 1.0
+    return _request_json_with_headers(method, url, _minimax_headers(), payload=payload, timeout=timeout)
+
+
+def _get_minimax_models() -> list[dict[str, Any]]:
+    """Return the static MiniMax model list (no API call needed)."""
+    return list(MINIMAX_MODELS)
+
+
+def _get_llm_models(refresh: bool = False) -> tuple[list[dict[str, Any]], str | None, bool]:
+    """Fetch models from all configured LLM providers and merge them."""
+    all_models: list[dict[str, Any]] = []
+    warning: str | None = None
+    from_cache = False
+
+    # OpenRouter models
+    if config.OPENROUTER_API_KEY:
+        or_models, or_err, or_cached = _get_openrouter_models(refresh=refresh)
+        all_models.extend(or_models)
+        if or_err:
+            warning = or_err
+        from_cache = or_cached
+
+    # MiniMax models (static list, always available when key is set)
+    if config.MINIMAX_API_KEY:
+        all_models.extend(_get_minimax_models())
+
+    return all_models, warning, from_cache
+
+
+def _llm_chat_completion(payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    """Route a chat completion request to the appropriate provider."""
+    model = str(payload.get("model") or "")
+    if _is_minimax_model(model):
+        return _minimax_request_json("POST", "/chat/completions", payload, timeout=timeout)
+    return _openrouter_request_json("POST", "/chat/completions", payload, timeout=timeout)
+
+
 def _is_text_generation_model(model_obj: dict[str, Any]) -> bool:
     arch = model_obj.get("architecture")
     if not isinstance(arch, dict):

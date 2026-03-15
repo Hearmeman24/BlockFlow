@@ -63,8 +63,11 @@ Write one paragraph only.
 Plain text.
 `
 
+type LLMProvider = 'openrouter' | 'minimax'
+
 interface WriterSettings {
   mode: WriterMode
+  provider: LLMProvider
   system_prompt: string
   video_system_prompt: string
   image_system_prompt: string
@@ -86,6 +89,7 @@ interface FanoutLimits {
 interface SettingsResponse {
   ok?: boolean
   has_api_key?: boolean
+  has_minimax_key?: boolean
   settings?: Partial<WriterSettings>
   fanout_limits?: Partial<FanoutLimits>
 }
@@ -104,14 +108,18 @@ async function saveSettings(payload: Partial<WriterSettings>) {
   return res.json()
 }
 
-async function fetchModels(refresh = false) {
-  const qs = refresh ? '?refresh=1' : ''
+async function fetchModels(refresh = false, provider: LLMProvider = 'openrouter') {
+  const params = new URLSearchParams()
+  if (refresh) params.set('refresh', '1')
+  if (provider !== 'openrouter') params.set('provider', provider)
+  const qs = params.toString() ? `?${params.toString()}` : ''
   const res = await fetch(`${MODELS_ENDPOINT}${qs}`)
   return res.json()
 }
 
 interface WriterGeneratePayload {
   mode: WriterMode
+  provider: LLMProvider
   model: string
   system_prompt: string
   user_prompt: string
@@ -137,6 +145,7 @@ function settingsEqual(a: WriterSettings | null, b: WriterSettings): boolean {
   if (!a) return false
   return (
     a.mode === b.mode &&
+    a.provider === b.provider &&
     a.system_prompt === b.system_prompt &&
     a.video_system_prompt === b.video_system_prompt &&
     a.image_system_prompt === b.image_system_prompt &&
@@ -156,6 +165,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const [models, setModels] = useState<ModelInfo[]>([])
   const [hasApiKey, setHasApiKey] = useState(false)
+  const [hasMinimaxKey, setHasMinimaxKey] = useState(false)
   const [fanoutLimits, setFanoutLimits] = useState<FanoutLimits>({
     max_variants: DEFAULT_MAX_VARIANTS,
     max_parallel: DEFAULT_MAX_PARALLEL,
@@ -171,6 +181,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       .then((res: SettingsResponse) => {
         if (cancelled) return
         setHasApiKey(Boolean(res?.has_api_key))
+        setHasMinimaxKey(Boolean(res?.has_minimax_key))
 
         const rawMaxVariants = Number(res?.fanout_limits?.max_variants ?? DEFAULT_MAX_VARIANTS)
         const rawMaxParallel = Number(res?.fanout_limits?.max_parallel ?? DEFAULT_MAX_PARALLEL)
@@ -182,10 +193,12 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
         const server = res?.settings
         if (server && !localSettings) {
           const mode: WriterMode = server.mode === 'image' ? 'image' : 'video'
+          const provider: LLMProvider = server.provider === 'minimax' ? 'minimax' : 'openrouter'
           const videoPrompt = String(server.video_system_prompt ?? server.system_prompt ?? '')
           const imagePrompt = String(server.image_system_prompt ?? DEFAULT_IMAGE_SYSTEM_PROMPT)
           setLocalSettings({
             mode,
+            provider,
             system_prompt: mode === 'image' ? imagePrompt : videoPrompt,
             video_system_prompt: videoPrompt,
             image_system_prompt: imagePrompt,
@@ -206,7 +219,8 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
 
   useEffect(() => {
     let cancelled = false
-    fetchModels(true)
+    const provider = localSettings?.provider ?? 'openrouter'
+    fetchModels(true, provider)
       .then((res) => {
         if (cancelled) return
         if (!res?.ok || !Array.isArray(res.models)) {
@@ -225,10 +239,11 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [localSettings?.provider]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const s: WriterSettings = {
     mode: localSettings?.mode === 'image' ? 'image' : 'video',
+    provider: localSettings?.provider === 'minimax' ? 'minimax' : 'openrouter',
     system_prompt: String(localSettings?.system_prompt ?? ''),
     video_system_prompt: String(localSettings?.video_system_prompt ?? localSettings?.system_prompt ?? ''),
     image_system_prompt: String(localSettings?.image_system_prompt ?? DEFAULT_IMAGE_SYSTEM_PROMPT),
@@ -242,6 +257,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       ...s,
       ...patch,
       mode: patch.mode === 'image' ? 'image' : patch.mode === 'video' ? 'video' : s.mode,
+      provider: patch.provider === 'minimax' ? 'minimax' : patch.provider === 'openrouter' ? 'openrouter' : s.provider,
       system_prompt: String((patch as Partial<WriterSettings>).system_prompt ?? s.system_prompt ?? ''),
       video_system_prompt: String((patch as Partial<WriterSettings>).video_system_prompt ?? s.video_system_prompt ?? ''),
       image_system_prompt: String((patch as Partial<WriterSettings>).image_system_prompt ?? s.image_system_prompt ?? DEFAULT_IMAGE_SYSTEM_PROMPT),
@@ -257,6 +273,15 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       else next.video_system_prompt = String(patch.system_prompt ?? '')
     }
     next.system_prompt = next.mode === 'image' ? next.image_system_prompt : next.video_system_prompt
+    // When provider changes, clear model and re-fetch models
+    if (patch.provider && patch.provider !== s.provider) {
+      next.model = ''
+      fetchModels(true, patch.provider).then((res) => {
+        if (res?.ok && Array.isArray(res.models)) {
+          setModels(res.models.map((m: ModelInfo) => ({ id: m.id, context_length: m.context_length ?? null })))
+        }
+      }).catch(() => setModels([]))
+    }
     if (settingsEqual(localSettings, next)) return
     setLocalSettings(next)
   }
@@ -304,6 +329,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
           try {
             const res = await generatePrompt({
               mode: s.mode,
+              provider: s.provider,
               model: s.model,
               system_prompt: activeSystemPrompt,
               user_prompt: makeVariantPrompt(idx),
@@ -367,9 +393,25 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
 
   return (
     <div className="space-y-3">
-      {!hasApiKey && (
+      {s.provider === 'openrouter' && !hasApiKey && (
         <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
       )}
+      {s.provider === 'minimax' && !hasMinimaxKey && (
+        <span className="text-xs text-yellow-500">MINIMAX_API_KEY missing — configure it in your .env file</span>
+      )}
+
+      <div className="space-y-1.5">
+        <Label className="text-xs">Provider</Label>
+        <Select value={s.provider} onValueChange={(v) => updateLocal({ provider: v as LLMProvider })}>
+          <SelectTrigger className="w-full h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="openrouter" className="text-xs">OpenRouter</SelectItem>
+            <SelectItem value="minimax" className="text-xs">MiniMax</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
       <div className="space-y-1.5">
         <Label className="text-xs">Model</Label>
@@ -463,7 +505,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
 
 export const blockDef: BlockDef = {
   type: 'promptWriter',
-  label: 'Prompt Writer (OpenRouter)',
+  label: 'Prompt Writer',
   description: 'Generate an image or video prompt using an LLM',
   size: 'lg',
   canStart: true,

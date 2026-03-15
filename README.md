@@ -52,9 +52,12 @@ You'll need accounts for the services your workflow uses:
 | Service | Required? | What For |
 |---------|-----------|----------|
 | [RunPod](https://runpod.io) | Yes | GPU serverless endpoints for generation |
-| [OpenRouter](https://openrouter.ai) | Yes | LLM-powered prompt generation |
+| [OpenRouter](https://openrouter.ai) | Yes\* | LLM-powered prompt generation (default) |
+| [MiniMax](https://platform.minimax.io) | Optional | Alternative LLM provider for prompt generation |
 | [Topaz Labs](https://www.topazlabs.com/topaz-video-ai) | Optional | Video & image AI upscaling |
 | [CivitAI](https://civitai.com) | Optional | Share generated media (advanced mode) |
+
+\*At least one LLM provider (OpenRouter or MiniMax) is needed for prompt generation blocks.
 
 ## Configuration
 
@@ -70,6 +73,7 @@ OPENROUTER_API_KEY=sk-or-v1-...     # OpenRouter API key for prompt generation
 ### Optional Services
 
 ```env
+MINIMAX_API_KEY=                    # MiniMax API key (alternative LLM provider)
 TOPAZ_API_KEY=                      # Topaz Labs API key (for upscaling blocks)
 CIVITAI_API_KEY=                    # CivitAI API key (for sharing, advanced mode)
 RUNPOD_ENDPOINT_ID=                 # Override comfy-gen's configured endpoint ID
@@ -193,7 +197,7 @@ Blocks are self-contained modules. Each block lives in `custom_blocks/<name>/` w
 - **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS, shadcn/ui
 - **Backend**: Python 3.12+, FastAPI, uvicorn
 - **Database**: SQLite (run history)
-- **External**: RunPod API, OpenRouter API, Topaz Labs API, comfy-gen CLI
+- **External**: RunPod API, OpenRouter API, MiniMax API, Topaz Labs API, comfy-gen CLI
 
 ## Privacy Note
 

@@ -51,7 +51,10 @@ Rules:
 - The prompt should read as a single coherent shot description for an AI video generator.
 `
 
+type LLMProvider = 'openrouter' | 'minimax'
+
 interface WriterSettings {
+  provider: LLMProvider
   system_prompt: string
   video_system_prompt: string
   model: string
@@ -72,6 +75,7 @@ interface FanoutLimits {
 interface SettingsResponse {
   ok?: boolean
   has_api_key?: boolean
+  has_minimax_key?: boolean
   settings?: Partial<WriterSettings>
   fanout_limits?: Partial<FanoutLimits>
 }
@@ -90,13 +94,17 @@ async function saveSettings(payload: Partial<WriterSettings>) {
   return res.json()
 }
 
-async function fetchModels(refresh = false) {
-  const qs = refresh ? '?refresh=1' : ''
+async function fetchModels(refresh = false, provider: LLMProvider = 'openrouter') {
+  const params = new URLSearchParams()
+  if (refresh) params.set('refresh', '1')
+  if (provider !== 'openrouter') params.set('provider', provider)
+  const qs = params.toString() ? `?${params.toString()}` : ''
   const res = await fetch(`${MODELS_ENDPOINT}${qs}`)
   return res.json()
 }
 
 interface I2VGeneratePayload {
+  provider: LLMProvider
   model: string
   system_prompt: string
   user_prompt: string
@@ -143,6 +151,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
   const [models, setModels] = useState<ModelInfo[]>([])
   const [hasApiKey, setHasApiKey] = useState(false)
+  const [hasMinimaxKey, setHasMinimaxKey] = useState(false)
   const [fanoutLimits, setFanoutLimits] = useState<FanoutLimits>({
     max_variants: DEFAULT_MAX_VARIANTS,
     max_parallel: DEFAULT_MAX_PARALLEL,
@@ -161,6 +170,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
       .then((res: SettingsResponse) => {
         if (cancelled) return
         setHasApiKey(Boolean(res?.has_api_key))
+        setHasMinimaxKey(Boolean(res?.has_minimax_key))
 
         const rawMaxVariants = Number(res?.fanout_limits?.max_variants ?? DEFAULT_MAX_VARIANTS)
         const rawMaxParallel = Number(res?.fanout_limits?.max_parallel ?? DEFAULT_MAX_PARALLEL)
@@ -171,8 +181,10 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
         const server = res?.settings
         if (server && !localSettings) {
+          const provider: LLMProvider = server.provider === 'minimax' ? 'minimax' : 'openrouter'
           const videoPrompt = String(server.video_system_prompt ?? server.system_prompt ?? '')
           setLocalSettings({
+            provider,
             system_prompt: videoPrompt,
             video_system_prompt: videoPrompt,
             model: String(server.model || 'x-ai/grok-4.1-fast'),
@@ -192,7 +204,8 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
   useEffect(() => {
     let cancelled = false
-    fetchModels(true)
+    const provider = localSettings?.provider ?? 'openrouter'
+    fetchModels(true, provider)
       .then((res) => {
         if (cancelled) return
         if (!res?.ok || !Array.isArray(res.models)) {
@@ -211,9 +224,10 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [localSettings?.provider]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const s: WriterSettings = {
+    provider: localSettings?.provider === 'minimax' ? 'minimax' : 'openrouter',
     system_prompt: String(localSettings?.system_prompt ?? ''),
     video_system_prompt: String(localSettings?.video_system_prompt ?? localSettings?.system_prompt ?? ''),
     model: String(localSettings?.model ?? ''),
@@ -225,6 +239,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
     const next: WriterSettings = {
       ...s,
       ...patch,
+      provider: patch.provider === 'minimax' ? 'minimax' : patch.provider === 'openrouter' ? 'openrouter' : s.provider,
       system_prompt: String(patch.system_prompt ?? s.system_prompt ?? ''),
       video_system_prompt: String(patch.video_system_prompt ?? s.video_system_prompt ?? ''),
       model: String(patch.model ?? s.model ?? ''),
@@ -235,6 +250,15 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
       next.video_system_prompt = String(patch.system_prompt ?? '')
     }
     next.system_prompt = next.video_system_prompt
+    // When provider changes, clear model and re-fetch models
+    if (patch.provider && patch.provider !== s.provider) {
+      next.model = ''
+      fetchModels(true, patch.provider).then((res) => {
+        if (res?.ok && Array.isArray(res.models)) {
+          setModels(res.models.map((m: ModelInfo) => ({ id: m.id, context_length: m.context_length ?? null })))
+        }
+      }).catch(() => setModels([]))
+    }
     setLocalSettings(next)
   }
 
@@ -279,6 +303,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
         for (let idx = workerIdx; idx < requestedVariants; idx += concurrency) {
           try {
             const res = await generatePrompt({
+              provider: s.provider,
               model: s.model,
               system_prompt: activeSystemPrompt,
               user_prompt: makeVariantPrompt(idx),
@@ -343,9 +368,25 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
   return (
     <div className="space-y-3">
-      {!hasApiKey && (
+      {s.provider === 'openrouter' && !hasApiKey && (
         <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
       )}
+      {s.provider === 'minimax' && !hasMinimaxKey && (
+        <span className="text-xs text-yellow-500">MINIMAX_API_KEY missing — configure it in your .env file</span>
+      )}
+
+      <div className="space-y-1.5">
+        <Label className="text-xs">Provider</Label>
+        <Select value={s.provider} onValueChange={(v) => updateLocal({ provider: v as LLMProvider })}>
+          <SelectTrigger className="w-full h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="openrouter" className="text-xs">OpenRouter</SelectItem>
+            <SelectItem value="minimax" className="text-xs">MiniMax</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
       <div className="space-y-1.5">
         <Label className="text-xs">Model (vision)</Label>
@@ -435,7 +476,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
 export const blockDef: BlockDef = {
   type: 'i2vPromptWriter',
-  label: 'I2V Prompt Writer (OpenRouter)',
+  label: 'I2V Prompt Writer',
   description: 'Generate a video prompt from an image using a vision LLM',
   size: 'lg',
   canStart: true,

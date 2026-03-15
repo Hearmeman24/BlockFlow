@@ -17,6 +17,7 @@ def get_settings() -> JSONResponse:
     return JSONResponse({
         "ok": True,
         "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_minimax_key": bool(config.MINIMAX_API_KEY),
         "settings": settings,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -32,6 +33,7 @@ async def save_settings(request: Request) -> JSONResponse:
     return JSONResponse({
         "ok": True,
         "has_api_key": bool(config.OPENROUTER_API_KEY),
+        "has_minimax_key": bool(config.MINIMAX_API_KEY),
         "settings": updated,
         "fanout_limits": {
             "max_variants": config.PROMPT_WRITER_FANOUT_MAX_VARIANTS,
@@ -41,8 +43,11 @@ async def save_settings(request: Request) -> JSONResponse:
 
 
 @router.get("/models")
-def get_models(refresh: int = Query(0)) -> JSONResponse:
-    models, error, from_cache = services._get_openrouter_models(refresh=bool(refresh))
+def get_models(refresh: int = Query(0), provider: str = Query("openrouter")) -> JSONResponse:
+    if provider == "minimax":
+        models, error, from_cache = services._get_minimax_models()
+    else:
+        models, error, from_cache = services._get_openrouter_models(refresh=bool(refresh))
     resp: dict[str, Any] = {"ok": True, "models": models, "from_cache": from_cache}
     if error:
         resp["warning"] = error
@@ -57,6 +62,7 @@ async def generate(request: Request) -> JSONResponse:
     user_prompt = str(payload.get("user_prompt") or "")
     temperature = float(payload.get("temperature", 0.9))
     max_tokens = int(payload.get("max_tokens", 600))
+    provider = str(payload.get("provider") or "openrouter")
 
     if not model:
         return JSONResponse({"ok": False, "error": "model is required"}, status_code=400)
@@ -68,13 +74,25 @@ async def generate(request: Request) -> JSONResponse:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_prompt})
 
+    # MiniMax requires temperature in (0.0, 1.0]
+    if provider == "minimax":
+        temperature = max(0.01, min(temperature, 1.0))
+
     try:
-        resp = services._openrouter_request_json("POST", "/chat/completions", {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }, timeout=120)
+        if provider == "minimax":
+            resp = services._minimax_request_json("POST", "/chat/completions", {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }, timeout=120)
+        else:
+            resp = services._openrouter_request_json("POST", "/chat/completions", {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }, timeout=120)
         text = services._extract_openrouter_completion_text(resp)
         return JSONResponse({"ok": True, "output_text": text})
     except Exception as e:

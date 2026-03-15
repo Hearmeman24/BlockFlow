@@ -186,6 +186,44 @@ def _extract_openrouter_completion_text(resp: dict[str, Any]) -> str:
     return ""
 
 
+MINIMAX_MODELS = [
+    {
+        "id": "MiniMax-M2.5",
+        "name": "MiniMax-M2.5",
+        "context_length": 204800,
+        "modality": "text->text",
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+    },
+    {
+        "id": "MiniMax-M2.5-highspeed",
+        "name": "MiniMax-M2.5-highspeed",
+        "context_length": 204800,
+        "modality": "text->text",
+        "input_modalities": ["text"],
+        "output_modalities": ["text"],
+    },
+]
+
+
+def _minimax_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {config.MINIMAX_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _minimax_request_json(method: str, path: str, payload: dict[str, Any] | None = None, timeout: int = 120) -> dict[str, Any]:
+    if not config.MINIMAX_API_KEY:
+        raise RuntimeError("MINIMAX_API_KEY is missing")
+    url = f"{config.MINIMAX_API_BASE.rstrip('/')}/{path.lstrip('/')}"
+    return _request_json_with_headers(method, url, _minimax_headers(), payload=payload, timeout=timeout)
+
+
+def _get_minimax_models() -> tuple[list[dict[str, Any]], str | None, bool]:
+    return list(MINIMAX_MODELS), None, False
+
+
 def _find_first_key(obj: Any, key: str) -> Any:
     if isinstance(obj, dict):
         if key in obj:

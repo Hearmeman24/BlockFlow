@@ -321,7 +321,13 @@ function CivitAIShareBlock({
       )}
 
       {status && status !== 'Ready' && (
-        <p className="text-[11px] text-muted-foreground">{status}</p>
+        <p className="text-[11px] text-muted-foreground">
+          {status.split(/(https?:\/\/\S+)/g).map((part, i) =>
+            /^https?:\/\//.test(part) ? (
+              <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="underline text-blue-400 hover:text-blue-300">{part}</a>
+            ) : part
+          )}
+        </p>
       )}
     </div>
   )

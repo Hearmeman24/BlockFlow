@@ -11,6 +11,7 @@ FLOWS_DIR = ROOT_DIR / "flows"
 FLOWS_DIR.mkdir(parents=True, exist_ok=True)
 JOB_HISTORY_PATH = ROOT_DIR / "job_history.json"
 PROMPT_WRITER_SETTINGS_PATH = ROOT_DIR / "prompt_writer_settings.json"
+PROMPT_LIBRARY_PATH = ROOT_DIR / "prompt_library.json"
 
 
 def _load_env_file(path: Path) -> None:
@@ -101,6 +102,8 @@ Z_IMAGE_LORA_SSH_CONNECT_TIMEOUT_SEC = int(
 )
 Z_IMAGE_LORA_LIST_CACHE_TTL_SEC = int(os.getenv("Z_IMAGE_LORA_LIST_CACHE_TTL_SEC", str(LORA_LIST_CACHE_TTL_SEC)))
 QWEN_IMAGE_ALWAYS_ON_LORA = os.getenv("QWEN_IMAGE_ALWAYS_ON_LORA", "Qwen-Image-Lightning-8steps-V1.0.safetensors").strip()
+
+COMFY_GEN_INFO_CACHE_PATH = ROOT_DIR / "comfy_gen_info_cache.json"
 
 ADVANCED_MODE = os.getenv("SGS_ADVANCED", "").strip().lower() in ("1", "true", "yes")
 

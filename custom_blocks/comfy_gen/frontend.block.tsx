@@ -33,7 +33,9 @@ const STATUS_ENDPOINT = '/api/blocks/comfy_gen/status'
 const CANCEL_ENDPOINT = '/api/blocks/comfy_gen/cancel'
 const PARSE_ENDPOINT = '/api/blocks/comfy_gen/parse-workflow'
 const EXTRACT_PNG_ENDPOINT = '/api/blocks/comfy_gen/extract-workflow-from-png'
-const LIST_LORAS_ENDPOINT = '/api/blocks/comfy_gen/list-loras'
+const CACHE_ENDPOINT = '/api/blocks/comfy_gen/cache'
+const REFRESH_CACHE_ENDPOINT = '/api/blocks/comfy_gen/refresh-cache'
+const REFRESH_STATUS_ENDPOINT = '/api/blocks/comfy_gen/refresh-status'
 
 interface LoadNode {
   node_id: string
@@ -55,6 +57,8 @@ interface KSamplerInfo {
   cfg?: number
   seed?: number
   denoise?: number
+  sampler_name?: string
+  scheduler?: string
 }
 
 interface TextOverrideInfo {
@@ -105,6 +109,8 @@ interface KSamplerOverride {
   steps: string
   cfg: string
   denoise: string
+  sampler_name: string
+  scheduler: string
 }
 
 interface LoraNodeInfo {
@@ -209,6 +215,7 @@ function ComfyGenBlock({
   setStatusMessage,
   setExecutionStatus,
   setOutputHint,
+  setHeaderActions,
 }: BlockComponentProps) {
   const { pipeline, addBlock, resetRuntimeFromBlock } = usePipeline()
 
@@ -237,30 +244,25 @@ function ComfyGenBlock({
   const [refVideoOverrides, setRefVideoOverrides] = useSessionState<Record<string, string>>(`block_${blockId}_ref_video_overrides`, {})
   const [loraNodes, setLoraNodes] = useSessionState<LoraNodeInfo[]>(`block_${blockId}_lora_nodes`, [])
   const [loraOverrides, setLoraOverrides] = useSessionState<Record<string, LoraOverride>>(`block_${blockId}_lora_overrides`, {})
-  const [availableLoras, setAvailableLoras] = useState<string[]>(() => {
-    try {
-      const cached = localStorage.getItem('comfygen_lora_cache')
-      if (cached) {
-        const parsed = JSON.parse(cached)
-        if (Array.isArray(parsed.loras)) return parsed.loras
-      }
-    } catch { /* ignore */ }
-    return []
-  })
-  const [lorasFetchedAt, setLorasFetchedAt] = useState<number>(() => {
-    try {
-      const cached = localStorage.getItem('comfygen_lora_cache')
-      if (cached) return JSON.parse(cached).fetched_at || 0
-    } catch { /* ignore */ }
-    return 0
-  })
-  const [lorasLoading, setLorasLoading] = useState(false)
-  const [lorasError, setLorasError] = useState('')
+  const [availableLoras, setAvailableLoras] = useState<string[]>([])
+  const [availableSamplers, setAvailableSamplers] = useState<string[]>([])
+  const [availableSchedulers, setAvailableSchedulers] = useState<string[]>([])
+  const [cacheFetchedAt, setCacheFetchedAt] = useState(0)
+  const [cacheRefreshing, setCacheRefreshing] = useState(false)
+  const [cacheStatus, setCacheStatus] = useState('')
+  const [cacheError, setCacheError] = useState('')
   const [outputType, setOutputType] = useSessionState(`block_${blockId}_output_type`, '')
   const [lockSeed, setLockSeed] = useSessionState(`block_${blockId}_lock_seed`, false)
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [workflowError, setWorkflowError] = useState('')
   const [cliMissing, setCliMissing] = useState<string | null>(null)
+
+  const applyCacheData = useCallback((d: { samplers?: string[]; schedulers?: string[]; loras?: string[]; fetched_at?: number }) => {
+    if (Array.isArray(d.samplers)) setAvailableSamplers(d.samplers)
+    if (Array.isArray(d.schedulers)) setAvailableSchedulers(d.schedulers)
+    if (Array.isArray(d.loras)) setAvailableLoras(d.loras)
+    if (d.fetched_at) setCacheFetchedAt(d.fetched_at)
+  }, [])
 
   // Restore output hint on mount when outputType is already known from session state
   useEffect(() => {
@@ -271,42 +273,83 @@ function ComfyGenBlock({
   const workflowFileRef = useRef<HTMLInputElement | null>(null)
   const pngFileRef = useRef<HTMLInputElement | null>(null)
 
-  // Check comfy-gen CLI availability on mount
+  // Load cached data and check CLI on mount
   useEffect(() => {
     fetch('/api/blocks/comfy_gen/health')
       .then((r) => r.json())
       .then((d) => { if (!d.ok) setCliMissing(d.error || 'comfy-gen CLI not available') })
       .catch(() => setCliMissing('Could not reach backend'))
-  }, [])
+    fetch(CACHE_ENDPOINT)
+      .then((r) => r.json())
+      .then((d) => { if (d.ok) applyCacheData(d) })
+      .catch(() => { /* ignore */ })
+  }, [applyCacheData])
 
-  const LORA_CACHE_TTL = 24 * 60 * 60 * 1000 // 24h in ms
-  const isLoraCacheStale = !lorasFetchedAt || (Date.now() - lorasFetchedAt * 1000) > LORA_CACHE_TTL
+  const pollRefreshStatus = useCallback(() => {
+    const poll = () => {
+      fetch(REFRESH_STATUS_ENDPOINT)
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.status) setCacheStatus(d.status)
+          if (d.done) {
+            setCacheRefreshing(false)
+            if (d.error) {
+              setCacheError(d.error)
+            } else {
+              applyCacheData(d)
+              setCacheError('')
+            }
+          } else {
+            setTimeout(poll, 2000)
+          }
+        })
+        .catch(() => {
+          setCacheRefreshing(false)
+          setCacheError('Lost connection while refreshing')
+        })
+    }
+    poll()
+  }, [applyCacheData])
 
-  const fetchLoras = useCallback((force = false) => {
-    setLorasLoading(true)
-    setLorasError('')
-    const eid = endpointId || ''
-    const params = new URLSearchParams()
-    if (eid) params.set('endpoint_id', eid)
-    if (force) params.set('force', 'true')
-    const qs = params.toString()
-    fetch(`${LIST_LORAS_ENDPOINT}${qs ? `?${qs}` : ''}`)
+  const refreshCache = useCallback(() => {
+    setCacheRefreshing(true)
+    setCacheError('')
+    setCacheStatus('Starting...')
+    fetch(REFRESH_CACHE_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint_id: endpointId || '' }),
+    })
       .then((r) => r.json())
       .then((d) => {
-        if (d.ok && Array.isArray(d.loras)) {
-          setAvailableLoras(d.loras)
-          const ts = d.fetched_at || Date.now() / 1000
-          setLorasFetchedAt(ts)
-          try {
-            localStorage.setItem('comfygen_lora_cache', JSON.stringify({ loras: d.loras, fetched_at: ts }))
-          } catch { /* ignore */ }
-        } else {
-          setLorasError(d.error || 'Failed to list LoRAs')
+        if (!d.ok) {
+          setCacheRefreshing(false)
+          setCacheError(d.error || 'Failed to start refresh')
+          return
         }
+        pollRefreshStatus()
       })
-      .catch((e) => setLorasError(String(e)))
-      .finally(() => setLorasLoading(false))
-  }, [endpointId])
+      .catch((e) => {
+        setCacheRefreshing(false)
+        setCacheError(String(e))
+      })
+  }, [endpointId, pollRefreshStatus])
+
+  // Push sync button into block header
+  useEffect(() => {
+    setHeaderActions?.(
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-5 px-1.5 text-[10px] text-muted-foreground hover:text-foreground gap-1"
+        onClick={refreshCache}
+        disabled={cacheRefreshing}
+      >
+        <svg className={`w-3 h-3 ${cacheRefreshing ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+        {cacheRefreshing ? (cacheStatus || 'Syncing…') : 'Sync'}
+      </Button>
+    )
+  }, [setHeaderActions, refreshCache, cacheRefreshing, cacheStatus])
 
   // Prompt binding for upstream text override
   // Filter to only show blocks that output a port named "prompt" (not generic text like URLs)
@@ -394,6 +437,8 @@ function ComfyGenBlock({
             steps: ks.steps != null ? String(ks.steps) : '',
             cfg: ks.cfg != null ? String(ks.cfg) : '',
             denoise: ks.denoise != null ? String(ks.denoise) : '',
+            sampler_name: ks.sampler_name ?? '',
+            scheduler: ks.scheduler ?? '',
           }
         }
         setKsamplerOverrides(initOverrides)
@@ -507,6 +552,8 @@ function ComfyGenBlock({
               steps: prev[ks.node_id]?.steps ?? (ks.steps != null ? String(ks.steps) : ''),
               cfg: prev[ks.node_id]?.cfg ?? (ks.cfg != null ? String(ks.cfg) : ''),
               denoise: prev[ks.node_id]?.denoise ?? (ks.denoise != null ? String(ks.denoise) : ''),
+              sampler_name: prev[ks.node_id]?.sampler_name ?? (ks.sampler_name ?? ''),
+              scheduler: prev[ks.node_id]?.scheduler ?? (ks.scheduler ?? ''),
             }
           }
           return merged
@@ -701,6 +748,8 @@ function ComfyGenBlock({
         if (ov?.steps?.trim()) overrides[`${ks.node_id}.steps`] = ov.steps.trim()
         if (ov?.cfg?.trim()) overrides[`${ks.node_id}.cfg`] = ov.cfg.trim()
         if (ov?.denoise?.trim()) overrides[`${ks.node_id}.denoise`] = ov.denoise.trim()
+        if (ov?.sampler_name?.trim()) overrides[`${ks.node_id}.sampler_name`] = ov.sampler_name.trim()
+        if (ov?.scheduler?.trim()) overrides[`${ks.node_id}.scheduler`] = ov.scheduler.trim()
       }
       for (const rn of resolutionNodes) {
         const ov = resolutionOverrides[rn.node_id]
@@ -1022,7 +1071,7 @@ function ComfyGenBlock({
           badge={frameCounts.length > 1 ? `${frameCounts.length} nodes` : undefined}
         >
           {frameCounts.map((fc) => (
-            <div key={fc.node_id} className="space-y-1">
+            <div key={fc.node_id} className="space-y-1 w-32">
               <span className="text-[10px] text-muted-foreground">
                 {fc.label} <span className="text-muted-foreground/50">(4n+1)</span>
               </span>
@@ -1106,8 +1155,8 @@ function ComfyGenBlock({
               {ksamplers.length > 1 && (
                 <span className="text-[10px] text-muted-foreground">#{ks.node_id} {ks.class_type}</span>
               )}
-              <div className="flex items-center gap-2">
-                <div className="flex-1 space-y-0.5">
+              <div className="grid grid-cols-3 gap-2">
+                <div className="space-y-0.5">
                   <span className="text-[10px] text-muted-foreground">Steps</span>
                   <Input
                     type="number"
@@ -1120,7 +1169,7 @@ function ComfyGenBlock({
                     className="h-7 text-xs"
                   />
                 </div>
-                <div className="flex-1 space-y-0.5">
+                <div className="space-y-0.5">
                   <span className="text-[10px] text-muted-foreground">CFG</span>
                   <Input
                     type="number"
@@ -1134,7 +1183,7 @@ function ComfyGenBlock({
                     className="h-7 text-xs"
                   />
                 </div>
-                <div className="flex-1 space-y-0.5">
+                <div className="space-y-0.5">
                   <span className="text-[10px] text-muted-foreground">Denoise</span>
                   <Input
                     type="number"
@@ -1149,6 +1198,52 @@ function ComfyGenBlock({
                     placeholder={ks.denoise != null ? String(ks.denoise) : '—'}
                     className="h-7 text-xs"
                   />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-0.5 min-w-0">
+                  <span className="text-[10px] text-muted-foreground">Sampler</span>
+                  <Select
+                    value={ksamplerOverrides[ks.node_id]?.sampler_name || ks.sampler_name || ''}
+                    onValueChange={(v) => setKsamplerOverrides((prev) => ({
+                      ...prev,
+                      [ks.node_id]: { ...prev[ks.node_id], sampler_name: v },
+                    }))}
+                  >
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue placeholder={ks.sampler_name || '—'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(availableSamplers.length > 0
+                        ? availableSamplers
+                        : ks.sampler_name ? [ks.sampler_name] : []
+                      ).map((s) => (
+                        <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-0.5 min-w-0">
+                  <span className="text-[10px] text-muted-foreground">Scheduler</span>
+                  <Select
+                    value={ksamplerOverrides[ks.node_id]?.scheduler || ks.scheduler || ''}
+                    onValueChange={(v) => setKsamplerOverrides((prev) => ({
+                      ...prev,
+                      [ks.node_id]: { ...prev[ks.node_id], scheduler: v },
+                    }))}
+                  >
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue placeholder={ks.scheduler || '—'} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(availableSchedulers.length > 0
+                        ? availableSchedulers
+                        : ks.scheduler ? [ks.scheduler] : []
+                      ).map((s) => (
+                        <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </div>
@@ -1169,42 +1264,7 @@ function ComfyGenBlock({
             const enabledCount = loraNodes.filter((ln) => loraOverrides[ln.node_id]?.enabled !== false).length
             return enabledCount === loraNodes.length ? `${loraNodes.length}` : `${enabledCount}/${loraNodes.length}`
           })()}
-          trailing={
-            <div className="flex items-center gap-2">
-              {lorasFetchedAt > 0 && (
-                <span className="text-[10px] text-muted-foreground">
-                  {new Date(lorasFetchedAt * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' })}{' '}
-                  {new Date(lorasFetchedAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() => fetchLoras(true)}
-                disabled={lorasLoading}
-                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-              >
-                {lorasLoading ? 'Loading...' : (availableLoras.length > 0 ? 'Refresh' : 'Load list')}
-              </button>
-            </div>
-          }
         >
-          {lorasLoading && (
-            <p className="text-[10px] text-muted-foreground animate-pulse">
-              Fetching LoRA list from RunPod... This spawns a small job and may take up to 90s.
-            </p>
-          )}
-          {lorasError && (
-            <p className="text-[10px] text-red-400">{lorasError}</p>
-          )}
-          {!lorasLoading && availableLoras.length === 0 && isLoraCacheStale && (
-            <button
-              type="button"
-              onClick={() => fetchLoras(false)}
-              className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
-            >
-              Fetch available LoRAs from endpoint (spawns a small RunPod job, up to 90s)
-            </button>
-          )}
           {loraNodes.map((ln) => {
             const ov = loraOverrides[ln.node_id]
             const hasClip = ln.class_type === 'LoraLoader'
@@ -1262,43 +1322,41 @@ function ComfyGenBlock({
                     }`} />
                   </button>
                 </div>
-                <div className={isEnabled ? '' : 'opacity-50 pointer-events-none'}>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 space-y-0.5">
-                      <span className="text-[10px] text-muted-foreground">Model</span>
+                <div className={`flex items-center gap-2 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                  <div className="space-y-0.5 w-20">
+                    <span className="text-[10px] text-muted-foreground">Model</span>
+                    <Input
+                      type="number"
+                      step="0.05"
+                      min="0"
+                      max="2"
+                      value={ov?.strength_model ?? ''}
+                      onChange={(e) => setLoraOverrides((prev) => ({
+                        ...prev,
+                        [ln.node_id]: { ...prev[ln.node_id], strength_model: e.target.value },
+                      }))}
+                      placeholder={ln.strength_model != null ? String(ln.strength_model) : '1'}
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                  {hasClip && (
+                    <div className="space-y-0.5 w-20">
+                      <span className="text-[10px] text-muted-foreground">CLIP</span>
                       <Input
                         type="number"
                         step="0.05"
                         min="0"
                         max="2"
-                        value={ov?.strength_model ?? ''}
+                        value={ov?.strength_clip ?? ''}
                         onChange={(e) => setLoraOverrides((prev) => ({
                           ...prev,
-                          [ln.node_id]: { ...prev[ln.node_id], strength_model: e.target.value },
+                          [ln.node_id]: { ...prev[ln.node_id], strength_clip: e.target.value },
                         }))}
-                        placeholder={ln.strength_model != null ? String(ln.strength_model) : '1'}
+                        placeholder={ln.strength_clip != null ? String(ln.strength_clip) : '1'}
                         className="h-7 text-xs"
                       />
                     </div>
-                    {hasClip && (
-                      <div className="flex-1 space-y-0.5">
-                        <span className="text-[10px] text-muted-foreground">CLIP</span>
-                        <Input
-                          type="number"
-                          step="0.05"
-                          min="0"
-                          max="2"
-                          value={ov?.strength_clip ?? ''}
-                          onChange={(e) => setLoraOverrides((prev) => ({
-                            ...prev,
-                            [ln.node_id]: { ...prev[ln.node_id], strength_clip: e.target.value },
-                          }))}
-                          placeholder={ln.strength_clip != null ? String(ln.strength_clip) : '1'}
-                          className="h-7 text-xs"
-                        />
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
               </div>
             )

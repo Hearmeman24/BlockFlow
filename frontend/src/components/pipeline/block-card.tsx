@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
@@ -157,6 +157,8 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
     [block.id, setOutputHint],
   )
 
+  const [headerActions, setHeaderActions] = useState<ReactNode>(null)
+
   const cardClasses = isDisabled
     ? `flex flex-col shrink-0 overflow-hidden border-2 border-dashed ${sizeClass.width} ${sizeClass.minHeight} opacity-50 ${borderColor} panningDisabled wheelDisabled`
     : [
@@ -199,6 +201,7 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
               {blockIterState.currentIndex + 1}/{blockIterState.totalCount}
             </span>
           )}
+          {headerActions}
           {/* Toggle disable/enable */}
           <Button
             variant="ghost"
@@ -312,6 +315,7 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
               setStatusMessage={handleSetStatusMessage}
               setExecutionStatus={handleSetExecutionStatus}
               setOutputHint={handleSetOutputHint}
+              setHeaderActions={setHeaderActions}
             />
           </CardContent>
         </>

@@ -53,6 +53,8 @@ export interface BlockComponentProps {
    *  Used to narrow the add-block menu for blocks with multiple output kinds.
    *  Call with empty string to clear the hint. */
   setOutputHint?: (activePortName: string) => void
+  /** Inject custom action elements into the block card header (next to bypass/remove icons). */
+  setHeaderActions?: (node: React.ReactNode) => void
 }
 
 export interface BlockExecuteResult {

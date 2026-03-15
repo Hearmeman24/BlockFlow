@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import random
+import string
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -178,3 +182,77 @@ def api_file_metadata(filename: str) -> JSONResponse:
     if not meta:
         return JSONResponse({"ok": False, "has_meta": False})
     return JSONResponse({"ok": True, "has_meta": True, "meta": meta})
+
+
+# ---------------------------------------------------------------------------
+# Prompt library
+# ---------------------------------------------------------------------------
+
+_prompt_library_lock = threading.Lock()
+
+
+def _read_prompt_library() -> list[dict[str, Any]]:
+    path = config.PROMPT_LIBRARY_PATH
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception:
+        return []
+
+
+def _write_prompt_library(prompts: list[dict[str, Any]]) -> None:
+    config.PROMPT_LIBRARY_PATH.write_text(
+        json.dumps(prompts, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+    )
+
+
+@router.get("/api/prompt-library")
+def api_prompt_library_list() -> JSONResponse:
+    with _prompt_library_lock:
+        prompts = _read_prompt_library()
+    return JSONResponse({"ok": True, "prompts": prompts})
+
+
+@router.post("/api/prompt-library")
+def api_prompt_library_create(payload: dict[str, Any]) -> JSONResponse:
+    name = payload.get("name")
+    ptype = payload.get("type")
+    content = payload.get("content")
+
+    if not name or not isinstance(name, str):
+        return JSONResponse({"ok": False, "error": "name is required"}, status_code=400)
+    if ptype not in ("system", "user"):
+        return JSONResponse({"ok": False, "error": "type must be 'system' or 'user'"}, status_code=400)
+    if not content or not isinstance(content, str):
+        return JSONResponse({"ok": False, "error": "content is required"}, status_code=400)
+
+    suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+    prompt: dict[str, Any] = {
+        "id": f"prompt-{int(time.time())}-{suffix}",
+        "name": name,
+        "type": ptype,
+        "content": content,
+        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+    with _prompt_library_lock:
+        prompts = _read_prompt_library()
+        prompts.append(prompt)
+        _write_prompt_library(prompts)
+
+    return JSONResponse({"ok": True, "prompt": prompt})
+
+
+@router.delete("/api/prompt-library/{prompt_id}")
+def api_prompt_library_delete(prompt_id: str) -> JSONResponse:
+    with _prompt_library_lock:
+        prompts = _read_prompt_library()
+        new_prompts = [p for p in prompts if p.get("id") != prompt_id]
+        if len(new_prompts) == len(prompts):
+            return JSONResponse({"ok": False, "error": "prompt not found"}, status_code=404)
+        _write_prompt_library(new_prompts)
+    return JSONResponse({"ok": True})

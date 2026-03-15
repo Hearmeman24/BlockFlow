@@ -21,6 +21,159 @@ from backend import config, media_meta, state, services
 router = APIRouter()
 
 
+# ---------------------------------------------------------------------------
+# comfy-gen cache (samplers, schedulers, loras)
+# ---------------------------------------------------------------------------
+
+_cache: dict[str, Any] = {"samplers": [], "schedulers": [], "loras": [], "fetched_at": 0}
+
+
+def _read_cache_from_disk() -> None:
+    """Load cached data from disk into memory (no CLI calls)."""
+    cache_path = config.COMFY_GEN_INFO_CACHE_PATH
+    if not cache_path.exists():
+        return
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        if data.get("samplers"):
+            _cache["samplers"] = data["samplers"]
+        if data.get("schedulers"):
+            _cache["schedulers"] = data["schedulers"]
+        if data.get("loras"):
+            _cache["loras"] = data["loras"]
+        if data.get("fetched_at"):
+            _cache["fetched_at"] = data["fetched_at"]
+    except Exception:
+        pass
+
+
+def _save_cache_to_disk() -> None:
+    config.COMFY_GEN_INFO_CACHE_PATH.write_text(
+        json.dumps({
+            "samplers": _cache["samplers"],
+            "schedulers": _cache["schedulers"],
+            "loras": _cache["loras"],
+            "fetched_at": _cache["fetched_at"],
+        }, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+# Load from disk at import time (no CLI calls)
+_read_cache_from_disk()
+
+
+@router.get("/cache")
+def get_cache() -> JSONResponse:
+    """Return cached samplers, schedulers, and loras."""
+    return JSONResponse({
+        "ok": True,
+        "samplers": _cache["samplers"],
+        "schedulers": _cache["schedulers"],
+        "loras": _cache["loras"],
+        "fetched_at": _cache["fetched_at"],
+    })
+
+
+import threading
+
+_refresh_state: dict[str, Any] = {"running": False, "status": "", "error": "", "done": False}
+_refresh_lock = threading.Lock()
+
+
+def _run_refresh(cmd: list[str]) -> None:
+    """Run comfy-gen info in a thread, streaming stderr lines to _refresh_state."""
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # Stream stderr for live status
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            line = line.strip()
+            if line:
+                _refresh_state["status"] = line
+        proc.wait(timeout=90)
+
+        if proc.returncode != 0:
+            stdout = proc.stdout.read() if proc.stdout else ""
+            _refresh_state["error"] = stdout.strip() or "comfy-gen info failed"
+            _refresh_state["done"] = True
+            _refresh_state["running"] = False
+            return
+
+        stdout = proc.stdout.read() if proc.stdout else ""
+        data = json.loads(stdout)
+        if not data.get("ok"):
+            _refresh_state["error"] = data.get("error", "comfy-gen info returned not ok")
+            _refresh_state["done"] = True
+            _refresh_state["running"] = False
+            return
+
+        _cache["samplers"] = data.get("samplers", [])
+        _cache["schedulers"] = data.get("schedulers", [])
+        loras = data.get("loras", [])
+        _cache["loras"] = [l["filename"] for l in loras if isinstance(l, dict) and "filename" in l]
+        _cache["fetched_at"] = time.time()
+        _save_cache_to_disk()
+        _refresh_state["status"] = f"Done — {len(_cache['samplers'])} samplers, {len(_cache['schedulers'])} schedulers, {len(_cache['loras'])} loras"
+
+    except subprocess.TimeoutExpired:
+        _refresh_state["error"] = "comfy-gen info timed out (90s)"
+        if proc:
+            proc.kill()
+    except Exception as e:
+        _refresh_state["error"] = str(e)
+    finally:
+        _refresh_state["done"] = True
+        _refresh_state["running"] = False
+
+
+@router.post("/refresh-cache")
+def refresh_cache(payload: dict[str, Any] = {}) -> JSONResponse:
+    """Start comfy-gen info in background, returns immediately."""
+    import shutil
+
+    with _refresh_lock:
+        if _refresh_state["running"]:
+            return JSONResponse({"ok": True, "already_running": True})
+
+        if not shutil.which("comfy-gen"):
+            return JSONResponse({"ok": False, "error": "comfy-gen CLI not found on PATH"})
+
+        eid = str(payload.get("endpoint_id", "")).strip() or config.RUNPOD_ENDPOINT_ID or ""
+        cmd = ["comfy-gen", "info"]
+        if eid:
+            cmd.extend(["--endpoint-id", eid])
+
+        _refresh_state["running"] = True
+        _refresh_state["done"] = False
+        _refresh_state["error"] = ""
+        _refresh_state["status"] = "Starting comfy-gen info..."
+
+        t = threading.Thread(target=_run_refresh, args=(cmd,), daemon=True)
+        t.start()
+
+    return JSONResponse({"ok": True, "started": True})
+
+
+@router.get("/refresh-status")
+def refresh_status() -> JSONResponse:
+    """Poll refresh progress."""
+    return JSONResponse({
+        "ok": True,
+        "running": _refresh_state["running"],
+        "done": _refresh_state["done"],
+        "status": _refresh_state["status"],
+        "error": _refresh_state["error"],
+        # Include cache data when done so frontend can update in one call
+        **({
+            "samplers": _cache["samplers"],
+            "schedulers": _cache["schedulers"],
+            "loras": _cache["loras"],
+            "fetched_at": _cache["fetched_at"],
+        } if _refresh_state["done"] and not _refresh_state["error"] else {}),
+    })
+
+
 @router.get("/health")
 def health_check() -> JSONResponse:
     """Check if comfy-gen CLI is installed and reachable."""
@@ -41,43 +194,6 @@ def health_check() -> JSONResponse:
     return JSONResponse({"ok": True, "path": path})
 
 
-_lora_cache: dict[str, Any] = {"loras": [], "fetched_at": 0}
-_LORA_CACHE_TTL = 24 * 60 * 60  # 24 hours
-
-
-@router.get("/list-loras")
-def list_loras(endpoint_id: str = "", force: bool = False) -> JSONResponse:
-    """List available LoRA files on the remote endpoint via comfy-gen CLI.
-
-    Cached for 24h. Pass force=true to bypass cache.
-    """
-    now = time.time()
-    if not force and _lora_cache["loras"] and (now - _lora_cache["fetched_at"]) < _LORA_CACHE_TTL:
-        return JSONResponse({
-            "ok": True,
-            "loras": _lora_cache["loras"],
-            "fetched_at": _lora_cache["fetched_at"],
-            "cached": True,
-        })
-
-    cmd = ["comfy-gen", "list", "loras"]
-    eid = endpoint_id.strip() or config.RUNPOD_ENDPOINT_ID or ""
-    if eid:
-        cmd.extend(["--endpoint-id", eid])
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-        if result.returncode != 0:
-            return JSONResponse({"ok": False, "error": result.stdout.strip() or result.stderr.strip()})
-        data = json.loads(result.stdout)
-        files = data.get("files", [])
-        filenames = [f["filename"] for f in files if isinstance(f, dict) and "filename" in f]
-        _lora_cache["loras"] = filenames
-        _lora_cache["fetched_at"] = now
-        return JSONResponse({"ok": True, "loras": filenames, "fetched_at": now, "cached": False})
-    except subprocess.TimeoutExpired:
-        return JSONResponse({"ok": False, "error": "Timed out listing LoRAs (90s). The RunPod worker may still be starting up — try again shortly."})
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)})
 
 
 # ---- Workflow parsing ----
@@ -131,8 +247,23 @@ def _detect_load_nodes(workflow: dict[str, Any]) -> list[dict[str, Any]]:
     return nodes
 
 
+def _resolve_input(workflow: dict[str, Any], value: Any) -> Any:
+    """Follow a wired input reference [node_id, output_index] to its literal value."""
+    if not isinstance(value, list) or len(value) != 2:
+        return value
+    src_id, _ = value
+    src_node = workflow.get(str(src_id))
+    if not isinstance(src_node, dict):
+        return value
+    src_inputs = src_node.get("inputs", {})
+    # Primitive nodes store their value in a "value" field
+    if "value" in src_inputs:
+        return src_inputs["value"]
+    return value
+
+
 def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
-    """Find KSampler nodes with their steps/cfg/seed/denoise values."""
+    """Find KSampler nodes with their steps/cfg/seed/denoise/sampler/scheduler values."""
     samplers = []
     for node_id, node in workflow.items():
         if not isinstance(node, dict):
@@ -145,19 +276,25 @@ def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
             "node_id": node_id,
             "class_type": class_type,
         }
-        # Only include literal (non-wired) values
-        steps = inputs.get("steps")
+        # Resolve literal or wired values
+        steps = _resolve_input(workflow, inputs.get("steps"))
         if isinstance(steps, (int, float)):
             entry["steps"] = int(steps)
-        cfg = inputs.get("cfg")
+        cfg = _resolve_input(workflow, inputs.get("cfg"))
         if isinstance(cfg, (int, float)):
             entry["cfg"] = cfg
-        seed = inputs.get("seed")
+        seed = _resolve_input(workflow, inputs.get("seed"))
         if isinstance(seed, (int, float)):
             entry["seed"] = int(seed)
-        denoise = inputs.get("denoise")
+        denoise = _resolve_input(workflow, inputs.get("denoise"))
         if isinstance(denoise, (int, float)):
             entry["denoise"] = round(float(denoise), 3)
+        sampler_name = inputs.get("sampler_name")
+        if isinstance(sampler_name, str):
+            entry["sampler_name"] = sampler_name
+        scheduler = inputs.get("scheduler")
+        if isinstance(scheduler, str):
+            entry["scheduler"] = scheduler
         samplers.append(entry)
     return samplers
 

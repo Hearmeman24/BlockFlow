@@ -20,6 +20,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { usePromptLibrary } from '@/lib/use-prompt-library'
+import { PromptPickerDropdown, AddPromptDialog } from '@/components/prompt-library-dialog'
 import {
   PORT_TEXT,
   type BlockDef,
@@ -160,6 +162,10 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
     max_variants: DEFAULT_MAX_VARIANTS,
     max_parallel: DEFAULT_MAX_PARALLEL,
   })
+  const { systemPrompts, userPrompts, addPrompt, deletePrompt } = usePromptLibrary()
+  const [addDialogOpen, setAddDialogOpen] = useState(false)
+  const [addDialogType, setAddDialogType] = useState<'system' | 'user'>('user')
+  const [addDialogContent, setAddDialogContent] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -367,40 +373,23 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
         <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
       )}
 
-      <div className="flex gap-2 items-end">
-        <div className="space-y-1.5 w-[120px]">
-          <Label className="text-xs">Mode</Label>
-          <Select value={s.mode} onValueChange={(v) => updateLocal({ mode: v as WriterMode })}>
-            <SelectTrigger className="w-full h-8 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="video">Video</SelectItem>
-              <SelectItem value="image">Image</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5 flex-1 min-w-0">
-          <Label className="text-xs">Model</Label>
-          <Select value={s.model} onValueChange={(v) => updateLocal({ model: v })}>
-            <SelectTrigger className="w-full h-8 text-xs">
-              <SelectValue placeholder={models.length ? 'Select model' : '(loading...)'} />
-            </SelectTrigger>
-            <SelectContent>
-              {models.map((m) => (
-                <SelectItem key={m.id} value={m.id} className="text-xs">
-                  {m.id}{m.context_length ? ` | ctx ${m.context_length}` : ''}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <Button variant="outline" size="sm" className="shrink-0 h-8 text-xs" onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving...' : 'Save'}
-        </Button>
+      <div className="space-y-1.5">
+        <Label className="text-xs">Model</Label>
+        <Select value={s.model} onValueChange={(v) => updateLocal({ model: v })}>
+          <SelectTrigger className="w-full h-8 text-xs">
+            <SelectValue placeholder={models.length ? 'Select model' : '(loading...)'} />
+          </SelectTrigger>
+          <SelectContent>
+            {models.map((m) => (
+              <SelectItem key={m.id} value={m.id} className="text-xs">
+                {m.id}{m.context_length ? ` | ctx ${m.context_length}` : ''}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <Label className="text-xs">Temperature</Label>
           <Input type="number" step={0.05} min={0} max={2} value={s.temperature}
@@ -413,33 +402,27 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
             onChange={(e) => updateLocal({ max_tokens: Number(e.target.value) })}
             className="h-8 text-xs" />
         </div>
-        <div className="space-y-1">
-          <Label className="text-xs">Variants</Label>
-          <Input
-            type="number"
-            step={1}
-            min={1}
-            max={maxVariants}
-            value={uiVariants}
-            onChange={(e) => {
-              const next = clampInt(Number(e.target.value), 1, maxVariants)
-              setVariants(next)
-            }}
-            className="h-8 text-xs"
-          />
-        </div>
       </div>
 
       <Collapsible open={systemPromptOpen} onOpenChange={setSystemPromptOpen}>
-        <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium cursor-pointer hover:text-foreground/80">
-          <span className="text-[10px]">{systemPromptOpen ? '\u25BE' : '\u25B8'}</span>
-          System Prompt
-          {activeSystemPrompt && !systemPromptOpen && (
-            <span className="text-[10px] text-muted-foreground font-normal ml-1 truncate max-w-[180px]">
-              — {activeSystemPrompt.slice(0, 40)}{activeSystemPrompt.length > 40 ? '...' : ''}
-            </span>
-          )}
-        </CollapsibleTrigger>
+        <div className="flex items-center justify-between">
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs font-medium cursor-pointer hover:text-foreground/80">
+            <span className="text-[10px]">{systemPromptOpen ? '\u25BE' : '\u25B8'}</span>
+            System Prompt
+            {activeSystemPrompt && !systemPromptOpen && (
+              <span className="text-[10px] text-muted-foreground font-normal ml-1 truncate max-w-[180px]">
+                — {activeSystemPrompt.slice(0, 40)}{activeSystemPrompt.length > 40 ? '...' : ''}
+              </span>
+            )}
+          </CollapsibleTrigger>
+          <div className="flex items-center gap-1">
+            {activeSystemPrompt?.trim() && (
+              <button type="button" onClick={() => { setAddDialogType('system'); setAddDialogContent(activeSystemPrompt); setAddDialogOpen(true) }}
+                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors">Save</button>
+            )}
+            <PromptPickerDropdown prompts={systemPrompts} onSelect={(content) => updateLocal({ system_prompt: content })} onDelete={deletePrompt} />
+          </div>
+        </div>
         <CollapsibleContent>
           <Textarea value={activeSystemPrompt}
             onChange={(e) => updateLocal({ system_prompt: e.target.value })}
@@ -448,7 +431,16 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       </Collapsible>
 
       <div className="space-y-1">
-        <Label className="text-xs">User Prompt</Label>
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">User Prompt</Label>
+          <div className="flex items-center gap-1">
+            {userPrompt?.trim() && (
+              <button type="button" onClick={() => { setAddDialogType('user'); setAddDialogContent(userPrompt); setAddDialogOpen(true) }}
+                className="text-[10px] text-muted-foreground hover:text-foreground transition-colors">Save</button>
+            )}
+            <PromptPickerDropdown prompts={userPrompts} onSelect={setUserPrompt} onDelete={deletePrompt} />
+          </div>
+        </div>
         <Textarea value={userPrompt} onChange={(e) => setUserPrompt(e.target.value)}
           placeholder={
             s.mode === 'image'
@@ -457,6 +449,9 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
           }
           className="min-h-[60px] resize-y text-xs" />
       </div>
+
+      <AddPromptDialog open={addDialogOpen} onOpenChange={setAddDialogOpen}
+        onSave={addPrompt} defaultType={addDialogType} defaultContent={addDialogContent} />
 
       {output && (
         <div className="space-y-1">

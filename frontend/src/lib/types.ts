@@ -130,6 +130,7 @@ export interface RunEntry {
   flow_snapshot: Record<string, unknown>
   block_results: BlockResult[]
   created_at: string
+  favorited?: boolean
 }
 
 export type JobStatus = Job['status']

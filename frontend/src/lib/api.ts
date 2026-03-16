@@ -20,8 +20,15 @@ export async function saveRun(run: RunEntry) {
   return res.json()
 }
 
-export async function fetchRuns(limit = 50, offset = 0) {
-  const res = await fetch(`${BASE}/api/runs?limit=${limit}&offset=${offset}`)
+export async function fetchRuns(limit = 50, offset = 0, favorited = false) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (favorited) params.set('favorited', 'true')
+  const res = await fetch(`${BASE}/api/runs?${params}`)
+  return res.json()
+}
+
+export async function toggleRunFavorite(id: string) {
+  const res = await fetch(`${BASE}/api/runs/${encodeURIComponent(id)}/favorite`, { method: 'PATCH' })
   return res.json()
 }
 

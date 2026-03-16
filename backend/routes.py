@@ -140,9 +140,9 @@ def api_flows_save(payload: dict[str, Any]) -> JSONResponse:
 
 
 @router.get("/api/runs")
-def api_runs_list(limit: int = Query(50), offset: int = Query(0)) -> JSONResponse:
-    total = db.count_runs()
-    runs = db.list_runs(limit=limit, offset=offset)
+def api_runs_list(limit: int = Query(50), offset: int = Query(0), favorited: bool = Query(False)) -> JSONResponse:
+    total = db.count_runs(favorited_only=favorited)
+    runs = db.list_runs(limit=limit, offset=offset, favorited_only=favorited)
     return JSONResponse({"ok": True, "runs": runs, "total": total, "limit": limit, "offset": offset})
 
 
@@ -162,6 +162,14 @@ def api_runs_create(payload: dict[str, Any]) -> JSONResponse:
         return JSONResponse({"ok": False, "error": f"missing fields: {', '.join(missing)}"}, status_code=400)
     db.save_run(payload)
     return JSONResponse({"ok": True})
+
+
+@router.patch("/api/runs/{run_id}/favorite")
+def api_run_toggle_favorite(run_id: str) -> JSONResponse:
+    result = db.toggle_run_favorited(run_id)
+    if result is None:
+        return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
+    return JSONResponse({"ok": True, "favorited": result})
 
 
 @router.delete("/api/runs/{run_id}")

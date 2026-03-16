@@ -36,11 +36,7 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
   const prevKeyRef = useRef('')
 
   const currentUrls = imageUrls.length > 0 ? imageUrls : ownOutputUrls
-  const displayUrls = accumulatedUrls.length > 0
-    ? (currentUrls.length === 1 && !accumulatedUrls.includes(currentUrls[0])
-        ? [...accumulatedUrls, currentUrls[0]]
-        : (currentUrls.length > 1 ? currentUrls : accumulatedUrls))
-    : currentUrls
+  const displayUrls = accumulatedUrls.length > 0 ? accumulatedUrls : currentUrls
   const isStale = !isLooping && currentUrls.length === 0 && accumulatedUrls.length > 0
 
   useEffect(() => {
@@ -48,16 +44,12 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
     if (key && key !== prevKeyRef.current) {
       prevKeyRef.current = key
       setAccumulatedUrls((prev) => {
-        if (currentUrls.length > 1) {
-          setSelectedIndex(currentUrls.length - 1)
-          return currentUrls
-        }
-        if (currentUrls.length === 1) {
-          if (prev.includes(currentUrls[0])) return prev
-          setSelectedIndex(prev.length) // index of the newly appended item
-          return [...prev, currentUrls[0]]
-        }
-        return prev
+        // Filter out URLs already in the accumulated list
+        const newUrls = currentUrls.filter((u) => !prev.includes(u))
+        if (newUrls.length === 0) return prev
+        const merged = [...prev, ...newUrls]
+        setSelectedIndex(merged.length - 1)
+        return merged
       })
     }
   }, [currentUrls])

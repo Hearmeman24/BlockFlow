@@ -5,7 +5,7 @@ import { RunHistory } from '@/components/run-history'
 
 function ArtifactsInner() {
   return (
-    <main className="mx-auto max-w-6xl px-4 py-6">
+    <main className="mx-auto max-w-6xl px-4 pt-20 pb-6">
       <RunHistory />
     </main>
   )

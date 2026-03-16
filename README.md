@@ -128,7 +128,7 @@ Blocks connect automatically based on compatible data types (text, image, video,
 
 | Block | Description |
 |-------|-------------|
-| **Prompt Writer** | Generate prompts using an LLM. Supports video and image modes with custom system prompts. Can produce multiple prompt variants in parallel. |
+| **Prompt Writer** | Generate prompts using an LLM. Supports video and image modes with custom system prompts. Multiple user prompts supported — the pipeline iterates downstream once per generated prompt. |
 | **I2V Prompt Writer** | Generate a video prompt from an input image using a vision LLM. Specialized for image-to-video transitions. |
 | **Upload Image** | Upload a local image file or provide a URL. |
 | **Video Loader** | Load videos from URLs, local paths, or file upload. |
@@ -137,7 +137,7 @@ Blocks connect automatically based on compatible data types (text, image, video,
 
 | Block | Description |
 |-------|-------------|
-| **ComfyUI Gen** | Run any ComfyUI workflow on RunPod serverless. Load workflows from JSON or extract from PNG metadata. Supports resolution, seed, prompt, and frame count overrides. Auto-detects LoRA loaders with per-LoRA enable/disable toggle, name swap, and strength controls. |
+| **ComfyUI Gen** | Run any ComfyUI workflow on RunPod serverless. Load workflows from JSON or extract from PNG metadata. Supports resolution, seed, prompt, and frame count overrides. Auto-detects LoRA loaders with per-LoRA enable/disable toggle, name swap, and strength sliders. **Automation mode**: sweep multiple values (samplers, schedulers, LoRAs, strengths, CFG, steps, prompts) with cartesian product — runs all combinations in parallel with a sliding window executor. **Missing model detection**: auto-detects missing models and offers one-click download to the endpoint. |
 
 ### Viewing
 
@@ -166,9 +166,11 @@ Blocks connect automatically based on compatible data types (text, image, video,
 - **Loop mode** — Run a pipeline endlessly until stopped. Click "Loop" instead of "Run" to auto-repeat. Stops automatically on error. Pipelines with Human-in-the-Loop blocks are ineligible.
 - **Job manager** — When 2+ pipelines are running, a floating panel appears showing each running tab's name, current block, and a per-tab stop button.
 - **Branching** — Fork a pipeline into multiple parallel chains from any block.
+- **Iterator blocks** — Blocks like Upload Image, Prompt Writer, and ComfyUI Gen can produce multiple outputs. The pipeline automatically loops downstream once per item, accumulating results across iterations.
 - **Continue mode** — After a run completes, add more blocks and click "Continue" to pick up where you left off.
 - **Save / Load** — Export pipelines as JSON files and reload them later via File menu.
 - **Auto-fit** — Layout controls (auto-fit, expand all, reduce all) at the bottom of the canvas.
+- **Artifacts** — Browse run history with favorites, per-image metadata (synced with gallery navigation), and expandable sub-viewer outputs. Restore any past run as a new tab.
 
 ## Project Structure
 

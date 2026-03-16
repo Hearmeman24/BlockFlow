@@ -151,6 +151,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
   const [localSettings, setLocalSettings] = useSessionState<WriterSettings | null>(`${prefix}local_settings`, null)
   const [variants, setVariants] = useSessionState<number>(`${prefix}variants`, 1)
   const [userPrompt, setUserPrompt] = useSessionState(`${prefix}user_prompt`, '')
+  const [extraUserPrompts, setExtraUserPrompts] = useSessionState<string[]>(`${prefix}extra_user_prompts`, [])
   const [output, setOutputText] = useSessionState(`${prefix}output`, '')
   const [saving, setSaving] = useState(false)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -281,83 +282,54 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       if (!userPrompt.trim()) throw new Error('User prompt is required')
       if (!s.model) throw new Error('Select a writer model')
 
-      const maxVariants = Math.max(1, fanoutLimits.max_variants)
-      const requestedVariants = clampInt(Number(variants), 1, maxVariants)
-      const maxParallel = clampInt(Number(fanoutLimits.max_parallel), 1, maxVariants)
-      const concurrency = Math.min(requestedVariants, maxParallel)
+      // Collect all user prompts (main + extras)
+      const allUserPrompts = [userPrompt, ...extraUserPrompts].filter((p) => p.trim())
+      const total = allUserPrompts.length
 
-      let settled = 0
-      const setProgress = () => {
-        setStatusMessage(`Generating prompts ${Math.min(settled, requestedVariants)}/${requestedVariants}...`)
-      }
-      setProgress()
+      setStatusMessage(`Generating prompt 1/${total}...`)
 
-      const makeVariantPrompt = (idx: number): string => {
-        if (requestedVariants === 1) return userPrompt
-        return `${userPrompt}\n\nVariant ${idx + 1}/${requestedVariants}: produce a distinct alternative prompt while keeping the same core intent.`
-      }
+      const generatedPrompts: string[] = []
+      const failures: string[] = []
 
-      const workers = new Array(concurrency).fill(null).map(async (_unused, workerIdx) => {
-        const outputs: Array<{ idx: number; text: string }> = []
-        const errors: Array<{ idx: number; error: string }> = []
-        for (let idx = workerIdx; idx < requestedVariants; idx += concurrency) {
-          try {
-            const res = await generatePrompt({
-              mode: s.mode,
-              model: s.model,
-              system_prompt: activeSystemPrompt,
-              user_prompt: makeVariantPrompt(idx),
-              temperature: s.temperature,
-              max_tokens: s.max_tokens,
-            })
-            if (!res?.ok) throw new Error(res?.error ?? 'Generation failed')
-            const text = String(res.output_text || '').trim()
-            if (!text) throw new Error('Empty output from writer')
-            outputs.push({ idx, text })
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            errors.push({ idx, error: message || 'Generation failed' })
-          } finally {
-            settled += 1
-            setProgress()
-          }
+      for (let i = 0; i < total; i++) {
+        setStatusMessage(`Generating prompt ${i + 1}/${total}...`)
+        try {
+          const res = await generatePrompt({
+            mode: s.mode,
+            model: s.model,
+            system_prompt: activeSystemPrompt,
+            user_prompt: allUserPrompts[i],
+            temperature: s.temperature,
+            max_tokens: s.max_tokens,
+          })
+          if (!res?.ok) throw new Error(res?.error ?? 'Generation failed')
+          const text = String(res.output_text || '').trim()
+          if (!text) throw new Error('Empty output from writer')
+          generatedPrompts.push(text)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          failures.push(`#${i + 1}: ${message}`)
         }
-        return { outputs, errors }
-      })
-
-      const results = await Promise.all(workers)
-      const prompts: Array<{ idx: number; text: string }> = []
-      const failures: Array<{ idx: number; error: string }> = []
-      for (const result of results) {
-        prompts.push(...result.outputs)
-        failures.push(...result.errors)
       }
 
-      prompts.sort((a, b) => a.idx - b.idx)
-      failures.sort((a, b) => a.idx - b.idx)
-
-      if (prompts.length === 0) {
-        const detail = failures.map((f) => `#${f.idx + 1}: ${f.error}`).join('; ')
-        throw new Error(`All ${requestedVariants} prompt variants failed${detail ? ` (${detail})` : ''}`)
+      if (generatedPrompts.length === 0) {
+        throw new Error(`All ${total} prompts failed: ${failures.join('; ')}`)
       }
 
-      if (prompts.length === 1) {
-        const text = prompts[0].text
-        setOutputText(text)
-        setOutput('prompt', text)
+      if (generatedPrompts.length === 1) {
+        setOutputText(generatedPrompts[0])
+        setOutput('prompt', generatedPrompts[0])
       } else {
-        const promptTexts = prompts.map((p) => p.text)
-        setOutputText(promptTexts.map((text, idx) => `${idx + 1}. ${text}`).join('\n\n'))
-        setOutput('prompt', promptTexts)
+        setOutputText(generatedPrompts.map((text, idx) => `${idx + 1}. ${text}`).join('\n\n'))
+        setOutput('prompt', generatedPrompts)
       }
 
       if (failures.length > 0) {
-        const msg = `${prompts.length}/${requestedVariants} done, ${failures.length} failed`
-        setStatusMessage(msg)
+        setStatusMessage(`${generatedPrompts.length}/${total} done, ${failures.length} failed`)
         return { partialFailure: true }
       }
 
-      setStatusMessage(`Generated ${prompts.length}/${requestedVariants} prompts`)
+      setStatusMessage(`Generated ${generatedPrompts.length}/${total} prompts`)
       return undefined
     })
   }) // re-register on every render
@@ -424,7 +396,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
         <CollapsibleContent>
           <Textarea value={activeSystemPrompt}
             onChange={(e) => updateLocal({ system_prompt: e.target.value })}
-            className="min-h-[60px] resize-y mt-1.5 text-xs" />
+            className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto mt-1.5 text-xs" />
         </CollapsibleContent>
       </Collapsible>
 
@@ -445,7 +417,30 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
               ? 'Describe what kind of image prompt you want...'
               : 'Describe what kind of video prompt you want...'
           }
-          className="min-h-[60px] resize-y text-xs" />
+          className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto text-xs" />
+        {/* Extra user prompts for iteration */}
+        {extraUserPrompts.map((extra, idx) => (
+          <div key={idx} className="relative">
+            <Textarea
+              value={extra}
+              onChange={(e) => setExtraUserPrompts((prev) => { const arr = [...prev]; arr[idx] = e.target.value; return arr })}
+              placeholder={`User prompt ${idx + 2}...`}
+              className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto text-xs border-violet-500/30"
+            />
+            <button
+              type="button"
+              className="absolute top-1 right-1 text-muted-foreground hover:text-red-400 text-[10px] px-1"
+              onClick={() => setExtraUserPrompts((prev) => prev.filter((_, i) => i !== idx))}
+            >x</button>
+          </div>
+        ))}
+        <button
+          type="button"
+          className="flex items-center gap-1 text-[10px] text-violet-400 hover:text-violet-300"
+          onClick={() => setExtraUserPrompts((prev) => [...prev, ''])}
+        >
+          <span className="text-sm font-bold">+</span> Add user prompt
+        </button>
       </div>
 
       <AddPromptDialog open={addDialogOpen} onOpenChange={setAddDialogOpen}
@@ -454,7 +449,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       {output && (
         <div className="space-y-1">
           <Label className="text-xs">Output</Label>
-          <Textarea value={output} readOnly className="min-h-[72px] resize-y text-xs" />
+          <Textarea value={output} readOnly className="min-h-[72px] max-h-[200px] resize-y overflow-y-auto text-xs" />
         </div>
       )}
     </div>
@@ -469,7 +464,9 @@ export const blockDef: BlockDef = {
   canStart: true,
   inputs: [],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],
-  configKeys: ['local_settings', 'variants', 'user_prompt', 'output'],
+  configKeys: ['local_settings', 'variants', 'user_prompt', 'extra_user_prompts', 'output'],
+  iterator: true,
+  iteratorOutput: 'prompt',
   component: PromptWriterBlock,
 }
 

@@ -174,6 +174,123 @@ def refresh_status() -> JSONResponse:
     })
 
 
+# ---- Model download ----
+
+_download_state: dict[str, Any] = {"running": False, "status": "", "error": "", "done": False}
+_download_lock = threading.Lock()
+
+
+
+def _run_download(cmd: list[str]) -> None:
+    """Run comfy-gen download in a thread, streaming stderr lines to _download_state."""
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            line = line.strip()
+            if line:
+                _download_state["status"] = line
+        proc.wait(timeout=1200)  # 20 min timeout for large models
+
+        stdout = proc.stdout.read() if proc.stdout else ""
+        print(f"[comfy-gen] Download stdout: {stdout[:1000]}", flush=True)
+        print(f"[comfy-gen] Download returncode: {proc.returncode}", flush=True)
+        if proc.returncode != 0:
+            _download_state["error"] = stdout.strip() or "comfy-gen download failed"
+        else:
+            try:
+                data = json.loads(stdout)
+                if data.get("ok") is not False:
+                    files = data.get("files", data.get("downloaded", []))
+                    count = len(files) if isinstance(files, list) else _download_state.get("total", 0)
+                    if count == 0:
+                        count = _download_state.get("total", 1)
+                    _download_state["status"] = f"Downloaded {count} model(s)"
+                else:
+                    _download_state["error"] = data.get("error", "Download returned not ok")
+            except (json.JSONDecodeError, ValueError):
+                _download_state["status"] = "Download completed"
+
+    except subprocess.TimeoutExpired:
+        _download_state["error"] = "Download timed out (20 min)"
+        if proc:
+            proc.kill()
+    except Exception as e:
+        _download_state["error"] = str(e)
+    finally:
+        _download_state["done"] = True
+        _download_state["running"] = False
+
+
+@router.post("/download-models")
+def download_models(payload: dict[str, Any] = {}) -> JSONResponse:
+    """Start comfy-gen download --batch in background."""
+    import shutil
+
+    with _download_lock:
+        if _download_state["running"]:
+            return JSONResponse({"ok": True, "already_running": True})
+
+        if not shutil.which("comfy-gen"):
+            return JSONResponse({"ok": False, "error": "comfy-gen CLI not found on PATH"})
+
+        models = payload.get("models", [])
+        if not models:
+            return JSONResponse({"ok": False, "error": "No models to download"})
+
+        eid = str(payload.get("endpoint_id", "")).strip() or config.RUNPOD_ENDPOINT_ID or ""
+
+        # Build batch JSON file
+        batch: list[dict[str, str]] = []
+        for m in models:
+            url = m.get("download_url", "")
+            if not url:
+                continue
+            save_path = m.get("save_path", "default")
+            dest = save_path if save_path and save_path != "default" else "checkpoints"
+            entry: dict[str, str] = {"source": "url", "url": url, "dest": dest}
+            filename = m.get("filename", "")
+            if filename:
+                entry["filename"] = filename
+            batch.append(entry)
+
+        if not batch:
+            return JSONResponse({"ok": False, "error": "No downloadable models (missing URLs)"})
+
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        json.dump(batch, tmp)
+        tmp.close()
+
+        cmd = ["comfy-gen", "download", "--batch", tmp.name]
+        if eid:
+            cmd.extend(["--endpoint-id", eid])
+
+        _download_state["running"] = True
+        _download_state["done"] = False
+        _download_state["error"] = ""
+        _download_state["status"] = f"Starting download of {len(batch)} model(s)..."
+        _download_state["total"] = len(batch)
+
+        print(f"[comfy-gen] Download command: {' '.join(cmd)}", flush=True)
+
+        t = threading.Thread(target=_run_download, args=(cmd,), daemon=True)
+        t.start()
+
+    return JSONResponse({"ok": True, "started": True, "count": len(batch)})
+
+
+@router.get("/download-status")
+def download_status() -> JSONResponse:
+    """Poll download progress."""
+    return JSONResponse({
+        "ok": True,
+        "running": _download_state["running"],
+        "done": _download_state["done"],
+        "status": _download_state["status"],
+        "error": _download_state["error"],
+    })
+
+
 @router.get("/health")
 def health_check() -> JSONResponse:
     """Check if comfy-gen CLI is installed and reachable."""
@@ -975,10 +1092,18 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
 
         if proc.returncode != 0:
             error_msg = stdout.strip() if stdout.strip() else f"comfy-gen exited with code {proc.returncode}"
-            # Try to extract error from JSON
+            # Try to extract structured error from JSON
             try:
                 err_data = json.loads(stdout)
-                error_msg = err_data.get("error", error_msg)
+                # Check for missing_models structured error
+                if err_data.get("error_type") == "missing_models":
+                    missing = err_data.get("missing_models", [])
+                    error_msg = err_data.get("error_message", error_msg)
+                    services._update_job(job_id, status="FAILED", error=error_msg,
+                                         missing_models=missing,
+                                         elapsed_seconds=round(time.time() - t0, 3))
+                    return
+                error_msg = err_data.get("error_message") or err_data.get("error", error_msg)
             except (json.JSONDecodeError, ValueError):
                 pass
             services._update_job(job_id, status="FAILED", error=error_msg,
@@ -998,6 +1123,17 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
         output_data = result.get("output", {})
         media_url = output_data.get("url", "")
         if not media_url:
+            # Check for missing_models structured error from comfy-gen
+            error_type = result.get("error_type") or output_data.get("error_type")
+            if error_type == "missing_models":
+                missing = result.get("missing_models") or output_data.get("missing_models") or []
+                error_msg = result.get("error_message") or output_data.get("error_message") or "Missing models"
+                services._update_job(job_id, status="FAILED",
+                                     error=error_msg,
+                                     missing_models=missing,
+                                     elapsed_seconds=round(time.time() - t0, 3))
+                return
+
             # Build a readable error from available info
             error_parts: list[str] = []
 
@@ -1289,7 +1425,7 @@ async def run(request: Request) -> JSONResponse:
                 overrides[seed_key] = str(random.randint(0, 2**53))
 
     job_id = str(uuid.uuid4())
-    record = services._new_job_record(job_id, "comfy-gen", {"workflow_file": tmp.name})
+    record = services._new_job_record(job_id, endpoint_id, {"workflow_file": tmp.name})
     with state.JOBS_LOCK:
         state.JOBS[job_id] = record
         state._persist_jobs_locked()
@@ -1341,9 +1477,14 @@ def cancel(job_id: str) -> JSONResponse:
             cmd = ["comfy-gen", "cancel", remote_job_id]
             if endpoint_id:
                 cmd.extend(["--endpoint-id", endpoint_id])
-            subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            print(f"[comfy-gen] Cancel command: {' '.join(cmd)}", flush=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             cancelled_remote = True
             print(f"[comfy-gen] Cancelled remote job {remote_job_id} for {job_id}", flush=True)
+            if result.stdout.strip():
+                print(f"[comfy-gen] Cancel stdout: {result.stdout.strip()}", flush=True)
+            if result.stderr.strip():
+                print(f"[comfy-gen] Cancel stderr: {result.stderr.strip()}", flush=True)
         except Exception as e:
             print(f"[comfy-gen] Failed to cancel remote job {remote_job_id}: {e}", flush=True)
 

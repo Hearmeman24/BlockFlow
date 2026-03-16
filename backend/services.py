@@ -514,7 +514,22 @@ def _run_local_job(local_job_id: str, endpoint_id: str, job_input: dict[str, Any
     t0 = _now()
     try:
         _update_job(local_job_id, status="SUBMITTING")
-        remote_job_id = _submit_job(endpoint_id, job_input)
+
+        # Retry transient RunPod errors (HTTP 500, 502, 503, network issues)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                remote_job_id = _submit_job(endpoint_id, job_input)
+                break
+            except RuntimeError as e:
+                err_str = str(e)
+                is_transient = any(code in err_str for code in ("HTTP 500", "HTTP 502", "HTTP 503", "HTTP 429", "failed to get"))
+                if not is_transient or attempt == max_retries - 1:
+                    raise
+                wait = (attempt + 1) * 5  # 5s, 10s
+                print(f"[job] Submit attempt {attempt + 1}/{max_retries} failed for {local_job_id}: {err_str}. Retrying in {wait}s...", flush=True)
+                import time; time.sleep(wait)
+
         _update_job(local_job_id, status="RUNNING", remote_job_id=remote_job_id)
 
         def _on_poll(resp: dict[str, Any]) -> None:

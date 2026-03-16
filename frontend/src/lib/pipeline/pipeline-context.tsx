@@ -949,8 +949,22 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         // After executing this block, check if it's an iterator
         const iterDef = getBlockDef(block.type)
         if (iterDef?.iterator) {
-          const iterPortName = iterDef.iteratorOutput ?? iterDef.outputs[0]?.name
-          const iterOutput = blockStatesRef.current.get(block.id)?.outputs[iterPortName]
+          // Auto-detect which output port has an array if iteratorOutput is not specified
+          let iterPortName = iterDef.iteratorOutput ?? ''
+          const blockOutputs = blockStatesRef.current.get(block.id)?.outputs ?? {}
+          if (!iterPortName) {
+            // Find the first output port that contains an array with >1 items
+            for (const port of iterDef.outputs) {
+              const val = blockOutputs[port.name]
+              if (Array.isArray(val) && val.length > 1) {
+                iterPortName = port.name
+                break
+              }
+            }
+            // Fallback to first output port
+            if (!iterPortName) iterPortName = iterDef.outputs[0]?.name ?? ''
+          }
+          const iterOutput = blockOutputs[iterPortName]
 
           if (Array.isArray(iterOutput) && iterOutput.length > 1) {
             // Build the remaining chain (everything after this block)
@@ -970,6 +984,15 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
               })),
             }
             updateIterState(iterState)
+
+            // Collect all downstream block IDs for output accumulation
+            const downstreamBlockIds = new Set<string>()
+            for (const b of walkBlocks(remainingChain)) downstreamBlockIds.add(b.id)
+            for (const branch of iterBranches) {
+              for (const b of walkBlocks(branch)) downstreamBlockIds.add(b.id)
+            }
+            // Accumulate downstream outputs across iterations
+            const accumulatedOutputs = new Map<string, Record<string, unknown[]>>()
 
             for (let itemIdx = 0; itemIdx < iterOutput.length; itemIdx++) {
               if (cancelledRef.current) break
@@ -1012,6 +1035,20 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
                   await executeChain(branch)
                 }
                 iterState.items[itemIdx].status = 'completed'
+
+                // Collect downstream outputs from this iteration
+                for (const bId of downstreamBlockIds) {
+                  const state = blockStatesRef.current.get(bId)
+                  if (!state?.outputs) continue
+                  let acc = accumulatedOutputs.get(bId)
+                  if (!acc) { acc = {}; accumulatedOutputs.set(bId, acc) }
+                  for (const [portName, value] of Object.entries(state.outputs)) {
+                    if (!acc[portName]) acc[portName] = []
+                    // Flatten arrays (e.g., ComfyGen batch outputs 4 URLs)
+                    if (Array.isArray(value)) acc[portName].push(...value)
+                    else acc[portName].push(value)
+                  }
+                }
               } catch (e) {
                 if (e instanceof DOMException && e.name === 'AbortError') {
                   iterState.items[itemIdx].status = 'skipped'
@@ -1027,6 +1064,13 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
 
             // Restore the full array as output after all iterations
             setBlockOutput(block.id, iterPortName, iterOutput)
+
+            // Restore accumulated downstream outputs so artifacts capture all iterations
+            for (const [bId, ports] of accumulatedOutputs) {
+              for (const [portName, values] of Object.entries(ports)) {
+                setBlockOutput(bId, portName, values.length === 1 ? values[0] : values)
+              }
+            }
 
             const failedCount = iterState.items.filter((i) => i.status === 'error').length
             const completedCount = iterState.items.filter((i) => i.status === 'completed').length

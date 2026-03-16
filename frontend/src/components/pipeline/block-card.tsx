@@ -299,7 +299,23 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
 
           {status === 'error' && state?.error && (
             <div className="mx-4 mb-2 rounded-md bg-red-500/10 border border-red-500/20 px-3 py-2">
-              <p className="text-xs text-red-400">{state.error}</p>
+              {(() => {
+                const err = state.error
+                const notFoundPattern = /Node\s+\d+\s*\([^)]+\):\s*'([^']+)'\s*not found for input\s*'[^']+'/g
+                const matches = [...err.matchAll(notFoundPattern)]
+                if (matches.length > 0) {
+                  const models = [...new Set(matches.map((m) => m[1]))]
+                  return (
+                    <div className="space-y-1">
+                      <p className="text-xs text-red-400 font-medium">Missing models on endpoint:</p>
+                      {models.map((name, i) => (
+                        <p key={i} className="text-[11px] text-red-400/80 pl-2">• {name}</p>
+                      ))}
+                    </div>
+                  )
+                }
+                return <p className="text-xs text-red-400">{err}</p>
+              })()}
             </div>
           )}
 

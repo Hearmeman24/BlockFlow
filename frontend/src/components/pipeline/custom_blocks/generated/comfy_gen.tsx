@@ -7,6 +7,21 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Badge } from '@/components/ui/badge'
+import { Slider } from '@/components/ui/slider'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useSessionState } from '@/lib/use-session-state'
 import type { Job } from '@/lib/types'
 import {
@@ -26,6 +41,12 @@ import {
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
 import { MANUAL_SOURCE, useBlockBindings } from '@/lib/pipeline/block-bindings'
+import {
+  buildOverrides as buildOverridesPure,
+  computeAutomationAxes as computeAxesPure,
+  cartesianProduct,
+  type AutomationAxis,
+} from '@/lib/comfygen-overrides'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockById, findBlockInTree } from '@/lib/pipeline/tree-utils'
 
@@ -38,6 +59,8 @@ const EXTRACT_PNG_ENDPOINT = '/api/blocks/comfy_gen/extract-workflow-from-png'
 const CACHE_ENDPOINT = '/api/blocks/comfy_gen/cache'
 const REFRESH_CACHE_ENDPOINT = '/api/blocks/comfy_gen/refresh-cache'
 const REFRESH_STATUS_ENDPOINT = '/api/blocks/comfy_gen/refresh-status'
+const DOWNLOAD_MODELS_ENDPOINT = '/api/blocks/comfy_gen/download-models'
+const DOWNLOAD_STATUS_ENDPOINT = '/api/blocks/comfy_gen/download-status'
 
 interface LoadNode {
   node_id: string
@@ -131,6 +154,15 @@ interface LoraOverride {
   enabled: boolean
 }
 
+interface MissingModel {
+  filename: string
+  class_type: string
+  download_url?: string
+  save_path?: string
+  node_id?: string
+  input_field?: string
+}
+
 interface ProgressInfo {
   stage: string
   percent: number
@@ -139,6 +171,197 @@ interface ProgressInfo {
   nodeTotal?: number
   step?: number
   totalSteps?: number
+}
+
+/* ---- Automation helpers ---- */
+
+interface BatchJobStatus {
+  index: number        // 1-based combo index
+  jobId?: string
+  status: 'queued' | 'submitted' | 'running' | 'completed' | 'failed'
+  message: string      // e.g. "Step 2/4 (38/100)" or "IN_QUEUE"
+}
+
+interface BatchState {
+  total: number
+  completed: number
+  running: number
+  queued: number
+  failed: number
+  results: string[]
+  errors: string[]
+  jobs: BatchJobStatus[]
+}
+
+const MAX_BATCH_PARALLEL = 5
+
+/* ---- Automation UI components ---- */
+
+function AutoNumericInput({
+  value,
+  onChange,
+  multiValues,
+  onMultiChange,
+  automateEnabled,
+  ...inputProps
+}: {
+  value: string
+  onChange: (v: string) => void
+  multiValues: string[]
+  onMultiChange: (v: string[]) => void
+  automateEnabled: boolean
+} & Omit<React.ComponentProps<typeof Input>, 'value' | 'onChange'>) {
+  if (!automateEnabled) {
+    return <Input value={value} onChange={(e) => onChange(e.target.value)} {...inputProps} />
+  }
+  const addValue = () => {
+    const trimmed = value.trim()
+    if (!trimmed || multiValues.includes(trimmed)) return
+    onMultiChange([...multiValues, trimmed])
+  }
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-1">
+        <Input value={value} onChange={(e) => onChange(e.target.value)} {...inputProps} className={`${inputProps.className || ''} flex-1`} />
+        <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-amber-400 hover:text-amber-300 text-sm font-bold" onClick={addValue}>+</Button>
+      </div>
+      {multiValues.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {multiValues.map((v) => (
+            <Badge key={v} variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 cursor-pointer hover:bg-destructive/20" onClick={() => onMultiChange(multiValues.filter((x) => x !== v))}>
+              {v} <span className="text-muted-foreground/60">x</span>
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AutoSelectMulti({
+  value,
+  onValueChange,
+  options,
+  selectedValues,
+  onSelectedChange,
+  automateEnabled,
+  placeholder,
+  triggerClassName,
+}: {
+  value: string
+  onValueChange: (v: string) => void
+  options: string[]
+  selectedValues: string[]
+  onSelectedChange: (v: string[]) => void
+  automateEnabled: boolean
+  placeholder?: string
+  triggerClassName?: string
+}) {
+  if (!automateEnabled) {
+    return (
+      <Select value={value} onValueChange={onValueChange}>
+        <SelectTrigger className={triggerClassName || 'h-7 text-xs'}>
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((s) => (
+            <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    )
+  }
+  const toggle = (opt: string) => {
+    if (selectedValues.includes(opt)) onSelectedChange(selectedValues.filter((v) => v !== opt))
+    else onSelectedChange([...selectedValues, opt])
+  }
+  return (
+    <div className="space-y-1">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" className={`${triggerClassName || 'h-7 text-xs'} w-full justify-between font-normal`}>
+            <span className="truncate">{selectedValues.length > 0 ? `${selectedValues.length} selected` : (placeholder || 'Select...')}</span>
+            <svg className="w-3 h-3 ml-1 shrink-0 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent className="max-h-[200px] overflow-y-auto">
+          {options.map((opt) => (
+            <DropdownMenuCheckboxItem key={opt} checked={selectedValues.includes(opt)} onCheckedChange={() => toggle(opt)} className="text-xs">
+              <span className="truncate">{opt}</span>
+            </DropdownMenuCheckboxItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {selectedValues.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {selectedValues.map((v) => (
+            <Badge key={v} variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 cursor-pointer hover:bg-destructive/20 max-w-[140px]" onClick={() => toggle(v)}>
+              <span className="truncate">{v}</span> <span className="text-muted-foreground/60 shrink-0">x</span>
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AutoSliderInput({
+  value,
+  onChange,
+  multiValues,
+  onMultiChange,
+  automateEnabled,
+  min = 0,
+  max = 2,
+  step = 0.05,
+  label,
+}: {
+  value: string
+  onChange: (v: string) => void
+  multiValues: string[]
+  onMultiChange: (v: string[]) => void
+  automateEnabled: boolean
+  min?: number
+  max?: number
+  step?: number
+  label: string
+}) {
+  const numVal = value === '' ? 1 : parseFloat(value)
+  const safeVal = isNaN(numVal) ? 1 : Math.min(max, Math.max(min, numVal))
+
+  const addValue = () => {
+    const formatted = safeVal.toFixed(2)
+    if (!multiValues.includes(formatted)) onMultiChange([...multiValues, formatted])
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] text-muted-foreground w-8 shrink-0">{label}</span>
+        <Slider
+          min={min}
+          max={max}
+          step={step}
+          value={[safeVal]}
+          onValueChange={([v]) => onChange(v.toFixed(2))}
+          className="flex-1"
+        />
+        <span className="text-[10px] text-muted-foreground w-8 text-right tabular-nums">{safeVal.toFixed(2)}</span>
+        {automateEnabled && (
+          <button type="button" className="text-amber-400 hover:text-amber-300 text-sm font-bold shrink-0" onClick={addValue}>+</button>
+        )}
+      </div>
+      {automateEnabled && multiValues.length > 0 && (
+        <div className="flex flex-wrap gap-1 pl-10">
+          {multiValues.map((v) => (
+            <Badge key={v} variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 cursor-pointer hover:bg-destructive/20" onClick={() => onMultiChange(multiValues.filter((x) => x !== v))}>
+              {v} <span className="text-muted-foreground/60">x</span>
+            </Badge>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 /* ---- Collapsible section ---- */
@@ -258,6 +481,33 @@ function ComfyGenBlock({
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [workflowError, setWorkflowError] = useState('')
   const [cliMissing, setCliMissing] = useState<string | null>(null)
+  const [missingModels, setMissingModels] = useState<MissingModel[] | null>(null)
+  const [downloadRunning, setDownloadRunning] = useState(false)
+  const [downloadStatus, setDownloadStatus] = useState('')
+  const [downloadError, setDownloadError] = useState('')
+
+  // Automation state
+  const [automateEnabled, setAutomateEnabled] = useSessionState(`block_${blockId}_automate_enabled`, false)
+  const [autoNumeric, setAutoNumeric] = useSessionState<Record<string, string[]>>(`block_${blockId}_automate_numeric`, {})
+  const [autoSelect, setAutoSelect] = useSessionState<Record<string, string[]>>(`block_${blockId}_automate_select`, {})
+  const [autoText, setAutoText] = useSessionState<Record<string, string[]>>(`block_${blockId}_automate_text`, {})
+  const [batchState, setBatchState] = useState<BatchState | null>(null)
+  const [showBatchConfirm, setShowBatchConfirm] = useState<number | null>(null)
+  const [batchExpanded, setBatchExpanded] = useState(false)
+  const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null)
+
+  // Track which text fields use upstream text (keyed by "nodeId.inputName")
+  const [textUpstreamFlags, setTextUpstreamFlags] = useSessionState<Record<string, boolean>>(`block_${blockId}_text_upstream`, {})
+
+  const automationAxes = useMemo(() => {
+    if (!automateEnabled) return []
+    return computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags })
+  }, [automateEnabled, ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags])
+
+  const combinationCount = useMemo(() => {
+    if (automationAxes.length === 0) return 1
+    return automationAxes.reduce((acc, a) => acc * a.values.length, 1)
+  }, [automationAxes])
 
   const applyCacheData = useCallback((d: { samplers?: string[]; schedulers?: string[]; loras?: string[]; fetched_at?: number }) => {
     if (Array.isArray(d.samplers)) setAvailableSamplers(d.samplers)
@@ -313,6 +563,48 @@ function ComfyGenBlock({
     poll()
   }, [applyCacheData])
 
+  const pollDownloadStatus = useCallback(() => {
+    const poll = () => {
+      fetch(DOWNLOAD_STATUS_ENDPOINT)
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.status) setDownloadStatus(d.status)
+          if (d.done) {
+            setDownloadRunning(false)
+            if (d.error) setDownloadError(d.error)
+            else setDownloadError('')
+          } else {
+            setTimeout(poll, 2000)
+          }
+        })
+        .catch(() => {
+          setDownloadRunning(false)
+          setDownloadError('Lost connection while downloading')
+        })
+    }
+    poll()
+  }, [])
+
+  const startModelDownload = useCallback(() => {
+    if (!missingModels) return
+    const downloadable = missingModels.filter((m) => m.download_url)
+    if (downloadable.length === 0) return
+    setDownloadRunning(true)
+    setDownloadError('')
+    setDownloadStatus('Starting download...')
+    fetch(DOWNLOAD_MODELS_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint_id: endpointId || '', models: downloadable }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.ok) { setDownloadRunning(false); setDownloadError(d.error || 'Failed to start'); return }
+        pollDownloadStatus()
+      })
+      .catch((e) => { setDownloadRunning(false); setDownloadError(String(e)) })
+  }, [missingModels, endpointId, pollDownloadStatus])
+
   const refreshCache = useCallback(() => {
     setCacheRefreshing(true)
     setCacheError('')
@@ -337,21 +629,40 @@ function ComfyGenBlock({
       })
   }, [endpointId, pollRefreshStatus])
 
-  // Push sync button into block header
+  // Push header actions: Automate toggle + Sync button
+  const batchRunning = batchState !== null
+  const batchDone = batchState ? batchState.completed + batchState.failed : 0
   useEffect(() => {
+    const autoLabel = batchRunning
+      ? 'Auto'
+      : automateEnabled && combinationCount > 1
+        ? `Auto (${combinationCount})`
+        : 'Auto'
     setHeaderActions?.(
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-5 px-1.5 text-[10px] text-muted-foreground hover:text-foreground gap-1"
-        onClick={refreshCache}
-        disabled={cacheRefreshing}
-      >
-        <svg className={`w-3 h-3 ${cacheRefreshing ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
-        {cacheRefreshing ? (cacheStatus || 'Syncing…') : 'Sync'}
-      </Button>
+      <>
+        <Button
+          variant={automateEnabled ? 'default' : 'ghost'}
+          size="sm"
+          className={`h-5 px-1.5 text-[10px] gap-1 ${automateEnabled ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30' : 'text-muted-foreground hover:text-foreground'}`}
+          onClick={() => setAutomateEnabled(!automateEnabled)}
+          disabled={batchRunning}
+        >
+          <svg className={`w-3 h-3 ${batchRunning ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          {autoLabel}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-5 px-1.5 text-[10px] text-muted-foreground hover:text-foreground gap-1"
+          onClick={refreshCache}
+          disabled={cacheRefreshing}
+        >
+          <svg className={`w-3 h-3 ${cacheRefreshing ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+          {cacheRefreshing ? (cacheStatus || 'Syncing…') : 'Sync'}
+        </Button>
+      </>
     )
-  }, [setHeaderActions, refreshCache, cacheRefreshing, cacheStatus])
+  }, [setHeaderActions, refreshCache, cacheRefreshing, cacheStatus, automateEnabled, combinationCount, setAutomateEnabled, batchRunning, batchDone, batchState])
 
   // Prompt binding for upstream text override
   // Filter to only show blocks that output a port named "prompt" (not generic text like URLs)
@@ -372,9 +683,6 @@ function ComfyGenBlock({
   const upstreamPromptText = typeof inputs.prompt === 'string' ? inputs.prompt.trim()
     : Array.isArray(inputs.prompt) ? (inputs.prompt as string[]).filter(Boolean).join('\n\n')
     : ''
-
-  // Track which text fields use upstream text (keyed by "nodeId.inputName")
-  const [textUpstreamFlags, setTextUpstreamFlags] = useSessionState<Record<string, boolean>>(`block_${blockId}_text_upstream`, {})
 
   // Find this block's index in the trunk
   const getMyIndex = useCallback((): number => {
@@ -660,12 +968,14 @@ function ComfyGenBlock({
   }, [blockId, parseWorkflow, resetRuntimeFromBlock, setWorkflowJson, setWorkflowName, setOutput])
 
   // Polling helper with progress updates
-  const pollJob = useCallback(async (jobId: string): Promise<Job> => {
+  // onProgress callback used during batch mode to route status to per-job tracking
+  const pollJob = useCallback(async (jobId: string, onProgress?: (msg: string) => void, signal?: AbortSignal): Promise<Job> => {
     const maxWait = 600_000
     const interval = 3_000
     const start = Date.now()
 
     while (Date.now() - start < maxWait) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       const res = await fetch(`${STATUS_ENDPOINT}/${encodeURIComponent(jobId)}`)
       const data = await res.json()
       const job = data.job as Record<string, unknown> | undefined
@@ -677,11 +987,16 @@ function ComfyGenBlock({
       const jobStatus = String(job.status || '').toUpperCase()
 
       if (jobStatus === 'COMPLETED' || jobStatus === 'COMPLETED_WITH_WARNING') {
-        setProgress(null)
+        if (!onProgress) setProgress(null)
         return job as unknown as Job
       }
       if (jobStatus === 'FAILED' || jobStatus === 'CANCELLED' || jobStatus === 'TIMED_OUT') {
-        setProgress(null)
+        if (!onProgress) setProgress(null)
+        // Check for missing_models structured error
+        const mm = job.missing_models as MissingModel[] | undefined
+        if (mm && Array.isArray(mm) && mm.length > 0) {
+          setMissingModels(mm)
+        }
         throw new Error((job.error as string) || `Job ${jobStatus}`)
       }
 
@@ -694,198 +1009,323 @@ function ComfyGenBlock({
       const step = job.progress_step as number | undefined
       const totalSteps = job.progress_total_steps as number | undefined
 
-      if (stage === 'inference' && node != null && nodeTotal != null) {
-        const badge = step != null && totalSteps != null
-          ? `Step ${step}/${totalSteps} (${node}/${nodeTotal})`
-          : `${message} (${node}/${nodeTotal})`
-        setProgress({ stage, percent, message, node, nodeTotal, step, totalSteps })
-        setStatusMessage(badge)
-      } else if (stage) {
-        setProgress({ stage, percent, message: message || stage })
-        setStatusMessage(message || stage)
-      } else if (remoteStatus === 'IN_PROGRESS') {
-        setProgress({ stage: 'running', percent, message: message || 'Running...' })
-        setStatusMessage('Running...')
+      if (onProgress) {
+        // Batch mode: route to per-job status
+        if (stage === 'inference' && node != null && nodeTotal != null) {
+          const badge = step != null && totalSteps != null ? `Step ${step}/${totalSteps}` : (message || stage)
+          onProgress(badge)
+        } else if (stage) {
+          onProgress(message || stage)
+        } else if (remoteStatus === 'IN_QUEUE') {
+          onProgress('Queued')
+        } else if (remoteStatus === 'IN_PROGRESS') {
+          onProgress(message || 'Running...')
+        } else {
+          onProgress(jobStatus)
+        }
+      } else {
+        // Single job mode: update badge + progress bar directly
+        if (stage === 'inference' && node != null && nodeTotal != null) {
+          const badge = step != null && totalSteps != null
+            ? `Step ${step}/${totalSteps} (${node}/${nodeTotal})`
+            : `${message} (${node}/${nodeTotal})`
+          setProgress({ stage, percent, message, node, nodeTotal, step, totalSteps })
+          setStatusMessage(badge)
+        } else if (stage) {
+          setProgress({ stage, percent, message: message || stage })
+          setStatusMessage(message || stage)
+        } else if (remoteStatus === 'IN_PROGRESS') {
+          setProgress({ stage: 'running', percent, message: message || 'Running...' })
+          setStatusMessage('Running...')
+        }
       }
 
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
       await new Promise((r) => setTimeout(r, interval))
     }
-    setProgress(null)
+    if (!onProgress) setProgress(null)
     throw new Error('Job timed out')
   }, [setStatusMessage])
+
+  // Build base overrides from current UI state (shared by single and batch paths)
+  const buildBaseOverrides = useCallback((freshInputs: Record<string, unknown>) => {
+    const fileInputs: Record<string, { field: string; media_url: string }> = {}
+    for (const mapping of nodeMappings) {
+      const mediaUrl = toMediaUrl(mapping.portKind === 'video' ? freshInputs.video : freshInputs.image)
+      if (mediaUrl) fileInputs[mapping.node_id] = { field: mapping.field, media_url: mediaUrl }
+    }
+    const upstreamPromptText = typeof freshInputs.prompt === 'string' ? freshInputs.prompt.trim()
+      : Array.isArray(freshInputs.prompt) ? (freshInputs.prompt as string[]).filter(Boolean).join('\n\n') : ''
+    const { overrides, bypassLoras } = buildOverridesPure({
+      ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides,
+      frameCounts, frameOverrides, refVideo, refVideoOverrides,
+      loraNodes, loraOverrides, autoSelect, autoNumeric,
+      textOverrides, textValues, textUpstreamFlags, upstreamPromptText,
+    })
+    return { fileInputs, overrides, bypassLoras }
+  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags])
 
   useEffect(() => {
     registerExecute(async (freshInputs, signal) => {
       if (!workflowJson.trim()) throw new Error('No workflow loaded')
-
       let workflow: Record<string, unknown>
-      try {
-        workflow = JSON.parse(workflowJson)
-      } catch {
-        throw new Error('Invalid workflow JSON')
-      }
+      try { workflow = JSON.parse(workflowJson) } catch { throw new Error('Invalid workflow JSON') }
 
       setExecutionStatus?.('running')
       setStatusMessage('Submitting...')
       setProgress(null)
+      setMissingModels(null)
+      setDownloadError('')
+      setDownloadStatus('')
 
-      // Build file inputs from node mappings
-      const fileInputs: Record<string, { field: string; media_url: string }> = {}
-      for (const mapping of nodeMappings) {
-        const mediaUrl = toMediaUrl(
-          mapping.portKind === 'video' ? freshInputs.video : freshInputs.image
-        )
-        if (mediaUrl) {
-          fileInputs[mapping.node_id] = {
-            field: mapping.field,
-            media_url: mediaUrl,
+      const { fileInputs, overrides: baseOverrides, bypassLoras } = buildBaseOverrides(freshInputs)
+
+      // --- BATCH PATH ---
+      const axes = computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags })
+      if (automateEnabled && axes.length > 0) {
+        const combinations = cartesianProduct(axes)
+
+        // Confirmation for >5 combos
+        if (combinations.length > 5) {
+          const confirmed = await new Promise<boolean>((resolve) => {
+            confirmResolverRef.current = resolve
+            setShowBatchConfirm(combinations.length)
+          })
+          if (!confirmed) {
+            setExecutionStatus?.('idle')
+            setStatusMessage('')
+            return { terminateChain: true }
           }
         }
-      }
 
-      // Build overrides from KSampler, resolution, and prompt controls
-      const overrides: Record<string, string> = {}
-      for (const ks of ksamplers.slice(0, 3)) {
-        const ov = ksamplerOverrides[ks.node_id]
-        if (ov?.steps?.trim()) overrides[`${ks.node_id}.steps`] = ov.steps.trim()
-        if (ov?.cfg?.trim()) overrides[`${ks.node_id}.cfg`] = ov.cfg.trim()
-        if (ov?.denoise?.trim()) overrides[`${ks.node_id}.denoise`] = ov.denoise.trim()
-        if (ov?.sampler_name?.trim()) overrides[`${ks.node_id}.sampler_name`] = ov.sampler_name.trim()
-        if (ov?.scheduler?.trim()) overrides[`${ks.node_id}.scheduler`] = ov.scheduler.trim()
-      }
-      for (const rn of resolutionNodes) {
-        const ov = resolutionOverrides[rn.node_id]
-        if (!ov) continue
-        if (ov.width?.trim()) {
-          const wNode = rn.width_source_node || rn.node_id
-          const wField = rn.width_source_field || (rn.class_type.startsWith('SDXLEmptyLatent') ? 'width_override' : 'width')
-          overrides[`${wNode}.${wField}`] = ov.width.trim()
+        const urls: string[] = []
+        const errors: string[] = []
+        const jobIds: string[] = []
+        const activeJobIds = new Set<string>()
+        const perJobMeta: Record<string, unknown>[] = []
+        // Per-job status tracking
+        const jobStatuses: BatchJobStatus[] = combinations.map((_, i) => ({
+          index: i + 1, status: 'queued' as const, message: 'Waiting',
+        }))
+
+        let batchUpdateTimer: ReturnType<typeof setTimeout> | null = null
+        const updateBatch = (immediate = false) => {
+          const flush = () => {
+            batchUpdateTimer = null
+            const completed = urls.length + errors.length
+            const running = activeJobIds.size
+            setBatchState({
+              total: combinations.length, completed: urls.length, running,
+              queued: combinations.length - completed - running, failed: errors.length,
+              results: [...urls], errors: [...errors],
+              jobs: [...jobStatuses],
+            })
+            setStatusMessage('')
+          }
+          if (immediate) { if (batchUpdateTimer) clearTimeout(batchUpdateTimer); flush(); return }
+          if (!batchUpdateTimer) batchUpdateTimer = setTimeout(flush, 500)
         }
-        if (ov.height?.trim()) {
-          const hNode = rn.height_source_node || rn.node_id
-          const hField = rn.height_source_field || (rn.class_type.startsWith('SDXLEmptyLatent') ? 'height_override' : 'height')
-          overrides[`${hNode}.${hField}`] = ov.height.trim()
-        }
-      }
-      for (const fc of frameCounts) {
-        const val = frameOverrides[fc.node_id]
-        if (val?.trim()) {
-          const targetNode = fc.source_node || fc.node_id
-          const targetField = fc.source_field || fc.field
-          overrides[`${targetNode}.${targetField}`] = val.trim()
-        }
-      }
-      for (const rv of refVideo) {
-        for (const ctrl of rv.controls) {
-          const key = `${rv.node_id}.${ctrl.field}`
-          const val = refVideoOverrides[key]
-          if (val?.trim()) {
-            overrides[key] = val.trim()
+
+        // Cancel all in-flight on abort
+        const onAbort = () => {
+          for (const jid of activeJobIds) {
+            fetch(`${CANCEL_ENDPOINT}/${encodeURIComponent(jid)}`, { method: 'POST' }).catch(() => {})
           }
         }
-      }
+        signal.addEventListener('abort', onAbort, { once: true })
 
-      const bypassLoras: string[] = []
-      for (const ln of loraNodes) {
-        const ov = loraOverrides[ln.node_id]
-        if (!ov) continue
-        if (ov.enabled === false) {
-          bypassLoras.push(ln.node_id)
-          continue
-        }
-        if (ov.lora_name && ov.lora_name !== ln.lora_name) {
-          overrides[`${ln.node_id}.lora_name`] = ov.lora_name
-        }
-        if (ov.strength_model?.trim()) {
-          overrides[`${ln.node_id}.strength_model`] = ov.strength_model.trim()
-        }
-        if (ov.strength_clip?.trim() && ln.class_type === 'LoraLoader') {
-          overrides[`${ln.node_id}.strength_clip`] = ov.strength_clip.trim()
-        }
-      }
+        try {
+          const runOne = async (comboOverrides: Record<string, string>, comboIndex: number) => {
+            if (signal.aborted) return
+            const js = jobStatuses[comboIndex]
+            js.status = 'submitted'; js.message = 'Submitting...'; updateBatch(true)
 
-      // Resolve upstream prompt text at runtime
-      const runUpstreamPrompt = typeof freshInputs.prompt === 'string' ? freshInputs.prompt.trim()
-        : Array.isArray(freshInputs.prompt) ? (freshInputs.prompt as string[]).filter(Boolean).join('\n\n')
-        : ''
+            const merged = { ...baseOverrides, ...comboOverrides }
+            const res = await fetch(RUN_ENDPOINT, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                endpoint_id: endpointId || undefined, workflow,
+                file_inputs: fileInputs,
+                overrides: Object.keys(merged).length > 0 ? merged : undefined,
+                lock_seed: lockSeed || undefined,
+                bypass_loras: bypassLoras.length > 0 ? bypassLoras : undefined,
+              }),
+            })
+            const data = await res.json()
+            if (!data.ok) {
+              errors.push(data.error || 'Submit failed')
+              js.status = 'failed'; js.message = data.error || 'Submit failed'; updateBatch(true)
+              return
+            }
+            const jid = data.job_id as string
+            js.jobId = jid
+            jobIds.push(jid)
+            activeJobIds.add(jid)
+            js.status = 'running'; js.message = 'Queued'; updateBatch(true)
 
-      for (const to of textOverrides) {
-        const key = `${to.node_id}.${to.input_name}`
-        if (textUpstreamFlags[key] && runUpstreamPrompt) {
-          overrides[key] = runUpstreamPrompt
-        } else {
-          const val = textValues[key]
-          if (val != null && val.trim()) {
-            overrides[key] = val.trim()
+            try {
+              const job = await pollJob(jid, (msg) => {
+                js.message = msg; updateBatch()
+              }, signal)
+              const ja = job as unknown as Record<string, unknown>
+              const url = String(ja.local_image_url || ja.local_video_url || ja.video_url || '').trim()
+              if (url) {
+                urls.push(url); js.status = 'completed'; js.message = 'Done'
+                // Build per-job metadata from merged overrides + known UI state
+                const allOverrides = { ...baseOverrides, ...comboOverrides }
+                const jobMeta: Record<string, unknown> = {
+                  seed: ja.seed,
+                  software: 'ComfyUI (comfy-gen)',
+                }
+                // Extract KSampler settings from the merged overrides
+                const inferenceSettings: Record<string, string> = {}
+                for (const ks of ksamplers.slice(0, 3)) {
+                  for (const f of ['steps', 'cfg', 'denoise', 'sampler_name', 'scheduler'] as const) {
+                    const key = `${ks.node_id}.${f}`
+                    if (allOverrides[key]) inferenceSettings[f] = allOverrides[key]
+                  }
+                }
+                if (Object.keys(inferenceSettings).length > 0) jobMeta.inference_settings = inferenceSettings
+                // LoRA info
+                const loraNames: string[] = []
+                for (const ln of loraNodes) {
+                  if (loraOverrides[ln.node_id]?.enabled === false) continue
+                  const nameKey = `${ln.node_id}.lora_name`
+                  const name = allOverrides[nameKey] || loraOverrides[ln.node_id]?.lora_name || ln.lora_name
+                  const strength = allOverrides[`${ln.node_id}.strength_model`] || loraOverrides[ln.node_id]?.strength_model || ''
+                  loraNames.push(`${name.replace('.safetensors', '')}@${strength || '1'}`)
+                }
+                if (loraNames.length > 0) jobMeta.loras = loraNames
+                // Resolution
+                for (const rn of resolutionNodes) {
+                  const w = allOverrides[`${rn.width_source_node || rn.node_id}.${rn.width_source_field || 'width'}`] || resolutionOverrides[rn.node_id]?.width
+                  const h = allOverrides[`${rn.height_source_node || rn.node_id}.${rn.height_source_field || 'height'}`] || resolutionOverrides[rn.node_id]?.height
+                  if (w) jobMeta.width = w
+                  if (h) jobMeta.height = h
+                }
+                // Prompt from backend if available, else from text overrides
+                if (ja.prompt) jobMeta.prompt = ja.prompt
+                if (comboOverrides && Object.keys(comboOverrides).length > 0) jobMeta.overrides = comboOverrides
+                perJobMeta.push(jobMeta)
+                // Stream partial results to downstream blocks
+                const isVid = ['mp4', 'webm', 'mov', 'mkv', 'gif'].includes(url.split('.').pop()?.split('?')[0]?.toLowerCase() || '')
+                if (isVid) setOutput('video', urls.length === 1 ? urls[0] : [...urls])
+                else setOutput('image', urls.length === 1 ? urls[0] : [...urls])
+                setOutput('metadata', perJobMeta.length === 1 ? perJobMeta[0] : [...perJobMeta])
+              }
+              else { errors.push(`Job ${jid}: no output`); js.status = 'failed'; js.message = 'No output' }
+            } catch (e) {
+              if (!signal.aborted) {
+                const msg = e instanceof Error ? e.message : String(e)
+                errors.push(`Job ${jid}: ${msg}`)
+                js.status = 'failed'; js.message = msg
+              }
+            } finally {
+              activeJobIds.delete(jid)
+              updateBatch(true)
+            }
           }
+
+          // Sliding window
+          const inFlight = new Set<Promise<void>>()
+          let comboIdx = 0
+          for (const combo of combinations) {
+            if (signal.aborted) break
+            while (inFlight.size >= MAX_BATCH_PARALLEL) await Promise.race(inFlight)
+            if (signal.aborted) break
+            const idx = comboIdx++
+            const p = runOne(combo, idx).finally(() => inFlight.delete(p))
+            inFlight.add(p)
+            updateBatch()
+          }
+          await Promise.all(inFlight)
+        } finally {
+          signal.removeEventListener('abort', onAbort)
+          if (batchUpdateTimer) clearTimeout(batchUpdateTimer)
+          setBatchState(null)
         }
+
+        if (urls.length === 0) throw new Error(`All ${errors.length} jobs failed`)
+
+        const isVideo = urls.some((u) => {
+          const ext = u.split('.').pop()?.split('?')[0]?.toLowerCase() || ''
+          return ['mp4', 'webm', 'mov', 'mkv', 'gif'].includes(ext)
+        })
+        if (isVideo) setOutput('video', urls.length === 1 ? urls[0] : urls)
+        else setOutput('image', urls.length === 1 ? urls[0] : urls)
+        setOutput('metadata', perJobMeta.length === 1 ? perJobMeta[0] : perJobMeta)
+        setProgress(null)
+        setStatusMessage(`Done (${urls.length}/${combinations.length})`)
+        setExecutionStatus?.('completed')
+        return errors.length > 0 ? { partialFailure: true } : undefined
       }
 
+      // --- SINGLE JOB PATH (unchanged) ---
       const res = await fetch(RUN_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          endpoint_id: endpointId || undefined,
-          workflow,
-          file_inputs: fileInputs,
-          overrides: Object.keys(overrides).length > 0 ? overrides : undefined,
+          endpoint_id: endpointId || undefined, workflow, file_inputs: fileInputs,
+          overrides: Object.keys(baseOverrides).length > 0 ? baseOverrides : undefined,
           lock_seed: lockSeed || undefined,
           bypass_loras: bypassLoras.length > 0 ? bypassLoras : undefined,
         }),
       })
       const data = await res.json()
       if (!data.ok) throw new Error(data.error || 'Submit failed')
-
       const jobId = data.job_id as string
       setStatusMessage('Polling...')
-
-      // Cancel backend job if the pipeline is aborted
-      const onAbort = () => {
-        fetch(`${CANCEL_ENDPOINT}/${encodeURIComponent(jobId)}`, { method: 'POST' }).catch(() => {})
-      }
+      const onAbort = () => { fetch(`${CANCEL_ENDPOINT}/${encodeURIComponent(jobId)}`, { method: 'POST' }).catch(() => {}) }
       signal.addEventListener('abort', onAbort, { once: true })
-
       let job: Job
-      try {
-        job = await pollJob(jobId)
-      } finally {
-        signal.removeEventListener('abort', onAbort)
-      }
-
+      try { job = await pollJob(jobId, undefined, signal) } finally { signal.removeEventListener('abort', onAbort) }
       const jobAny = job as unknown as Record<string, unknown>
-      const outputUrl = String(
-        jobAny.local_image_url || jobAny.local_video_url || jobAny.video_url || ''
-      ).trim()
-
+      const outputUrl = String(jobAny.local_image_url || jobAny.local_video_url || jobAny.video_url || '').trim()
       if (!outputUrl) throw new Error('Job completed but no output URL')
-
       const ext = outputUrl.split('.').pop()?.split('?')[0]?.toLowerCase() || ''
       const isVideo = ['mp4', 'webm', 'mov', 'mkv', 'gif'].includes(ext)
-
-      if (isVideo) {
-        setOutput('video', outputUrl)
-      } else {
-        setOutput('image', outputUrl)
+      if (isVideo) setOutput('video', outputUrl)
+      else setOutput('image', outputUrl)
+      // Build metadata from UI state + backend response
+      const singleMeta: Record<string, unknown> = {
+        job_ids: [jobId], seed: jobAny.seed, software: 'ComfyUI (comfy-gen)',
       }
-
-      setOutput('metadata', {
-        job_ids: [jobId],
-        prompt: jobAny.prompt || '',
-        negative_prompt: jobAny.negative_prompt || '',
-        seed: jobAny.seed,
-        model: jobAny.model_cls || '',
-        task_type: jobAny.task_type || '',
-        resolution: jobAny.resolution || '',
-        width: (jobAny.resolution as Record<string, unknown>)?.width,
-        height: (jobAny.resolution as Record<string, unknown>)?.height,
-        frames: jobAny.frames,
-        fps: jobAny.fps,
-        model_hashes: jobAny.model_hashes || {},
-        lora_hashes: jobAny.lora_hashes || {},
-        inference_settings: jobAny.inference_settings || {},
-        software: 'ComfyUI (comfy-gen)',
-      })
-
+      // KSampler settings from what we submitted
+      const singleInference: Record<string, string> = {}
+      for (const ks of ksamplers.slice(0, 3)) {
+        for (const f of ['steps', 'cfg', 'denoise', 'sampler_name', 'scheduler'] as const) {
+          const key = `${ks.node_id}.${f}`
+          if (baseOverrides[key]) singleInference[f] = baseOverrides[key]
+        }
+      }
+      if (Object.keys(singleInference).length > 0) singleMeta.inference_settings = singleInference
+      // LoRAs
+      const singleLoras: string[] = []
+      for (const ln of loraNodes) {
+        if (loraOverrides[ln.node_id]?.enabled === false) continue
+        const name = baseOverrides[`${ln.node_id}.lora_name`] || loraOverrides[ln.node_id]?.lora_name || ln.lora_name
+        const str = baseOverrides[`${ln.node_id}.strength_model`] || loraOverrides[ln.node_id]?.strength_model || ''
+        singleLoras.push(`${name.replace('.safetensors', '')}@${str || '1'}`)
+      }
+      if (singleLoras.length > 0) singleMeta.loras = singleLoras
+      // Resolution
+      for (const rn of resolutionNodes) {
+        const w = baseOverrides[`${rn.width_source_node || rn.node_id}.${rn.width_source_field || 'width'}`] || resolutionOverrides[rn.node_id]?.width
+        const h = baseOverrides[`${rn.height_source_node || rn.node_id}.${rn.height_source_field || 'height'}`] || resolutionOverrides[rn.node_id]?.height
+        if (w) singleMeta.width = w
+        if (h) singleMeta.height = h
+      }
+      // Frames
+      for (const fc of frameCounts) {
+        const val = baseOverrides[`${fc.source_node || fc.node_id}.${fc.source_field || fc.field}`]
+        if (val) singleMeta.frames = val
+      }
+      // Prompt from backend if available
+      if (jobAny.prompt) singleMeta.prompt = jobAny.prompt
+      if (jobAny.negative_prompt) singleMeta.negative_prompt = jobAny.negative_prompt
+      if (jobAny.model_cls) singleMeta.model = jobAny.model_cls
+      setOutput('metadata', singleMeta)
       setProgress(null)
       setStatusMessage('Done')
       setExecutionStatus?.('completed')
@@ -902,6 +1342,115 @@ function ComfyGenBlock({
 
   return (
     <div className="space-y-3">
+      {/* Automation combination counter */}
+      {automateEnabled && automationAxes.length > 0 && (
+        <div className="flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-1.5">
+          <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          <span className="text-[11px] text-amber-400 font-medium">
+            {combinationCount} combination{combinationCount !== 1 ? 's' : ''}
+          </span>
+          <span className="text-[10px] text-muted-foreground">
+            ({automationAxes.map((a) => `${a.values.length} ${a.label}`).join(' x ')})
+          </span>
+        </div>
+      )}
+
+      {/* Batch progress */}
+      {batchState && (
+        <div className="space-y-1.5 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2">
+          <button type="button" className="flex items-center justify-between w-full text-[11px]" onClick={() => setBatchExpanded(!batchExpanded)}>
+            <span className="flex items-center gap-1.5">
+              <svg className={`w-2.5 h-2.5 text-muted-foreground transition-transform ${batchExpanded ? 'rotate-90' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="m9 18 6-6-6-6"/></svg>
+              <span className="text-amber-400 font-medium">
+                {batchState.completed + batchState.failed}/{batchState.total} done
+              </span>
+            </span>
+            <span className="text-muted-foreground">
+              {batchState.running} running{batchState.queued > 0 ? `, ${batchState.queued} queued` : ''}
+              {batchState.failed > 0 && <span className="text-red-400 ml-1">({batchState.failed} failed)</span>}
+            </span>
+          </button>
+          <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+            <div
+              className="h-full rounded-full bg-amber-500 transition-all duration-500"
+              style={{ width: `${Math.max(((batchState.completed + batchState.failed) / batchState.total) * 100, 2)}%` }}
+            />
+          </div>
+          {batchExpanded && (
+            <div className="space-y-0.5 max-h-[120px] overflow-y-auto">
+              {batchState.jobs.filter((j) => j.status !== 'queued').map((j) => (
+                <div key={j.index} className="flex items-center gap-2 text-[10px]">
+                  <span className="text-muted-foreground w-4 text-right shrink-0">#{j.index}</span>
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${
+                    j.status === 'completed' ? 'bg-green-500' :
+                    j.status === 'failed' ? 'bg-red-500' :
+                    j.status === 'running' ? 'bg-amber-500 animate-pulse' :
+                    'bg-muted-foreground/30'
+                  }`} />
+                  <span className={`truncate ${j.status === 'failed' ? 'text-red-400' : 'text-muted-foreground'}`}>
+                    {j.message}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Missing models UI */}
+      {missingModels && missingModels.length > 0 && (
+        <div className="rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 space-y-2">
+          <p className="text-xs text-red-400 font-medium">Missing models on endpoint:</p>
+          <div className="space-y-0.5">
+            {missingModels.map((m, i) => (
+              <div key={i} className="flex items-center gap-2 text-[11px]">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${m.download_url ? 'bg-green-500' : 'bg-red-500'}`} />
+                <span className="text-muted-foreground truncate">{m.filename}</span>
+                <span className="text-muted-foreground/50 text-[10px] shrink-0">({m.class_type})</span>
+              </div>
+            ))}
+          </div>
+          {(() => {
+            const downloadable = missingModels.filter((m) => m.download_url)
+            const notDownloadable = missingModels.filter((m) => !m.download_url)
+            return (
+              <div className="space-y-1.5">
+                {downloadable.length > 0 && !downloadRunning && !downloadStatus.startsWith('Downloaded') && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs w-full border-green-500/30 text-green-400 hover:bg-green-500/10"
+                    onClick={startModelDownload}
+                  >
+                    Download {downloadable.length} model{downloadable.length !== 1 ? 's' : ''}
+                  </Button>
+                )}
+                {downloadRunning && (
+                  <div className="flex items-center gap-2 text-[11px] text-amber-400 animate-pulse">
+                    <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                    {downloadStatus}
+                  </div>
+                )}
+                {!downloadRunning && downloadStatus.startsWith('Downloaded') && (
+                  <p className="text-[11px] text-green-400">
+                    {downloadStatus} — run pipeline again
+                  </p>
+                )}
+                {downloadError && (
+                  <p className="text-[11px] text-red-400">{downloadError}</p>
+                )}
+                {notDownloadable.length > 0 && (
+                  <p className="text-[10px] text-muted-foreground">
+                    {notDownloadable.length} model{notDownloadable.length !== 1 ? 's' : ''} cannot be auto-downloaded — install manually:
+                    {notDownloadable.map((m) => ` ${m.filename}`).join(',')}
+                  </p>
+                )}
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
       {cliMissing && (
         <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-[11px] text-yellow-200">
           <span className="font-medium">comfy-gen CLI not found.</span>{' '}
@@ -1160,43 +1709,43 @@ function ComfyGenBlock({
               <div className="grid grid-cols-3 gap-2">
                 <div className="space-y-0.5">
                   <span className="text-[10px] text-muted-foreground">Steps</span>
-                  <Input
+                  <AutoNumericInput
                     type="number"
                     value={ksamplerOverrides[ks.node_id]?.steps ?? ''}
-                    onChange={(e) => setKsamplerOverrides((prev) => ({
-                      ...prev,
-                      [ks.node_id]: { ...prev[ks.node_id], steps: e.target.value },
-                    }))}
+                    onChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], steps: v } }))}
+                    multiValues={autoNumeric[`${ks.node_id}.steps`] || []}
+                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ks.node_id}.steps`]: vals }))}
+                    automateEnabled={automateEnabled}
                     placeholder={ks.steps != null ? String(ks.steps) : '—'}
                     className="h-7 text-xs"
                   />
                 </div>
                 <div className="space-y-0.5">
                   <span className="text-[10px] text-muted-foreground">CFG</span>
-                  <Input
+                  <AutoNumericInput
                     type="number"
                     step="0.1"
                     value={ksamplerOverrides[ks.node_id]?.cfg ?? ''}
-                    onChange={(e) => setKsamplerOverrides((prev) => ({
-                      ...prev,
-                      [ks.node_id]: { ...prev[ks.node_id], cfg: e.target.value },
-                    }))}
+                    onChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], cfg: v } }))}
+                    multiValues={autoNumeric[`${ks.node_id}.cfg`] || []}
+                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ks.node_id}.cfg`]: vals }))}
+                    automateEnabled={automateEnabled}
                     placeholder={ks.cfg != null ? String(ks.cfg) : '—'}
                     className="h-7 text-xs"
                   />
                 </div>
                 <div className="space-y-0.5">
                   <span className="text-[10px] text-muted-foreground">Denoise</span>
-                  <Input
+                  <AutoNumericInput
                     type="number"
                     step="0.01"
                     min="0"
                     max="1"
                     value={ksamplerOverrides[ks.node_id]?.denoise ?? ''}
-                    onChange={(e) => setKsamplerOverrides((prev) => ({
-                      ...prev,
-                      [ks.node_id]: { ...prev[ks.node_id], denoise: e.target.value },
-                    }))}
+                    onChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], denoise: v } }))}
+                    multiValues={autoNumeric[`${ks.node_id}.denoise`] || []}
+                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ks.node_id}.denoise`]: vals }))}
+                    automateEnabled={automateEnabled}
                     placeholder={ks.denoise != null ? String(ks.denoise) : '—'}
                     className="h-7 text-xs"
                   />
@@ -1205,47 +1754,29 @@ function ComfyGenBlock({
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-0.5 min-w-0">
                   <span className="text-[10px] text-muted-foreground">Sampler</span>
-                  <Select
+                  <AutoSelectMulti
                     value={ksamplerOverrides[ks.node_id]?.sampler_name || ks.sampler_name || ''}
-                    onValueChange={(v) => setKsamplerOverrides((prev) => ({
-                      ...prev,
-                      [ks.node_id]: { ...prev[ks.node_id], sampler_name: v },
-                    }))}
-                  >
-                    <SelectTrigger className="h-7 text-xs">
-                      <SelectValue placeholder={ks.sampler_name || '—'} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(availableSamplers.length > 0
-                        ? availableSamplers
-                        : ks.sampler_name ? [ks.sampler_name] : []
-                      ).map((s) => (
-                        <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    onValueChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], sampler_name: v } }))}
+                    options={availableSamplers.length > 0 ? availableSamplers : ks.sampler_name ? [ks.sampler_name] : []}
+                    selectedValues={autoSelect[`${ks.node_id}.sampler_name`] || []}
+                    onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ks.node_id}.sampler_name`]: vals }))}
+                    automateEnabled={automateEnabled}
+                    placeholder={ks.sampler_name || '—'}
+                    triggerClassName="h-7 text-xs"
+                  />
                 </div>
                 <div className="space-y-0.5 min-w-0">
                   <span className="text-[10px] text-muted-foreground">Scheduler</span>
-                  <Select
+                  <AutoSelectMulti
                     value={ksamplerOverrides[ks.node_id]?.scheduler || ks.scheduler || ''}
-                    onValueChange={(v) => setKsamplerOverrides((prev) => ({
-                      ...prev,
-                      [ks.node_id]: { ...prev[ks.node_id], scheduler: v },
-                    }))}
-                  >
-                    <SelectTrigger className="h-7 text-xs">
-                      <SelectValue placeholder={ks.scheduler || '—'} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {(availableSchedulers.length > 0
-                        ? availableSchedulers
-                        : ks.scheduler ? [ks.scheduler] : []
-                      ).map((s) => (
-                        <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    onValueChange={(v) => setKsamplerOverrides((prev) => ({ ...prev, [ks.node_id]: { ...prev[ks.node_id], scheduler: v } }))}
+                    options={availableSchedulers.length > 0 ? availableSchedulers : ks.scheduler ? [ks.scheduler] : []}
+                    selectedValues={autoSelect[`${ks.node_id}.scheduler`] || []}
+                    onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ks.node_id}.scheduler`]: vals }))}
+                    automateEnabled={automateEnabled}
+                    placeholder={ks.scheduler || '—'}
+                    triggerClassName="h-7 text-xs"
+                  />
                 </div>
               </div>
             </div>
@@ -1279,24 +1810,16 @@ function ComfyGenBlock({
                 <div className="flex items-center gap-2">
                   <div className={`min-w-0 flex-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
                     {availableLoras.length > 0 ? (
-                      <Select
+                      <AutoSelectMulti
                         value={ov?.lora_name || ln.lora_name}
-                        onValueChange={(v) => setLoraOverrides((prev) => ({
-                          ...prev,
-                          [ln.node_id]: { ...prev[ln.node_id], lora_name: v },
-                        }))}
-                      >
-                        <SelectTrigger className="h-7 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableLoras.map((name) => (
-                            <SelectItem key={name} value={name}>
-                              <span className="truncate">{name}</span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                        onValueChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], lora_name: v } }))}
+                        options={availableLoras}
+                        selectedValues={autoSelect[`${ln.node_id}.lora_name`] || []}
+                        onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ln.node_id}.lora_name`]: vals }))}
+                        automateEnabled={automateEnabled}
+                        placeholder={ln.lora_name}
+                        triggerClassName="h-7 text-xs"
+                      />
                     ) : (
                       <Input
                         value={ov?.lora_name ?? ln.lora_name}
@@ -1324,40 +1847,24 @@ function ComfyGenBlock({
                     }`} />
                   </button>
                 </div>
-                <div className={`flex items-center gap-2 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
-                  <div className="space-y-0.5 w-20">
-                    <span className="text-[10px] text-muted-foreground">Model</span>
-                    <Input
-                      type="number"
-                      step="0.05"
-                      min="0"
-                      max="2"
-                      value={ov?.strength_model ?? ''}
-                      onChange={(e) => setLoraOverrides((prev) => ({
-                        ...prev,
-                        [ln.node_id]: { ...prev[ln.node_id], strength_model: e.target.value },
-                      }))}
-                      placeholder={ln.strength_model != null ? String(ln.strength_model) : '1'}
-                      className="h-7 text-xs"
-                    />
-                  </div>
+                <div className={`space-y-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                  <AutoSliderInput
+                    label="Model"
+                    value={ov?.strength_model ?? (ln.strength_model != null ? String(ln.strength_model) : '1')}
+                    onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_model: v } }))}
+                    multiValues={autoNumeric[`${ln.node_id}.strength_model`] || []}
+                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_model`]: vals }))}
+                    automateEnabled={automateEnabled}
+                  />
                   {hasClip && (
-                    <div className="space-y-0.5 w-20">
-                      <span className="text-[10px] text-muted-foreground">CLIP</span>
-                      <Input
-                        type="number"
-                        step="0.05"
-                        min="0"
-                        max="2"
-                        value={ov?.strength_clip ?? ''}
-                        onChange={(e) => setLoraOverrides((prev) => ({
-                          ...prev,
-                          [ln.node_id]: { ...prev[ln.node_id], strength_clip: e.target.value },
-                        }))}
-                        placeholder={ln.strength_clip != null ? String(ln.strength_clip) : '1'}
-                        className="h-7 text-xs"
-                      />
-                    </div>
+                    <AutoSliderInput
+                      label="CLIP"
+                      value={ov?.strength_clip ?? (ln.strength_clip != null ? String(ln.strength_clip) : '1')}
+                      onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_clip: v } }))}
+                      multiValues={autoNumeric[`${ln.node_id}.strength_clip`] || []}
+                      onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_clip`]: vals }))}
+                      automateEnabled={automateEnabled}
+                    />
                   )}
                 </div>
               </div>
@@ -1416,12 +1923,46 @@ function ComfyGenBlock({
                   )}
                 </div>
               ) : (
-                <Textarea
-                  value={textValues[key] ?? ''}
-                  onChange={(e) => setTextValues((prev) => ({ ...prev, [key]: e.target.value }))}
-                  placeholder={to.current_value ? undefined : 'Enter text...'}
-                  className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto"
-                />
+                <div className="space-y-1.5">
+                  <Textarea
+                    value={textValues[key] ?? ''}
+                    onChange={(e) => setTextValues((prev) => ({ ...prev, [key]: e.target.value }))}
+                    placeholder={to.current_value ? undefined : 'Enter text...'}
+                    className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto"
+                  />
+                  {/* Extra prompt textareas in automation mode */}
+                  {automateEnabled && (autoText[key] || []).map((extraVal, idx) => (
+                    <div key={idx} className="relative">
+                      <Textarea
+                        value={extraVal}
+                        onChange={(e) => setAutoText((prev) => {
+                          const arr = [...(prev[key] || [])]
+                          arr[idx] = e.target.value
+                          return { ...prev, [key]: arr }
+                        })}
+                        placeholder={`Prompt variant ${idx + 2}...`}
+                        className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto border-amber-500/30"
+                      />
+                      <button
+                        type="button"
+                        className="absolute top-1 right-1 text-muted-foreground hover:text-red-400 text-[10px] px-1"
+                        onClick={() => setAutoText((prev) => {
+                          const arr = (prev[key] || []).filter((_, i) => i !== idx)
+                          return { ...prev, [key]: arr }
+                        })}
+                      >x</button>
+                    </div>
+                  ))}
+                  {automateEnabled && (
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 text-[10px] text-amber-400 hover:text-amber-300"
+                      onClick={() => setAutoText((prev) => ({ ...prev, [key]: [...(prev[key] || []), ''] }))}
+                    >
+                      <span className="text-sm font-bold">+</span> Add prompt variant
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )
@@ -1442,6 +1983,23 @@ function ComfyGenBlock({
         )
       })}
 
+      {/* Batch confirmation dialog */}
+      <Dialog open={showBatchConfirm !== null} onOpenChange={(open) => {
+        if (!open) { confirmResolverRef.current?.(false); setShowBatchConfirm(null) }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Run {showBatchConfirm} combinations?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This will submit {showBatchConfirm} jobs (max {MAX_BATCH_PARALLEL} parallel). You can cancel at any time.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { confirmResolverRef.current?.(false); setShowBatchConfirm(null) }}>Cancel</Button>
+            <Button className="bg-amber-600 hover:bg-amber-700" onClick={() => { confirmResolverRef.current?.(true); setShowBatchConfirm(null) }}>Run All</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -1452,6 +2010,7 @@ export const blockDef: BlockDef = {
   description: 'Run ComfyUI workflows on RunPod serverless',
   size: 'huge',
   canStart: true,
+  iterator: true,
   inputs: [
     { name: 'image', kind: PORT_IMAGE, required: false },
     { name: 'video', kind: PORT_VIDEO, required: false },
@@ -1488,6 +2047,10 @@ export const blockDef: BlockDef = {
     'ref_video_overrides',
     'output_type',
     'lock_seed',
+    'automate_enabled',
+    'automate_numeric',
+    'automate_select',
+    'automate_text',
   ],
   component: ComfyGenBlock,
 }

@@ -36,6 +36,12 @@ def init_db() -> None:
             )
             """
         )
+        # Migration: add favorited column if missing
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()]
+        if "favorited" not in cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN favorited INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS jobs (
@@ -74,19 +80,28 @@ def save_run(run: dict[str, Any]) -> None:
         conn.close()
 
 
-def list_runs(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+def list_runs(limit: int = 50, offset: int = 0, favorited_only: bool = False) -> list[dict[str, Any]]:
     conn = _get_conn()
-    rows = conn.execute(
-        "SELECT * FROM runs ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    ).fetchall()
+    if favorited_only:
+        rows = conn.execute(
+            "SELECT * FROM runs WHERE favorited = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM runs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
     conn.close()
     return [_row_to_dict(r) for r in rows]
 
 
-def count_runs() -> int:
+def count_runs(favorited_only: bool = False) -> int:
     conn = _get_conn()
-    row = conn.execute("SELECT COUNT(*) AS count FROM runs").fetchone()
+    if favorited_only:
+        row = conn.execute("SELECT COUNT(*) AS count FROM runs WHERE favorited = 1").fetchone()
+    else:
+        row = conn.execute("SELECT COUNT(*) AS count FROM runs").fetchone()
     conn.close()
     return int(row["count"]) if row else 0
 
@@ -108,10 +123,26 @@ def delete_run(run_id: str) -> bool:
     return deleted
 
 
+def toggle_run_favorited(run_id: str) -> bool | None:
+    """Toggle the favorited flag on a run. Returns new value, or None if not found."""
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute("SELECT favorited FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if not row:
+            conn.close()
+            return None
+        new_val = 0 if row["favorited"] else 1
+        conn.execute("UPDATE runs SET favorited = ? WHERE id = ?", (new_val, run_id))
+        conn.commit()
+        conn.close()
+    return bool(new_val)
+
+
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["flow_snapshot"] = json.loads(d["flow_snapshot"])
     d["block_results"] = json.loads(d["block_results"])
+    d["favorited"] = bool(d.get("favorited", 0))
     return d
 
 

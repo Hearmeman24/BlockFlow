@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { AdaptiveImageFrame, AdaptiveVideoFrame } from '@/components/adaptive-media'
 import { usePipelineTabs } from '@/lib/pipeline/tabs-context'
-import { deleteRun } from '@/lib/api'
+import { deleteRun, toggleRunFavorite } from '@/lib/api'
 import type { RunEntry, BlockResult } from '@/lib/types'
 
 const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov', '.m4v', '.mkv', '.avi']
@@ -77,12 +77,12 @@ function classifyUrl(url: string): 'video' | 'audio' | 'image' | 'file' {
 }
 
 /** Find the primary artifact from block results (scan in reverse: video > image > prompt > any). */
-function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unknown; label: string } | null {
+function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unknown; label: string; blockIndex: number } | null {
   const priority = ['video', 'image', 'prompt']
   for (const kind of priority) {
     for (let i = results.length - 1; i >= 0; i--) {
       for (const [, out] of Object.entries(results[i].outputs)) {
-        if (out.kind === kind) return { kind: out.kind, value: out.value, label: results[i].block_label }
+        if (out.kind === kind) return { kind: out.kind, value: out.value, label: results[i].block_label, blockIndex: results[i].block_index }
       }
     }
   }
@@ -91,7 +91,7 @@ function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unk
     const entries = Object.entries(results[i].outputs)
     if (entries.length > 0) {
       const [, out] = entries[0]
-      return { kind: out.kind, value: out.value, label: results[i].block_label }
+      return { kind: out.kind, value: out.value, label: results[i].block_label, blockIndex: results[i].block_index }
     }
   }
   return null
@@ -174,8 +174,128 @@ function JsonArtifact({ value }: { value: unknown }) {
   )
 }
 
-function UrlArtifactGallery({ urls }: { urls: string[] }) {
-  const [selectedIndex, setSelectedIndex] = useState(0)
+const METADATA_DISPLAY_KEYS: { key: string; label: string }[] = [
+  { key: 'seed', label: 'Seed' },
+  { key: 'model', label: 'Model' },
+  { key: 'task_type', label: 'Task' },
+  { key: 'prompt', label: 'Prompt' },
+  { key: 'negative_prompt', label: 'Neg. Prompt' },
+  { key: 'width', label: 'Width' },
+  { key: 'height', label: 'Height' },
+  { key: 'frames', label: 'Frames' },
+  { key: 'fps', label: 'FPS' },
+]
+
+function MetadataArtifact({ value }: { value: unknown }) {
+  if (!value || typeof value !== 'object') return null
+  const meta = value as Record<string, unknown>
+
+  // Extract inference_settings (KSampler values, etc.)
+  const inference = (meta.inference_settings && typeof meta.inference_settings === 'object')
+    ? meta.inference_settings as Record<string, unknown>
+    : null
+
+  const rows: { label: string; value: string }[] = []
+
+  for (const { key, label } of METADATA_DISPLAY_KEYS) {
+    const v = meta[key]
+    if (v != null && v !== '' && v !== 0) {
+      rows.push({ label, value: String(v) })
+    }
+  }
+
+  // Add inference settings as individual rows
+  if (inference) {
+    for (const [k, v] of Object.entries(inference)) {
+      if (v != null && v !== '') rows.push({ label: k, value: String(v) })
+    }
+  }
+
+  // LoRAs — from array (new), string (legacy), or lora_hashes (old format)
+  if (Array.isArray(meta.loras) && meta.loras.length > 0) {
+    for (const l of meta.loras) {
+      const display = typeof l === 'string' ? l
+        : (l && typeof l === 'object' && 'name' in l)
+          ? `${String((l as Record<string, unknown>).name).replace('.safetensors', '')}@${(l as Record<string, unknown>).strength ?? '1'}`
+          : JSON.stringify(l)
+      rows.push({ label: rows.some((r) => r.label === 'LoRA') ? '' : 'LoRA', value: display })
+    }
+  } else if (typeof meta.loras === 'string' && meta.loras) {
+    for (const l of meta.loras.split(', ')) {
+      rows.push({ label: rows.some((r) => r.label === 'LoRA') ? '' : 'LoRA', value: l })
+    }
+  } else {
+    const loraHashes = meta.lora_hashes as Record<string, string> | undefined
+    if (loraHashes && typeof loraHashes === 'object' && Object.keys(loraHashes).length > 0) {
+      for (const n of Object.keys(loraHashes)) {
+        rows.push({ label: rows.some((r) => r.label === 'LoRA') ? '' : 'LoRA', value: n.replace('.safetensors', '') })
+      }
+    }
+  }
+
+  // Per-combo overrides (from automation)
+  const SKIP_OVERRIDE_FIELDS = new Set(['lora_name', 'strength_model', 'strength_clip'])
+  const overrides = meta.overrides as Record<string, string> | undefined
+  if (overrides && typeof overrides === 'object' && Object.keys(overrides).length > 0) {
+    for (const [k, v] of Object.entries(overrides)) {
+      const field = k.includes('.') ? k.split('.').pop()! : k
+      // Skip fields already shown via inference_settings or LoRAs
+      if (inference && field in inference) continue
+      if (SKIP_OVERRIDE_FIELDS.has(field)) continue
+      rows.push({ label: field, value: String(v) })
+    }
+  }
+
+  // Automation info
+  const automation = meta.automation as { axes?: string[]; total?: number } | undefined
+  if (automation?.total) {
+    rows.push({ label: 'Batch', value: `${meta.completed ?? '?'}/${automation.total} (${(automation.axes ?? []).join(' x ')})` })
+  }
+
+  if (rows.length === 0) return null
+
+  return (
+    <div className="rounded border border-border/50 p-2 space-y-0.5">
+      {rows.map((r) => (
+        <MetadataRow key={r.label} label={r.label} value={r.value} />
+      ))}
+    </div>
+  )
+}
+
+function MetadataRow({ label, value }: { label: string; value: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const truncated = value.length > 200
+
+  return (
+    <div className="flex gap-2 text-[10px]">
+      <span className="text-muted-foreground shrink-0 w-20 text-right">{label}</span>
+      <span className="text-foreground/80 break-all">
+        {truncated && !expanded ? value.slice(0, 200) : value}
+        {truncated && (
+          <button
+            type="button"
+            className="ml-1 text-blue-400 hover:text-blue-300"
+            onClick={() => setExpanded(!expanded)}
+          >
+            {expanded ? 'less' : '...more'}
+          </button>
+        )}
+      </span>
+    </div>
+  )
+}
+
+const VIEWER_BLOCK_TYPES = new Set(['imageViewer', 'videoViewer'])
+
+function UrlArtifactGallery({ urls, selectedIndex: externalIndex, onIndexChange }: { urls: string[]; selectedIndex?: number; onIndexChange?: (i: number) => void }) {
+  const [internalIndex, setInternalIndex] = useState(0)
+  const selectedIndex = externalIndex ?? internalIndex
+  const setSelectedIndex = (v: number | ((prev: number) => number)) => {
+    const next = typeof v === 'function' ? v(selectedIndex) : v
+    setInternalIndex(next)
+    onIndexChange?.(next)
+  }
 
   const maxIndex = Math.max(0, urls.length - 1)
   const safeIndex = Math.min(selectedIndex, maxIndex)
@@ -183,14 +303,15 @@ function UrlArtifactGallery({ urls }: { urls: string[] }) {
 
   useEffect(() => {
     if (selectedIndex > maxIndex) setSelectedIndex(maxIndex)
-  }, [selectedIndex, maxIndex])
+  }, [selectedIndex, maxIndex]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const hasMultiple = urls.length > 1
 
   return (
     <div className="space-y-2">
+      <UrlArtifact url={selectedUrl} />
       {hasMultiple && (
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center justify-center gap-3">
           <Button
             type="button"
             variant="outline"
@@ -214,12 +335,11 @@ function UrlArtifactGallery({ urls }: { urls: string[] }) {
           </Button>
         </div>
       )}
-      <UrlArtifact url={selectedUrl} />
     </div>
   )
 }
 
-function ArtifactPreview({ kind, value }: { kind: string; value: unknown }) {
+function ArtifactPreview({ kind, value, galleryIndex, onGalleryIndexChange }: { kind: string; value: unknown; galleryIndex?: number; onGalleryIndexChange?: (i: number) => void }) {
   if (value == null) {
     return (
       <div className="w-full h-16 bg-muted/30 rounded flex items-center justify-center">
@@ -236,7 +356,7 @@ function ArtifactPreview({ kind, value }: { kind: string; value: unknown }) {
 
         const urls = entries.filter((v) => isHttpOrLocalPath(v))
         if (urls.length > 0) {
-          return <UrlArtifactGallery urls={urls} />
+          return <UrlArtifactGallery urls={urls} selectedIndex={galleryIndex} onIndexChange={onGalleryIndexChange} />
         }
 
         return <JsonArtifact value={value} />
@@ -261,7 +381,7 @@ function ArtifactPreview({ kind, value }: { kind: string; value: unknown }) {
 
         const urls = entries.filter((v) => isHttpOrLocalPath(v))
         if (urls.length > 0) {
-          return <UrlArtifactGallery urls={urls} />
+          return <UrlArtifactGallery urls={urls} selectedIndex={galleryIndex} onIndexChange={onGalleryIndexChange} />
         }
 
         return <JsonArtifact value={value} />
@@ -280,13 +400,15 @@ function ArtifactPreview({ kind, value }: { kind: string; value: unknown }) {
         </div>
       )
     }
+    case 'text':
     default:
       if (typeof value === 'string') {
         if (isHttpOrLocalPath(value)) return <UrlArtifact url={value} />
         return (
-          <div className="rounded border border-border/50 p-2">
-            <p className="text-xs text-muted-foreground whitespace-pre-wrap break-words">{value}</p>
-          </div>
+          <details className="rounded border border-border/50 p-2">
+            <summary className="cursor-pointer text-xs text-muted-foreground truncate">{value.slice(0, 80)}{value.length > 80 ? '…' : ''}</summary>
+            <pre className="mt-2 text-xs text-muted-foreground whitespace-pre-wrap break-words font-mono">{value}</pre>
+          </details>
         )
       }
       if (Array.isArray(value) || typeof value === 'object') return <JsonArtifact value={value} />
@@ -301,18 +423,20 @@ function ArtifactPreview({ kind, value }: { kind: string; value: unknown }) {
 interface RunCardProps {
   run: RunEntry
   onDeleted?: () => void
+  onFavoriteToggled?: () => void
 }
 
-export function RunCard({ run, onDeleted }: RunCardProps) {
+export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
   const { addTab, setActiveTabId } = usePipelineTabs()
   const router = useRouter()
   const [expanded, setExpanded] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [fav, setFav] = useState(run.favorited ?? false)
+  const [galleryIndex, setGalleryIndex] = useState(0)
 
   const primary = findPrimaryArtifact(run.block_results)
 
   const handleRestore = () => {
-    // Create a new tab and write the flow snapshot to sessionStorage for it
     const flowJson = JSON.stringify(run.flow_snapshot)
     const tabId = addTab(run.name || 'Restored Run', flowJson)
     setActiveTabId(tabId)
@@ -329,12 +453,20 @@ export function RunCard({ run, onDeleted }: RunCardProps) {
     }
   }
 
+  const handleToggleFavorite = async () => {
+    const res = await toggleRunFavorite(run.id)
+    if (res.ok) {
+      setFav(res.favorited)
+      onFavoriteToggled?.()
+    }
+  }
+
   return (
     <Card className="overflow-hidden">
       {/* Primary artifact preview */}
       {primary && (
         <div className="p-3 pb-0">
-          <ArtifactPreview kind={primary.kind} value={primary.value} />
+          <ArtifactPreview kind={primary.kind} value={primary.value} galleryIndex={galleryIndex} onGalleryIndexChange={setGalleryIndex} />
         </div>
       )}
 
@@ -369,19 +501,70 @@ export function RunCard({ run, onDeleted }: RunCardProps) {
         {/* Expanded block outputs */}
         {expanded && (
           <div className="space-y-2 pt-1 border-t border-border/50">
-            {run.block_results.map((br) => {
+            {run.block_results
+              .filter((br) => {
+                // Hide the viewer that is the primary artifact (already shown above)
+                if (VIEWER_BLOCK_TYPES.has(br.block_type) && br.block_index === primary?.blockIndex) return false
+                return true
+              })
+              .map((br) => {
               const outputEntries = Object.entries(br.outputs)
               if (outputEntries.length === 0) return null
+
+              // Viewer blocks (non-primary): show as collapsible media row
+              if (VIEWER_BLOCK_TYPES.has(br.block_type)) {
+                const mediaOut = outputEntries.find(([, out]) => out.kind === 'image' || out.kind === 'video')
+                if (!mediaOut) return null
+                const isVideo = mediaOut[1].kind === 'video'
+                return (
+                  <details key={br.block_index} className="rounded border border-border/50">
+                    <summary className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-[10px] text-muted-foreground hover:text-foreground">
+                      <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        {isVideo ? (
+                          <><rect x="2" y="2" width="20" height="20" rx="2"/><polygon points="10 8 16 12 10 16 10 8"/></>
+                        ) : (
+                          <><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></>
+                        )}
+                      </svg>
+                      {br.block_index + 1}. {br.block_label}
+                    </summary>
+                    <div className="px-2 pb-2">
+                      {(() => {
+                        const val = mediaOut[1].value
+                        if (Array.isArray(val)) {
+                          const url = val[galleryIndex] ?? val[0]
+                          return typeof url === 'string' ? <UrlArtifact url={url} /> : null
+                        }
+                        return typeof val === 'string' ? <UrlArtifact url={val} /> : null
+                      })()}
+                    </div>
+                  </details>
+                )
+              }
+
+              // Render metadata port as formatted key-value
+              const metaEntry = outputEntries.find(([, out]) => out.kind === 'metadata')
+              const otherEntries = outputEntries.filter(([, out]) => out.kind !== 'metadata')
+
               return (
                 <div key={br.block_index} className="space-y-1">
                   <p className="text-[10px] font-medium text-muted-foreground">
                     {br.block_index + 1}. {br.block_label}
                   </p>
-                  {outputEntries.map(([portName, out]) => (
-                    <div key={portName}>
-                      <ArtifactPreview kind={out.kind} value={out.value} />
-                    </div>
-                  ))}
+                  {metaEntry && (
+                    Array.isArray(metaEntry[1].value)
+                      ? <MetadataArtifact value={(metaEntry[1].value as unknown[])[galleryIndex] ?? metaEntry[1].value[0]} />
+                      : <MetadataArtifact value={metaEntry[1].value} />
+                  )}
+                  {otherEntries.map(([portName, out]) => {
+                    // Skip image/video outputs that duplicate the primary artifact
+                    if (out.kind === 'image' || out.kind === 'video') return null
+                    return (
+                      <div key={portName}>
+                        <ArtifactPreview kind={out.kind} value={out.value} />
+                      </div>
+                    )
+                  })}
                 </div>
               )
             })}
@@ -400,6 +583,16 @@ export function RunCard({ run, onDeleted }: RunCardProps) {
             onClick={() => setExpanded((v) => !v)}
           >
             {expanded ? 'Less' : 'Details'}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`h-7 w-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
+            onClick={handleToggleFavorite}
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+            </svg>
           </Button>
           <Button
             variant="ghost"

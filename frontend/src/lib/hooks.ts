@@ -4,10 +4,10 @@ import useSWR from 'swr'
 import { fetchRuns } from './api'
 import type { RunEntry } from './types'
 
-export function useRuns(limit = 50, offset = 0) {
+export function useRuns(limit = 50, offset = 0, favorited = false) {
   const { data, error, isLoading, mutate } = useSWR(
-    ['runs', limit, offset],
-    () => fetchRuns(limit, offset),
+    ['runs', limit, offset, favorited],
+    () => fetchRuns(limit, offset, favorited),
     { revalidateOnFocus: true }
   )
 

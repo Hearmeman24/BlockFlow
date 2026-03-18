@@ -1028,7 +1028,7 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
         services._update_job(job_id, status="SUBMITTING")
 
         # Build comfy-gen command
-        cmd = ["comfy-gen", "submit", workflow_path]
+        cmd = ["comfy-gen", "submit", workflow_path, "--timeout", str(config.POLL_TIMEOUT_SEC)]
         if endpoint_id:
             cmd.extend(["--endpoint-id", endpoint_id])
         for node_id, local_path in file_inputs.items():

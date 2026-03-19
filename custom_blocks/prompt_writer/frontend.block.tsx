@@ -568,7 +568,8 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       </div>
 
       <AddPromptDialog open={addDialogOpen} onOpenChange={setAddDialogOpen}
-        onSave={addPrompt} defaultType={addDialogType} defaultContent={addDialogContent} />
+        onSave={addPrompt} onDelete={deletePrompt} prompts={[...systemPrompts, ...userPrompts]}
+        defaultType={addDialogType} defaultContent={addDialogContent} />
 
       {output && (
         <div className="space-y-1">

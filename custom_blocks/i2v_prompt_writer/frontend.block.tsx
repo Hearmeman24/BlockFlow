@@ -421,7 +421,8 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
       </div>
 
       <AddPromptDialog open={addDialogOpen} onOpenChange={setAddDialogOpen}
-        onSave={addPrompt} defaultType={addDialogType} defaultContent={addDialogContent} />
+        onSave={addPrompt} onDelete={deletePrompt} prompts={[...systemPrompts, ...userPrompts]}
+        defaultType={addDialogType} defaultContent={addDialogContent} />
 
       {output && (
         <div className="space-y-1">
@@ -440,7 +441,7 @@ export const blockDef: BlockDef = {
   size: 'lg',
   canStart: true,
   starterPrereqs: ['uploadImageToTmpfiles'],
-  inputs: [{ name: 'image', kind: PORT_IMAGE, required: false }],
+  inputs: [{ name: 'image', kind: PORT_IMAGE, required: true }],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],
   configKeys: ['local_settings', 'variants', 'user_prompt', 'output'],
   component: I2VPromptWriterBlock,

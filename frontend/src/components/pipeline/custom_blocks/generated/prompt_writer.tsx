@@ -31,6 +31,7 @@ import {
 const SETTINGS_ENDPOINT = '/api/blocks/prompt_writer/settings'
 const MODELS_ENDPOINT = '/api/blocks/prompt_writer/models'
 const GENERATE_ENDPOINT = '/api/blocks/prompt_writer/generate'
+const GENERATE_IDEAS_ENDPOINT = '/api/blocks/prompt_writer/generate-ideas'
 type WriterMode = 'video' | 'image'
 
 const DEFAULT_MAX_VARIANTS = 8
@@ -165,6 +166,12 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
   })
   const { systemPrompts, userPrompts, addPrompt, deletePrompt } = usePromptLibrary()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
+  const [ideaGenOpen, setIdeaGenOpen] = useState(false)
+  const [promptsExpanded, setPromptsExpanded] = useState(false)
+  const [editingPromptIdx, setEditingPromptIdx] = useState<number | null>(null)
+  const [ideaDescription, setIdeaDescription] = useState('')
+  const [ideaCount, setIdeaCount] = useState(8)
+  const [ideaGenerating, setIdeaGenerating] = useState(false)
   const [addDialogType, setAddDialogType] = useState<'system' | 'user'>('user')
   const [addDialogContent, setAddDialogContent] = useState('')
 
@@ -420,33 +427,151 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
               : 'Describe what kind of video prompt you want...'
           }
           className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto text-xs" />
-        {/* Extra user prompts for iteration */}
-        {extraUserPrompts.map((extra, idx) => (
-          <div key={idx} className="relative">
-            <Textarea
-              value={extra}
-              onChange={(e) => setExtraUserPrompts((prev) => { const arr = [...prev]; arr[idx] = e.target.value; return arr })}
-              placeholder={`User prompt ${idx + 2}...`}
-              className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto text-xs border-violet-500/30"
-            />
-            <button
-              type="button"
-              className="absolute top-1 right-1 text-muted-foreground hover:text-red-400 text-[10px] px-1"
-              onClick={() => setExtraUserPrompts((prev) => prev.filter((_, i) => i !== idx))}
-            >x</button>
+        {/* Extra user prompts */}
+        {extraUserPrompts.length > 0 && (
+          <div className="space-y-1">
+            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground w-full">
+              <button
+                type="button"
+                className="flex items-center gap-1.5 hover:text-foreground"
+                onClick={() => setPromptsExpanded(!promptsExpanded)}
+              >
+                <svg className={`w-2.5 h-2.5 transition-transform ${promptsExpanded ? 'rotate-90' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="m9 18 6-6-6-6"/></svg>
+                <span className="font-medium">{extraUserPrompts.length} additional prompt{extraUserPrompts.length !== 1 ? 's' : ''}</span>
+              </button>
+              <button
+                type="button"
+                className="ml-auto text-red-400/60 hover:text-red-400 text-[10px]"
+                onClick={() => { setExtraUserPrompts([]); setEditingPromptIdx(null) }}
+              >Clear all</button>
+            </div>
+            {promptsExpanded && (
+              <div className="max-h-[200px] overflow-y-auto space-y-0.5 rounded border border-border/50 p-1.5">
+                {extraUserPrompts.map((extra, idx) => (
+                  editingPromptIdx === idx ? (
+                    <div key={idx} className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-muted-foreground">Prompt {idx + 2}</span>
+                        <div className="flex items-center gap-1">
+                          {extra?.trim() && (
+                            <button type="button" onClick={() => { setAddDialogType('user'); setAddDialogContent(extra); setAddDialogOpen(true) }}
+                              className="text-[10px] text-muted-foreground hover:text-foreground">Save</button>
+                          )}
+                          <PromptPickerDropdown prompts={userPrompts} onSelect={(content) => setExtraUserPrompts((prev) => { const arr = [...prev]; arr[idx] = content; return arr })} onDelete={deletePrompt} />
+                          <button type="button" className="text-[10px] text-blue-400" onClick={() => setEditingPromptIdx(null)}>Done</button>
+                        </div>
+                      </div>
+                      <Textarea
+                        value={extra}
+                        onChange={(e) => setExtraUserPrompts((prev) => { const arr = [...prev]; arr[idx] = e.target.value; return arr })}
+                        placeholder={`User prompt ${idx + 2}...`}
+                        className="min-h-[60px] max-h-[100px] resize-y overflow-y-auto text-xs border-violet-500/30"
+                      />
+                    </div>
+                  ) : (
+                    <div key={idx} className="flex items-center gap-1.5 text-[10px] group">
+                      <span className="text-muted-foreground/50 w-4 text-right shrink-0">{idx + 2}</span>
+                      <span
+                        className="truncate flex-1 text-muted-foreground cursor-pointer hover:text-foreground"
+                        onClick={() => setEditingPromptIdx(idx)}
+                      >
+                        {extra || <span className="italic text-muted-foreground/40">Empty</span>}
+                      </span>
+                      <button
+                        type="button"
+                        className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-red-400 shrink-0"
+                        onClick={() => { setExtraUserPrompts((prev) => prev.filter((_, i) => i !== idx)); if (editingPromptIdx === idx) setEditingPromptIdx(null) }}
+                      >x</button>
+                    </div>
+                  )
+                ))}
+              </div>
+            )}
           </div>
-        ))}
-        <button
-          type="button"
-          className="flex items-center gap-1 text-[10px] text-violet-400 hover:text-violet-300"
-          onClick={() => setExtraUserPrompts((prev) => [...prev, ''])}
-        >
-          <span className="text-sm font-bold">+</span> Add user prompt
-        </button>
+        )}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            className="flex items-center gap-1 text-[10px] text-violet-400 hover:text-violet-300"
+            onClick={() => setExtraUserPrompts((prev) => [...prev, ''])}
+          >
+            <span className="text-sm font-bold">+</span> Add prompt
+          </button>
+          <button
+            type="button"
+            className="flex items-center gap-1 text-[10px] text-amber-400 hover:text-amber-300"
+            onClick={() => setIdeaGenOpen(!ideaGenOpen)}
+          >
+            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            Generate ideas
+          </button>
+        </div>
+        {ideaGenOpen && (
+          <div className="rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 space-y-2">
+            <div className="space-y-1">
+              <Label className="text-[10px] text-amber-400">Describe what you want</Label>
+              <Textarea
+                value={ideaDescription}
+                onChange={(e) => setIdeaDescription(e.target.value)}
+                placeholder="e.g., Travel photo pack in Thailand, varied outfits and beach/city locations"
+                className="min-h-[50px] max-h-[80px] resize-y overflow-y-auto text-xs border-amber-500/30"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="shrink-0 w-16">
+                <Select value={String(ideaCount)} onValueChange={(v) => setIdeaCount(Number(v))}>
+                  <SelectTrigger className="h-7 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[4, 8, 16, 24, 32, 48].map((n) => (
+                      <SelectItem key={n} value={String(n)} className="text-xs">{n}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs min-w-0 flex-1 border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+                disabled={ideaGenerating || !ideaDescription.trim() || !s.model}
+                onClick={async () => {
+                  setIdeaGenerating(true)
+                  try {
+                    const res = await fetch(GENERATE_IDEAS_ENDPOINT, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ model: s.model, description: ideaDescription, count: ideaCount, temperature: s.temperature }),
+                    })
+                    const data = await res.json()
+                    if (data.ok && Array.isArray(data.ideas)) {
+                      // First idea goes to main prompt if empty, rest go to extras
+                      const ideas = data.ideas as string[]
+                      if (ideas.length > 0) {
+                        setUserPrompt(ideas[0])
+                        setExtraUserPrompts((prev) => [...prev, ...ideas.slice(1)])
+                      }
+                      setIdeaGenOpen(false)
+                    } else {
+                      alert(data.error || 'Failed to generate ideas')
+                    }
+                  } catch (e) {
+                    alert(String(e))
+                  } finally {
+                    setIdeaGenerating(false)
+                  }
+                }}
+              >
+                {ideaGenerating ? 'Generating...' : `Generate ${ideaCount} ideas`}
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       <AddPromptDialog open={addDialogOpen} onOpenChange={setAddDialogOpen}
-        onSave={addPrompt} defaultType={addDialogType} defaultContent={addDialogContent} />
+        onSave={addPrompt} onDelete={deletePrompt} prompts={[...systemPrompts, ...userPrompts]}
+        defaultType={addDialogType} defaultContent={addDialogContent} />
 
       {output && (
         <div className="space-y-1">
@@ -467,8 +592,6 @@ export const blockDef: BlockDef = {
   inputs: [],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],
   configKeys: ['local_settings', 'variants', 'user_prompt', 'extra_user_prompts', 'output'],
-  iterator: true,
-  iteratorOutput: 'prompt',
   component: PromptWriterBlock,
 }
 

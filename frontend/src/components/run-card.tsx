@@ -256,8 +256,8 @@ function MetadataArtifact({ value }: { value: unknown }) {
 
   return (
     <div className="rounded border border-border/50 p-2 space-y-0.5">
-      {rows.map((r) => (
-        <MetadataRow key={r.label} label={r.label} value={r.value} />
+      {rows.map((r, i) => (
+        <MetadataRow key={`${r.label}-${i}`} label={r.label} value={r.value} />
       ))}
     </div>
   )

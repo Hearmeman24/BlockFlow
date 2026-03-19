@@ -46,6 +46,33 @@ export function RunHistory() {
     )
   }
 
+  const prevNextButtons = (
+    <div className="flex items-center gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="h-8 px-3"
+        disabled={!canGoPrev}
+        onClick={() => setPage((current) => Math.max(1, current - 1))}
+      >
+        <ChevronLeft className="size-4" />
+        Prev
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="h-8 px-3"
+        disabled={!canGoNext}
+        onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+      >
+        Next
+        <ChevronRight className="size-4" />
+      </Button>
+    </div>
+  )
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -72,36 +99,17 @@ export function RunHistory() {
           </Button>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 px-3"
-            disabled={!canGoPrev}
-            onClick={() => setPage((current) => Math.max(1, current - 1))}
-          >
-            <ChevronLeft className="size-4" />
-            Prev
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 px-3"
-            disabled={!canGoNext}
-            onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-          >
-            Next
-            <ChevronRight className="size-4" />
-          </Button>
-        </div>
+        {prevNextButtons}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
         {runs.map((run) => (
           <RunCard key={run.id} run={run} onDeleted={() => mutate()} onFavoriteToggled={() => mutate()} />
         ))}
+      </div>
+
+      <div className="flex justify-end">
+        {prevNextButtons}
       </div>
     </div>
   )

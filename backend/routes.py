@@ -139,6 +139,37 @@ def api_flows_save(payload: dict[str, Any]) -> JSONResponse:
     )
 
 
+@router.delete("/api/flows/{flow_name:path}")
+def api_flows_delete(flow_name: str) -> JSONResponse:
+    try:
+        normalized, path = _flow_path_for_name(flow_name)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    if not path.exists():
+        return JSONResponse({"ok": False, "error": "flow not found"}, status_code=404)
+    path.unlink()
+    return JSONResponse({"ok": True})
+
+
+@router.patch("/api/flows/{flow_name:path}")
+def api_flows_rename(flow_name: str, payload: dict[str, Any] = {}) -> JSONResponse:
+    try:
+        _, old_path = _flow_path_for_name(flow_name)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    if not old_path.exists():
+        return JSONResponse({"ok": False, "error": "flow not found"}, status_code=404)
+    new_name = str(payload.get("name", "")).strip()
+    if not new_name:
+        return JSONResponse({"ok": False, "error": "new name required"}, status_code=400)
+    try:
+        new_normalized, new_path = _flow_path_for_name(new_name)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    old_path.rename(new_path)
+    return JSONResponse({"ok": True, "name": new_normalized})
+
+
 @router.get("/api/runs")
 def api_runs_list(limit: int = Query(50), offset: int = Query(0), favorited: bool = Query(False)) -> JSONResponse:
     total = db.count_runs(favorited_only=favorited)

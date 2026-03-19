@@ -33,16 +33,18 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
   const ownOutputUrls = toImageUrls(blockStates.get(blockId)?.outputs.image)
   const [accumulatedUrls, setAccumulatedUrls] = useState<string[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
+  const [cleared, setCleared] = useState(false)
   const prevKeyRef = useRef('')
 
   const currentUrls = imageUrls.length > 0 ? imageUrls : ownOutputUrls
-  const displayUrls = accumulatedUrls.length > 0 ? accumulatedUrls : currentUrls
+  const displayUrls = cleared ? [] : (accumulatedUrls.length > 0 ? accumulatedUrls : currentUrls)
   const isStale = !isLooping && currentUrls.length === 0 && accumulatedUrls.length > 0
 
   useEffect(() => {
     const key = currentUrls.join('\n')
     if (key && key !== prevKeyRef.current) {
       prevKeyRef.current = key
+      setCleared(false)
       setAccumulatedUrls((prev) => {
         // Filter out URLs already in the accumulated list
         const newUrls = currentUrls.filter((u) => !prev.includes(u))
@@ -96,7 +98,7 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
           {accumulatedUrls.length > 1 && (
             <button
               type="button"
-              onClick={() => { setAccumulatedUrls([]); prevKeyRef.current = ''; setSelectedIndex(0) }}
+              onClick={() => { setAccumulatedUrls([]); prevKeyRef.current = ''; setSelectedIndex(0); setCleared(true) }}
               className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
             >
               Clear

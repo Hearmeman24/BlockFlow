@@ -191,7 +191,7 @@ interface BatchState {
   jobs: BatchJobStatus[]
 }
 
-const MAX_BATCH_PARALLEL = 5
+const DEFAULT_BATCH_PARALLEL = 5
 
 /* ---- Automation UI components ---- */
 
@@ -489,6 +489,7 @@ function ComfyGenBlock({
   const [autoNumeric, setAutoNumeric] = useSessionState<Record<string, string[]>>(`block_${blockId}_automate_numeric`, {})
   const [autoSelect, setAutoSelect] = useSessionState<Record<string, string[]>>(`block_${blockId}_automate_select`, {})
   const [autoText, setAutoText] = useSessionState<Record<string, string[]>>(`block_${blockId}_automate_text`, {})
+  const [maxParallel, setMaxParallel] = useSessionState(`block_${blockId}_max_parallel`, DEFAULT_BATCH_PARALLEL)
   const [batchState, setBatchState] = useState<BatchState | null>(null)
   const [showBatchConfirm, setShowBatchConfirm] = useState<number | null>(null)
   const [batchExpanded, setBatchExpanded] = useState(false)
@@ -1053,7 +1054,7 @@ function ComfyGenBlock({
       if (mediaUrl) fileInputs[mapping.node_id] = { field: mapping.field, media_url: mediaUrl }
     }
     const upstreamPromptText = typeof freshInputs.prompt === 'string' ? freshInputs.prompt.trim()
-      : Array.isArray(freshInputs.prompt) ? (freshInputs.prompt as string[]).filter(Boolean).join('\n\n') : ''
+      : Array.isArray(freshInputs.prompt) ? ((freshInputs.prompt as string[]).filter(Boolean)[0] || '').trim() : ''
     const { overrides, bypassLoras } = buildOverridesPure({
       ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides,
       frameCounts, frameOverrides, refVideo, refVideoOverrides,
@@ -1079,12 +1080,30 @@ function ComfyGenBlock({
       const { fileInputs, overrides: baseOverrides, bypassLoras } = buildBaseOverrides(freshInputs)
 
       // --- BATCH PATH ---
-      const axes = computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags })
-      if (automateEnabled && axes.length > 0) {
+      const axes = automateEnabled
+        ? computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags })
+        : []
+
+      // Auto-detect upstream prompt array → add as batch axis
+      const upstreamPromptRaw = freshInputs.prompt
+      const upstreamPrompts = Array.isArray(upstreamPromptRaw)
+        ? (upstreamPromptRaw as string[]).filter((p) => typeof p === 'string' && p.trim())
+        : []
+      if (upstreamPrompts.length > 1) {
+        // Find the text override key that's bound to upstream
+        // Add a single prompt axis — all upstream-bound text fields will receive the same prompt per combo
+        const upstreamKeys = textOverrides.filter((to) => textUpstreamFlags[`${to.node_id}.${to.input_name}`])
+        if (upstreamKeys.length > 0) {
+          // Use a synthetic key; the batch executor will fan out to all upstream text fields
+          axes.push({ key: '__upstream_prompt__', values: upstreamPrompts, label: 'prompt' })
+        }
+      }
+
+      if (axes.length > 0) {
         const combinations = cartesianProduct(axes)
 
         // Confirmation for >5 combos
-        if (combinations.length > 5) {
+        if (combinations.length > 25) {
           const confirmed = await new Promise<boolean>((resolve) => {
             confirmResolverRef.current = resolve
             setShowBatchConfirm(combinations.length)
@@ -1107,21 +1126,25 @@ function ComfyGenBlock({
         }))
 
         let batchUpdateTimer: ReturnType<typeof setTimeout> | null = null
+        let lastBatchSnapshot = ''
         const updateBatch = (immediate = false) => {
           const flush = () => {
             batchUpdateTimer = null
             const completed = urls.length + errors.length
             const running = activeJobIds.size
+            // Shallow equality check — skip if nothing changed
+            const snapshot = `${completed},${running},${errors.length},${jobStatuses.map((j) => `${j.status}:${j.message}`).join('|')}`
+            if (snapshot === lastBatchSnapshot) return
+            lastBatchSnapshot = snapshot
             setBatchState({
               total: combinations.length, completed: urls.length, running,
               queued: combinations.length - completed - running, failed: errors.length,
               results: [...urls], errors: [...errors],
               jobs: [...jobStatuses],
             })
-            setStatusMessage('')
           }
           if (immediate) { if (batchUpdateTimer) clearTimeout(batchUpdateTimer); flush(); return }
-          if (!batchUpdateTimer) batchUpdateTimer = setTimeout(flush, 500)
+          if (!batchUpdateTimer) batchUpdateTimer = setTimeout(flush, 1000)
         }
 
         // Cancel all in-flight on abort
@@ -1139,6 +1162,16 @@ function ComfyGenBlock({
             js.status = 'submitted'; js.message = 'Submitting...'; updateBatch(true)
 
             const merged = { ...baseOverrides, ...comboOverrides }
+            // Expand synthetic __upstream_prompt__ key to all upstream-bound text fields
+            if (merged.__upstream_prompt__) {
+              const promptVal = merged.__upstream_prompt__
+              delete merged.__upstream_prompt__
+              for (const to of textOverrides) {
+                if (textUpstreamFlags[`${to.node_id}.${to.input_name}`]) {
+                  merged[`${to.node_id}.${to.input_name}`] = promptVal
+                }
+              }
+            }
             const res = await fetch(RUN_ENDPOINT, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1230,12 +1263,14 @@ function ComfyGenBlock({
           let comboIdx = 0
           for (const combo of combinations) {
             if (signal.aborted) break
-            while (inFlight.size >= MAX_BATCH_PARALLEL) await Promise.race(inFlight)
+            while (inFlight.size >= maxParallel) await Promise.race(inFlight)
             if (signal.aborted) break
             const idx = comboIdx++
             const p = runOne(combo, idx).finally(() => inFlight.delete(p))
             inFlight.add(p)
             updateBatch()
+            // Yield to event loop between submissions to keep UI responsive
+            await new Promise((r) => setTimeout(r, 0))
           }
           await Promise.all(inFlight)
         } finally {
@@ -1345,10 +1380,23 @@ function ComfyGenBlock({
         <div className="flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-1.5">
           <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
           <span className="text-[11px] text-amber-400 font-medium">
-            {combinationCount} combination{combinationCount !== 1 ? 's' : ''}
+            {combinationCount} combo{combinationCount !== 1 ? 's' : ''}
           </span>
-          <span className="text-[10px] text-muted-foreground">
+          <span className="text-[10px] text-muted-foreground flex-1">
             ({automationAxes.map((a) => `${a.values.length} ${a.label}`).join(' x ')})
+          </span>
+          <span className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0">
+            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
+            <select
+              className="bg-transparent border border-amber-500/30 rounded px-1 py-0 text-[10px] text-amber-400 h-5"
+              value={maxParallel}
+              onChange={(e) => setMaxParallel(Number(e.target.value))}
+            >
+              {[1, 2, 3, 5, 8, 10].map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            parallel
           </span>
         </div>
       )}
@@ -1990,7 +2038,7 @@ function ComfyGenBlock({
             <DialogTitle>Run {showBatchConfirm} combinations?</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            This will submit {showBatchConfirm} jobs (max {MAX_BATCH_PARALLEL} parallel). You can cancel at any time.
+            This will submit {showBatchConfirm} jobs (max {maxParallel} parallel). You can cancel at any time.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => { confirmResolverRef.current?.(false); setShowBatchConfirm(null) }}>Cancel</Button>
@@ -2049,6 +2097,7 @@ export const blockDef: BlockDef = {
     'automate_numeric',
     'automate_select',
     'automate_text',
+    'max_parallel',
   ],
   component: ComfyGenBlock,
 }

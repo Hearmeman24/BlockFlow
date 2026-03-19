@@ -47,6 +47,7 @@ interface PipelineTabsContextValue {
   addTab: (label?: string, flowJson?: string, flowName?: string) => string
   removeTab: (id: string) => void
   renameTab: (id: string, label: string) => void
+  duplicateTab: (id: string) => string
   registerTabActions: (tabId: string, actions: TabActions) => void
   unregisterTabActions: (tabId: string) => void
   setTabRunState: (tabId: string, state: TabRunState) => void
@@ -64,6 +65,8 @@ interface PipelineTabsContextValue {
   saveActiveFlow: (name?: string) => Promise<void>
   openFlowInActiveTab: (name: string) => Promise<void>
   openFlowInNewTab: (name: string) => Promise<void>
+  saveWorkspace: (name: string) => Promise<void>
+  loadWorkspace: (name: string) => Promise<void>
 }
 
 // ---- Persistence ----
@@ -289,6 +292,15 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, label } : t)))
   }, [setTabs])
 
+  const duplicateTab = useCallback((id: string) => {
+    const tab = tabs.find((t) => t.id === id)
+    if (!tab) return ''
+    const actions = tabActionsRef.current.get(id)
+    const flowJson = actions?.exportFlowJson(`${tab.label} (copy)`) ?? ''
+    const newId = addTab(`${tab.label} (copy)`, flowJson || undefined)
+    return newId
+  }, [tabs, addTab])
+
   const registerTabActions = useCallback((tabId: string, actions: TabActions) => {
     tabActionsRef.current.set(tabId, actions)
   }, [])
@@ -462,6 +474,48 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
     setActiveTabId(id)
   }, [addTab, setActiveTabId])
 
+  const saveWorkspace = useCallback(async (name: string) => {
+    const workspace: { tabs: Array<{ label: string; flow: unknown }> } = { tabs: [] }
+    for (const tab of tabs) {
+      const actions = tabActionsRef.current.get(tab.id)
+      if (!actions) continue
+      try {
+        const flowJson = actions.exportFlowJson(tab.label)
+        workspace.tabs.push({ label: tab.label, flow: JSON.parse(flowJson) })
+      } catch {
+        // skip tabs that can't be exported
+      }
+    }
+    await saveFlowToDisk(`_workspace_${name}`, workspace as unknown as Record<string, unknown>)
+    await refreshAvailableFlows().catch(() => {})
+  }, [tabs, refreshAvailableFlows])
+
+  const loadWorkspace = useCallback(async (name: string) => {
+    const response = await fetchFlow(`_workspace_${name}`)
+    if (!response?.ok) throw new Error(response?.error || 'Failed to load workspace')
+    const workspace = response.flow as { tabs?: Array<{ label: string; flow: unknown }> }
+    if (!workspace?.tabs || !Array.isArray(workspace.tabs) || workspace.tabs.length === 0) {
+      throw new Error('Invalid workspace file')
+    }
+    // Close all existing tabs except one, then load workspace tabs
+    for (const tab of tabs.slice(1)) removeTab(tab.id)
+    // Load first tab into existing tab
+    const firstTab = workspace.tabs[0]
+    const firstActions = tabActionsRef.current.get(tabs[0]?.id ?? '')
+    if (firstActions && firstTab) {
+      firstActions.importFlowJson(JSON.stringify(firstTab.flow))
+      renameTab(tabs[0].id, firstTab.label)
+    }
+    // Create remaining tabs
+    for (let i = 1; i < workspace.tabs.length; i++) {
+      const wt = workspace.tabs[i]
+      const newId = addTab(wt.label, JSON.stringify(wt.flow))
+      setActiveTabId(newId)
+    }
+    // Switch to first tab
+    if (tabs[0]) setActiveTabId(tabs[0].id)
+  }, [tabs, addTab, removeTab, renameTab, setActiveTabId])
+
   return (
     <PipelineTabsCtx.Provider
       value={{
@@ -474,6 +528,7 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
         addTab,
         removeTab,
         renameTab,
+        duplicateTab,
         registerTabActions,
         unregisterTabActions,
         setTabRunState,
@@ -491,6 +546,8 @@ export function PipelineTabsProvider({ children }: { children: ReactNode }) {
         saveActiveFlow,
         openFlowInActiveTab,
         openFlowInNewTab,
+        saveWorkspace,
+        loadWorkspace,
       }}
     >
       {children}

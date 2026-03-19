@@ -934,6 +934,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
             forwardOutputs(block, freshInputs)
             setBlockStatus(block.id, 'completed')
             completedBlockExecutions++
+            // Double rAF yield to let React paint forwarded outputs before next block starts
+            await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))
           }
         } catch (e) {
           if (e instanceof DOMException && e.name === 'AbortError') {

@@ -14,8 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 FRONTEND_DIR = ROOT / "frontend"
-BACKEND_PORT = 8000
-FRONTEND_PORT = 3000
+BACKEND_PORT = int(os.environ.get("BACKEND_PORT", 8000))
+FRONTEND_PORT = int(os.environ.get("FRONTEND_PORT", 3000))
 
 
 def _wait_for(url: str, timeout: float = 30.0) -> bool:
@@ -57,9 +57,11 @@ def main() -> None:
 
         # Start Next.js dev server
         print(f"[app] Starting Next.js on :{FRONTEND_PORT}...")
+        frontend_env = {**os.environ, "BACKEND_PORT": str(BACKEND_PORT)}
         frontend = subprocess.Popen(
-            ["npm", "run", "dev"],
+            ["npm", "run", "dev", "--", "--port", str(FRONTEND_PORT)],
             cwd=str(FRONTEND_DIR),
+            env=frontend_env,
         )
         procs.append(frontend)
 

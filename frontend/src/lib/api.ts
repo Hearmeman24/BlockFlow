@@ -54,6 +54,20 @@ export async function fetchFlow(name: string) {
   return res.json()
 }
 
+export async function deleteFlow(name: string) {
+  const res = await fetch(`${BASE}/api/flows/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  return res.json()
+}
+
+export async function renameFlow(name: string, newName: string) {
+  const res = await fetch(`${BASE}/api/flows/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: newName }),
+  })
+  return res.json()
+}
+
 export async function saveFlowToDisk(name: string, flow: Record<string, unknown>) {
   const res = await fetch(`${BASE}/api/flows`, {
     method: 'POST',

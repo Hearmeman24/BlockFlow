@@ -79,3 +79,77 @@ async def generate(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "output_text": text})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
+
+
+_IDEA_SYSTEM_PROMPT = """You are a creative prompt idea generator for AI image/video generation.
+
+Given a high-level description and a count, generate short prompt ideas (1-2 sentences each).
+Each idea should be a concise scene description that captures a unique variation — different pose, setting, outfit, lighting, mood, or activity.
+
+CRITICAL RULES:
+- The user's description defines the CHARACTER. Every single idea MUST describe the SAME character with the EXACT same physical attributes (hair color, eye color, body type, skin tone, glasses, facial features, etc.). Copy the character description verbatim into each idea. NEVER vary the character between ideas.
+- Only vary: setting, location, clothing/outfit, pose, activity, lighting, mood, time of day, composition.
+- Each idea is 1-2 sentences maximum — short and punchy.
+- Include the character description + a unique scene in each idea.
+- Keep ideas diverse — never repeat the same type of scene twice in a row.
+- Include specific visual details: clothing items, colors, locations, time of day.
+- These will be expanded into full detailed prompts by another system, so keep them as creative seeds.
+
+Respond with ONLY a JSON array of strings, no markdown, no explanation:
+["idea 1", "idea 2", "idea 3", ...]"""
+
+
+@router.post("/generate-ideas")
+async def generate_ideas(request: Request) -> JSONResponse:
+    payload = await request.json()
+    model = str(payload.get("model") or "")
+    description = str(payload.get("description") or "")
+    count = int(payload.get("count", 8))
+    temperature = float(payload.get("temperature", 0.9))
+
+    if not model:
+        return JSONResponse({"ok": False, "error": "model is required"}, status_code=400)
+    if not description:
+        return JSONResponse({"ok": False, "error": "description is required"}, status_code=400)
+
+    count = max(1, min(count, 64))
+
+    messages = [
+        {"role": "system", "content": _IDEA_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Generate {count} prompt ideas for: {description}"},
+    ]
+
+    try:
+        resp = services._openrouter_request_json("POST", "/chat/completions", {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": count * 200,
+        }, timeout=120)
+        text = services._extract_openrouter_completion_text(resp)
+
+        # Parse JSON array from response
+        import json as _json
+        try:
+            ideas = _json.loads(text)
+        except _json.JSONDecodeError:
+            # Try extracting from markdown code block
+            import re
+            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+            if match:
+                ideas = _json.loads(match.group(1).strip())
+            else:
+                # Try finding array in text
+                match = re.search(r"\[[\s\S]*\]", text)
+                if match:
+                    ideas = _json.loads(match.group(0))
+                else:
+                    return JSONResponse({"ok": False, "error": "Failed to parse ideas from LLM response"})
+
+        if not isinstance(ideas, list):
+            return JSONResponse({"ok": False, "error": "Expected array of ideas"})
+
+        ideas = [str(i).strip() for i in ideas if str(i).strip()]
+        return JSONResponse({"ok": True, "ideas": ideas, "count": len(ideas)})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})

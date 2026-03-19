@@ -229,7 +229,7 @@ async def share(request: Request) -> JSONResponse:
             civitai_meta["cfgScale"] = cfg[0] if isinstance(cfg, list) else cfg
         if meta.get("resolution"):
             civitai_meta["Size"] = meta["resolution"]
-        civitai_meta["software"] = meta.get("software", "SGS-UI (LightX2V)")
+        civitai_meta["software"] = meta.get("software", "BlockFlow (comfy-gen)")
 
         # Build hashes + resources from model_hashes (all .safetensors used)
         # AutoV2 = first 10 hex chars of SHA-256, uppercase

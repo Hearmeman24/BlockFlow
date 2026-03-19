@@ -3,7 +3,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { Sparkles, FolderOpen, FileDown, FilePlus2, ChevronDown, Files, FileUp } from 'lucide-react'
+import { Sparkles, FolderOpen, FileDown, FilePlus2, ChevronDown, Files, FileUp, X } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { usePipelineTabs } from '@/lib/pipeline/tabs-context'
+import { deleteFlow, renameFlow } from '@/lib/api'
 
 const NAV_ITEMS = [
   { href: '/generate', label: 'Generate', icon: Sparkles },
@@ -30,6 +31,8 @@ export function NavBar() {
     refreshAvailableFlows,
     saveActiveFlow,
     openFlowInNewTab,
+    saveWorkspace,
+    loadWorkspace,
   } = usePipelineTabs()
 
   const handleSave = async () => {
@@ -94,16 +97,41 @@ export function NavBar() {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-xs">Available Flows</DropdownMenuLabel>
-            {availableFlows.length === 0 && (
+            {availableFlows.filter((f) => !f.name.startsWith('_workspace_')).length === 0 && (
               <DropdownMenuItem disabled>
                 <Files className="w-3.5 h-3.5 mr-2" />
                 No saved flows
               </DropdownMenuItem>
             )}
-            {availableFlows.map((flow) => (
-              <DropdownMenuItem key={flow.name} onClick={() => void handleOpenInNewTab(flow.name)}>
-                <FileUp className="w-3.5 h-3.5 mr-2" />
-                {flow.name}
+            {availableFlows.filter((f) => !f.name.startsWith('_workspace_')).map((flow) => (
+              <DropdownMenuItem key={flow.name} className="group flex items-center justify-between pr-1" onClick={() => void handleOpenInNewTab(flow.name)}>
+                <span className="flex items-center">
+                  <FileUp className="w-3.5 h-3.5 mr-2 shrink-0" />
+                  <span className="truncate max-w-[150px]">{flow.name}</span>
+                </span>
+                <span className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 ml-2 shrink-0">
+                  <button
+                    className="p-0.5 hover:text-blue-400"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      const newName = prompt('Rename flow:', flow.name)
+                      if (newName && newName !== flow.name) void renameFlow(flow.name, newName).then(() => refreshAvailableFlows())
+                    }}
+                    title="Rename"
+                  >
+                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                  </button>
+                  <button
+                    className="p-0.5 hover:text-red-400"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (confirm(`Delete "${flow.name}"?`)) void deleteFlow(flow.name).then(() => refreshAvailableFlows())
+                    }}
+                    title="Delete"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </span>
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
@@ -113,14 +141,41 @@ export function NavBar() {
                 Open In New Tab
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
-                {availableFlows.length === 0 && (
+                {availableFlows.filter((f) => !f.name.startsWith('_workspace_')).length === 0 && (
                   <DropdownMenuItem disabled>No saved flows</DropdownMenuItem>
                 )}
-                {availableFlows.map((flow) => (
+                {availableFlows.filter((f) => !f.name.startsWith('_workspace_')).map((flow) => (
                   <DropdownMenuItem key={`new-tab-${flow.name}`} onClick={() => void handleOpenInNewTab(flow.name)}>
                     {flow.name}
                   </DropdownMenuItem>
                 ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-xs">Workspace</DropdownMenuLabel>
+            <DropdownMenuItem onClick={() => {
+              const name = prompt('Workspace name:', 'My Workspace')
+              if (name) void saveWorkspace(name).catch(() => {})
+            }}>
+              <FileDown className="w-3.5 h-3.5 mr-2" />
+              Save All Tabs
+            </DropdownMenuItem>
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <FolderOpen className="w-3.5 h-3.5 mr-2" />
+                Load Workspace
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                {availableFlows.filter((f) => f.name.startsWith('_workspace_')).length === 0 && (
+                  <DropdownMenuItem disabled>No saved workspaces</DropdownMenuItem>
+                )}
+                {availableFlows
+                  .filter((f) => f.name.startsWith('_workspace_'))
+                  .map((f) => (
+                    <DropdownMenuItem key={f.name} onClick={() => void loadWorkspace(f.name.replace('_workspace_', '')).catch(() => {})}>
+                      {f.name.replace('_workspace_', '')}
+                    </DropdownMenuItem>
+                  ))}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
           </DropdownMenuContent>

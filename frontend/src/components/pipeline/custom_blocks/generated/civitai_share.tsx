@@ -11,6 +11,7 @@ import { useSessionState } from '@/lib/use-session-state'
 import {
   PORT_IMAGE,
   PORT_METADATA,
+  PORT_TEXT,
   PORT_VIDEO,
   type BlockDef,
   type BlockComponentProps,
@@ -159,7 +160,13 @@ function CivitAIShareBlock({
 
         // Pass lora_hashes + loras to backend — it builds hashes/resources for CivitAI
         const shareMeta: Record<string, unknown> = {
-          prompt: freshMeta.prompt || (jobMeta.prompt as string) || '',
+          prompt: (() => {
+            // Prefer upstream prompt text (from Prompt Writer or manual ComfyGen input)
+            const upstreamPrompt = typeof freshInputs.prompt === 'string' ? freshInputs.prompt.trim()
+              : Array.isArray(freshInputs.prompt) ? (freshInputs.prompt as string[]).filter(Boolean)[0]?.trim() || ''
+              : ''
+            return upstreamPrompt || freshMeta.prompt || (jobMeta.prompt as string) || ''
+          })(),
           negative_prompt: freshMeta.negative_prompt || '',
           seed: (jobMeta.seed ?? freshMeta.seed) as number | undefined,
           model: freshMeta.model || (jobMeta.model as string) || '',
@@ -168,14 +175,14 @@ function CivitAIShareBlock({
           resolution: freshMeta.resolution || (jobMeta.resolution as string) || '',
           width: freshMeta.width || (jobMeta.width as number),
           height: freshMeta.height || (jobMeta.height as number),
-          software: 'SGS-UI (LightX2V)',
+          software: 'BlockFlow (comfy-gen)',
           model_hashes: (jobMeta.model_hashes || {}) as Record<string, Record<string, unknown>>,
           lora_hashes: (jobMeta.lora_hashes || {}) as Record<string, string>,
           loras: freshMeta.loras || (jobMeta.loras as Array<{ name: string; strength?: number }>) || [],
         }
 
         // Simple description — generation data panel handles the details
-        const description = `Generated with SGS-UI (LightX2V)`
+        const description = `Generated with comfy-gen (https://github.com/Hearmeman24/comfy-gen) and BlockFlow (https://github.com/Hearmeman24/BlockFlow) — open-source tools for running ComfyUI workflows on serverless GPUs.`
 
         try {
           const res = await fetch(SHARE_ENDPOINT, {
@@ -344,6 +351,7 @@ export const blockDef: BlockDef = {
     { name: 'video', kind: PORT_VIDEO, required: false },
     { name: 'image', kind: PORT_IMAGE, required: false },
     { name: 'metadata', kind: PORT_METADATA, required: false },
+    { name: 'prompt', kind: PORT_TEXT, required: false },
   ],
   outputs: [],
   configKeys: ['title', 'tags', 'nsfw', 'publish'],

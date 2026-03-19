@@ -31,14 +31,26 @@ interface AddPromptDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSave: (name: string, type: 'system' | 'user', content: string) => Promise<void>
+  onDelete?: (id: string) => Promise<void>
+  prompts?: PromptPreset[]
   defaultType?: 'system' | 'user'
   defaultContent?: string
+}
+
+function buildTimeSuffix(): string {
+  const now = new Date()
+  const mm = String(now.getMonth() + 1).padStart(2, '0')
+  const hh = String(now.getHours()).padStart(2, '0')
+  const dd = String(now.getDate()).padStart(2, '0')
+  return `${mm}-${hh}-${dd}`
 }
 
 export function AddPromptDialog({
   open,
   onOpenChange,
   onSave,
+  onDelete,
+  prompts,
   defaultType,
   defaultContent,
 }: AddPromptDialogProps) {
@@ -46,6 +58,7 @@ export function AddPromptDialog({
   const [type, setType] = React.useState<'system' | 'user'>(defaultType ?? 'user')
   const [content, setContent] = React.useState(defaultContent ?? '')
   const [saving, setSaving] = React.useState(false)
+  const [duplicate, setDuplicate] = React.useState<PromptPreset | null>(null)
 
   // Reset form when dialog opens
   React.useEffect(() => {
@@ -53,18 +66,56 @@ export function AddPromptDialog({
       setName('')
       setType(defaultType ?? 'user')
       setContent(defaultContent ?? '')
+      setDuplicate(null)
     }
   }, [open, defaultType, defaultContent])
 
-  const handleSave = async () => {
-    if (!name.trim() || !content.trim()) return
+  // Clear duplicate warning when name changes
+  React.useEffect(() => {
+    setDuplicate(null)
+  }, [name, type])
+
+  const findDuplicate = (): PromptPreset | null => {
+    if (!prompts) return null
+    const trimmed = name.trim().toLowerCase()
+    return prompts.find((p) => p.type === type && p.name.trim().toLowerCase() === trimmed) ?? null
+  }
+
+  const doSave = async (saveName: string) => {
     setSaving(true)
     try {
+      await onSave(saveName, type, content.trim())
+      onOpenChange(false)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSave = async () => {
+    if (!name.trim() || !content.trim()) return
+    const dup = findDuplicate()
+    if (dup) {
+      setDuplicate(dup)
+      return
+    }
+    await doSave(name.trim())
+  }
+
+  const handleOverride = async () => {
+    if (!duplicate) return
+    setSaving(true)
+    try {
+      if (onDelete) await onDelete(duplicate.id)
       await onSave(name.trim(), type, content.trim())
       onOpenChange(false)
     } finally {
       setSaving(false)
     }
+  }
+
+  const handleKeepBoth = async () => {
+    const suffixed = `${name.trim()} ${buildTimeSuffix()}`
+    await doSave(suffixed)
   }
 
   return (
@@ -122,6 +173,36 @@ export function AddPromptDialog({
               className="min-h-[120px] text-xs"
             />
           </div>
+
+          {duplicate && (
+            <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 space-y-2">
+              <p className="text-xs text-yellow-400">
+                A prompt named <span className="font-medium">&ldquo;{duplicate.name}&rdquo;</span> already exists.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10 text-xs h-7"
+                  disabled={saving}
+                  onClick={handleOverride}
+                >
+                  Override
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="border-yellow-500/40 text-yellow-400 hover:bg-yellow-500/10 text-xs h-7"
+                  disabled={saving}
+                  onClick={handleKeepBoth}
+                >
+                  Keep Both
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         <DialogFooter>

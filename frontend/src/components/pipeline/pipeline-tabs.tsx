@@ -26,6 +26,7 @@ function PipelineTabsContent() {
     addTab,
     removeTab,
     renameTab,
+    duplicateTab,
     runActivePipeline,
     continueActivePipeline,
     cancelActivePipeline,
@@ -43,8 +44,8 @@ function PipelineTabsContent() {
 
   return (
     <div className="h-full flex flex-col relative">
-      {/* Tab bar */}
-      <div className="shrink-0 border-b border-border px-4 flex items-center gap-0.5 h-10">
+      {/* Tab bar — below floating navbar */}
+      <div className="shrink-0 border-b border-border px-4 pt-14 flex items-center gap-0.5 h-24 overflow-x-auto scrollbar-none">
         {tabs.map((tab) => (
           <TabButton
             key={tab.id}
@@ -57,6 +58,10 @@ function PipelineTabsContent() {
             onClick={() => setActiveTabId(tab.id)}
             onClose={() => removeTab(tab.id)}
             onRename={(label) => renameTab(tab.id, label)}
+            onDuplicate={() => {
+              const newId = duplicateTab(tab.id)
+              if (newId) setActiveTabId(newId)
+            }}
           />
         ))}
         <button
@@ -96,7 +101,7 @@ function PipelineTabsContent() {
 
       {/* Floating run pill */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40">
-        <div className="flex flex-col gap-1.5 rounded-2xl border border-border/50 bg-card/80 backdrop-blur-md px-2 py-2 shadow-lg">
+        <div className="flex flex-col items-center gap-1.5 rounded-2xl border border-border/50 bg-card/80 backdrop-blur-md px-2 py-2 shadow-lg">
           <div className="flex items-center gap-1.5">
             <Button
               variant={mode === 'auto' ? 'default' : 'outline'}
@@ -183,6 +188,7 @@ function TabButton({
   onClick,
   onClose,
   onRename,
+  onDuplicate,
 }: {
   id: string
   label: string
@@ -193,10 +199,23 @@ function TabButton({
   onClick: () => void
   onClose: () => void
   onRename: (label: string) => void
+  onDuplicate: () => void
 }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(label)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // Close context menu on outside click
+  useEffect(() => {
+    if (!contextMenu) return
+    const close = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setContextMenu(null)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [contextMenu])
 
   useEffect(() => {
     if (editing) {
@@ -229,40 +248,64 @@ function TabButton({
   }
 
   return (
-    <button
-      className={`group flex items-center gap-1 h-7 px-2.5 rounded-t text-xs font-medium transition-colors whitespace-nowrap ${
-        active
-          ? 'bg-background text-foreground border border-b-0 border-border -mb-px'
-          : 'text-muted-foreground hover:text-foreground hover:bg-accent/30'
-      }`}
-      onClick={onClick}
-      onDoubleClick={() => {
-        setDraft(label)
-        setEditing(true)
-      }}
-      title="Double-click to rename"
-    >
-      {isLooping && (
-        <Repeat className="w-3 h-3 shrink-0 text-violet-400" />
-      )}
-      {!isLooping && runState === 'running' && (
-        <Loader2 className="w-3 h-3 shrink-0 animate-spin text-blue-400" />
-      )}
-      {!isLooping && runState === 'done' && (
-        <Check className="w-3 h-3 shrink-0 text-emerald-400" />
-      )}
-      <span className="truncate max-w-[120px]">{label}</span>
-      {canClose && (
-        <span
-          className="opacity-0 group-hover:opacity-100 transition-opacity ml-0.5 hover:text-red-400"
-          onClick={(e) => {
-            e.stopPropagation()
-            onClose()
-          }}
+    <div className="relative">
+      <button
+        className={`group flex items-center gap-1 h-7 px-2.5 rounded-t text-xs font-medium transition-colors whitespace-nowrap ${
+          active
+            ? 'bg-background text-foreground border border-b-0 border-border -mb-px'
+            : 'text-muted-foreground hover:text-foreground hover:bg-accent/30'
+        }`}
+        onClick={onClick}
+        onDoubleClick={() => {
+          setDraft(label)
+          setEditing(true)
+        }}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          setContextMenu({ x: e.clientX, y: e.clientY })
+        }}
+      >
+        {isLooping && (
+          <Repeat className="w-3 h-3 shrink-0 text-violet-400" />
+        )}
+        {!isLooping && runState === 'running' && (
+          <Loader2 className="w-3 h-3 shrink-0 animate-spin text-blue-400" />
+        )}
+        {!isLooping && runState === 'done' && (
+          <Check className="w-3 h-3 shrink-0 text-emerald-400" />
+        )}
+        <span className="truncate max-w-[120px]">{label}</span>
+        {canClose && (
+          <span
+            className="opacity-0 group-hover:opacity-100 transition-opacity ml-0.5 hover:text-red-400"
+            onClick={(e) => {
+              e.stopPropagation()
+              onClose()
+            }}
+          >
+            <X className="w-3 h-3" />
+          </span>
+        )}
+      </button>
+      {contextMenu && (
+        <div
+          ref={menuRef}
+          className="fixed z-50 min-w-[140px] rounded-md border border-border bg-popover shadow-md py-1"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <X className="w-3 h-3" />
-        </span>
+          <button className="w-full px-3 py-1.5 text-xs text-left hover:bg-accent" onClick={() => { setContextMenu(null); setDraft(label); setEditing(true) }}>
+            Rename
+          </button>
+          <button className="w-full px-3 py-1.5 text-xs text-left hover:bg-accent" onClick={() => { setContextMenu(null); onDuplicate() }}>
+            Duplicate
+          </button>
+          {canClose && (
+            <button className="w-full px-3 py-1.5 text-xs text-left hover:bg-accent text-red-400" onClick={() => { setContextMenu(null); onClose() }}>
+              Close
+            </button>
+          )}
+        </div>
       )}
-    </button>
+    </div>
   )
 }

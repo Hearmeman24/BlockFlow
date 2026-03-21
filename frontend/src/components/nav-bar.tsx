@@ -104,7 +104,7 @@ export function NavBar() {
               </DropdownMenuItem>
             )}
             {availableFlows.filter((f) => !f.name.startsWith('_workspace_')).map((flow) => (
-              <DropdownMenuItem key={flow.name} className="group flex items-center justify-between pr-1" onClick={() => void handleOpenInNewTab(flow.name)}>
+              <DropdownMenuItem key={flow.name} className="group flex items-center justify-between pr-1" title="Open in new tab" onClick={() => void handleOpenInNewTab(flow.name)}>
                 <span className="flex items-center">
                   <FileUp className="w-3.5 h-3.5 mr-2 shrink-0" />
                   <span className="truncate max-w-[150px]">{flow.name}</span>
@@ -134,23 +134,6 @@ export function NavBar() {
                 </span>
               </DropdownMenuItem>
             ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <FilePlus2 className="w-3.5 h-3.5 mr-2" />
-                Open In New Tab
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                {availableFlows.filter((f) => !f.name.startsWith('_workspace_')).length === 0 && (
-                  <DropdownMenuItem disabled>No saved flows</DropdownMenuItem>
-                )}
-                {availableFlows.filter((f) => !f.name.startsWith('_workspace_')).map((flow) => (
-                  <DropdownMenuItem key={`new-tab-${flow.name}`} onClick={() => void handleOpenInNewTab(flow.name)}>
-                    {flow.name}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-xs">Workspace</DropdownMenuLabel>
             <DropdownMenuItem onClick={() => {

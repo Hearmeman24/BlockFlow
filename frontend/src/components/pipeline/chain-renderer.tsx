@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, memo, useLayoutEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { getNodeType } from '@/lib/pipeline/registry'
@@ -137,7 +137,7 @@ export function ChainRenderer({
 //  [Fork Block Card]    | [┤ rail] [trunk continuation]
 //  (spacer)             | [└ rail] [branch 1 (down) or ◇ add branch]
 
-function ForkLanes({
+const ForkLanes = memo(function ForkLanes({
   forkBlock,
   forkDisplayNumber,
   afterFork,
@@ -173,11 +173,18 @@ function ForkLanes({
       setForkOffsetY((prevOffset) => (prevOffset === nextOffset ? prevOffset : nextOffset))
     }
 
-    measure()
-    const observer = new ResizeObserver(measure)
-    if (upRowRef.current) observer.observe(upRowRef.current)
-    if (downRowRef.current) observer.observe(downRowRef.current)
-    return () => observer.disconnect()
+    let rafId: number
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(measure)
+    })
+    if (upRowRef.current) ro.observe(upRowRef.current)
+    if (downRowRef.current) ro.observe(downRowRef.current)
+    rafId = requestAnimationFrame(measure)
+    return () => {
+      cancelAnimationFrame(rafId)
+      ro.disconnect()
+    }
   }, [hasBranchUp, hasBranchDown, showAddBranch, branches.length])
 
   const forkGridStyle = {
@@ -281,7 +288,7 @@ function ForkLanes({
       )}
     </div>
   )
-}
+})
 
 /**
  * Rail segment for fork tree connectors.

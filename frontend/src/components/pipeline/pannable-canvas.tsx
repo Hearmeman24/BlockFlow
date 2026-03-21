@@ -7,6 +7,8 @@ import {
   type ReactZoomPanPinchRef,
 } from 'react-zoom-pan-pinch'
 
+const CANVAS_TRANSFORM_KEY = 'blockflow-canvas-transform'
+
 export const PAN_DISABLED_CLASS = 'panningDisabled'
 export const WHEEL_DISABLED_CLASS = 'wheelDisabled'
 
@@ -60,9 +62,19 @@ export function PannableCanvas({ children }: PannableCanvasProps) {
         wheel={{ excluded: [WHEEL_DISABLED_CLASS], step: 0.1 }}
         onInit={(ref) => {
           recoverInvalidTransform(ref)
+          const saved = sessionStorage.getItem(CANVAS_TRANSFORM_KEY)
+          if (saved) {
+            try {
+              const { scale, positionX, positionY } = JSON.parse(saved)
+              ref.setTransform(positionX, positionY, scale, 0)
+            } catch {
+              // ignore malformed storage
+            }
+          }
         }}
         onTransformed={(ref) => {
-          recoverInvalidTransform(ref)
+          const { scale, positionX, positionY } = ref.state
+          sessionStorage.setItem(CANVAS_TRANSFORM_KEY, JSON.stringify({ scale, positionX, positionY }))
         }}
         onPanningStart={() => setIsPanning(true)}
         onPanningStop={clearPanning}
@@ -72,7 +84,7 @@ export function PannableCanvas({ children }: PannableCanvasProps) {
             <button
               type="button"
               className="absolute right-3 top-3 z-20 rounded-md border border-border/70 bg-card/80 px-2 py-1 text-xs text-foreground shadow-sm backdrop-blur panningDisabled wheelDisabled hover:bg-accent/70"
-              onClick={() => resetTransform(150)}
+              onClick={() => resetTransform(300)}
               title="Recenter canvas"
             >
               Recenter

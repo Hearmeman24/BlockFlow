@@ -82,7 +82,9 @@ async def generate(request: Request) -> JSONResponse:
 
     messages: list[dict[str, Any]] = []
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "system", "content": [
+            {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
+        ]})
 
     # Build user message with optional image
     if image_url:
@@ -100,6 +102,7 @@ async def generate(request: Request) -> JSONResponse:
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "reasoning": {"effort": "medium"},
         }, timeout=120)
         text = services._extract_openrouter_completion_text(resp)
         return JSONResponse({"ok": True, "output_text": text})

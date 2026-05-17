@@ -6,9 +6,11 @@ import { blockDef as comfyGenBlockDef } from './generated/comfy_gen'
 import { blockDef as generationBlockDef } from './generated/generation'
 import { blockDef as hitlBlockDef } from './generated/hitl'
 import { blockDef as i2vPromptWriterBlockDef } from './generated/i2v_prompt_writer'
+import { blockDef as imageInspectorBlockDef } from './generated/image_inspector'
 import { blockDef as imageUpscaleBlockDef } from './generated/image_upscale'
 import { blockDef as imageViewerBlockDef } from './generated/image_viewer'
 import { blockDef as loraSelectorBlockDef } from './generated/lora_selector'
+import { blockDef as promptFromTxtBlockDef } from './generated/prompt_from_txt'
 import { blockDef as promptWriterBlockDef } from './generated/prompt_writer'
 import { blockDef as uploadImageToTmpfilesBlockDef } from './generated/upload_image_to_tmpfiles'
 import { blockDef as upscaleBlockDef } from './generated/upscale'
@@ -21,9 +23,11 @@ registerBlockDef(comfyGenBlockDef)
 registerBlockDef(generationBlockDef)
 registerBlockDef(hitlBlockDef)
 registerBlockDef(i2vPromptWriterBlockDef)
+registerBlockDef(imageInspectorBlockDef)
 registerBlockDef(imageUpscaleBlockDef)
 registerBlockDef(imageViewerBlockDef)
 registerBlockDef(loraSelectorBlockDef)
+registerBlockDef(promptFromTxtBlockDef)
 registerBlockDef(promptWriterBlockDef)
 registerBlockDef(uploadImageToTmpfilesBlockDef)
 registerBlockDef(upscaleBlockDef)

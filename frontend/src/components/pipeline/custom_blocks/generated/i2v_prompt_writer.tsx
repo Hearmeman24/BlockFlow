@@ -33,7 +33,6 @@ const SETTINGS_ENDPOINT = '/api/blocks/i2v_prompt_writer/settings'
 const MODELS_ENDPOINT = '/api/blocks/i2v_prompt_writer/models'
 const GENERATE_ENDPOINT = '/api/blocks/i2v_prompt_writer/generate'
 
-const DEFAULT_MAX_VARIANTS = 8
 const DEFAULT_MAX_PARALLEL = 4
 
 const DEFAULT_I2V_SYSTEM_PROMPT = `You are writing a concise video generation prompt based on a reference image.
@@ -67,7 +66,6 @@ interface ModelInfo {
 }
 
 interface FanoutLimits {
-  max_variants: number
   max_parallel: number
 }
 
@@ -121,24 +119,22 @@ function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.trunc(value)))
 }
 
-function asImageInput(value: unknown): string {
-  if (typeof value === 'string') return value
+function asImageInputs(value: unknown): string[] {
+  if (typeof value === 'string' && value.trim()) return [value]
   if (Array.isArray(value)) {
-    const first = value.find((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    if (first) return first
+    return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
   }
   if (value && typeof value === 'object') {
     const obj = value as Record<string, unknown>
     const candidate = obj.image_url ?? obj.url ?? obj.path
-    if (typeof candidate === 'string') return candidate
+    if (typeof candidate === 'string' && candidate.trim()) return [candidate]
   }
-  return ''
+  return []
 }
 
 function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, setStatusMessage }: BlockComponentProps) {
   const prefix = `block_${blockId}_`
   const [localSettings, setLocalSettings] = useSessionState<WriterSettings | null>(`${prefix}local_settings`, null)
-  const [variants, setVariants] = useSessionState<number>(`${prefix}variants`, 1)
   const [userPrompt, setUserPrompt] = useSessionState(`${prefix}user_prompt`, '')
   const [output, setOutputText] = useSessionState(`${prefix}output`, '')
   const [saving, setSaving] = useState(false)
@@ -146,7 +142,6 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   const [models, setModels] = useState<ModelInfo[]>([])
   const [hasApiKey, setHasApiKey] = useState(false)
   const [fanoutLimits, setFanoutLimits] = useState<FanoutLimits>({
-    max_variants: DEFAULT_MAX_VARIANTS,
     max_parallel: DEFAULT_MAX_PARALLEL,
   })
   const { systemPrompts, userPrompts, addPrompt, deletePrompt } = usePromptLibrary()
@@ -154,8 +149,8 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   const [addDialogType, setAddDialogType] = useState<'system' | 'user'>('user')
   const [addDialogContent, setAddDialogContent] = useState('')
 
-  // Image comes from upstream (Upload Image block)
-  const inputImage = asImageInput(inputs?.image)
+  // Images come from upstream (Upload Image block) — may be one or many
+  const inputImages = asImageInputs(inputs?.image)
 
   useEffect(() => {
     let cancelled = false
@@ -164,12 +159,9 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
         if (cancelled) return
         setHasApiKey(Boolean(res?.has_api_key))
 
-        const rawMaxVariants = Number(res?.fanout_limits?.max_variants ?? DEFAULT_MAX_VARIANTS)
         const rawMaxParallel = Number(res?.fanout_limits?.max_parallel ?? DEFAULT_MAX_PARALLEL)
-        const maxVariants = Math.max(1, Math.trunc(Number.isFinite(rawMaxVariants) ? rawMaxVariants : DEFAULT_MAX_VARIANTS))
         const maxParallel = Math.max(1, Math.trunc(Number.isFinite(rawMaxParallel) ? rawMaxParallel : DEFAULT_MAX_PARALLEL))
-        setFanoutLimits({ max_variants: maxVariants, max_parallel: maxParallel })
-        setVariants((prev) => clampInt(Number(prev), 1, maxVariants))
+        setFanoutLimits({ max_parallel: maxParallel })
 
         const server = res?.settings
         if (server && !localSettings) {
@@ -253,70 +245,56 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
   useEffect(() => {
     registerExecute(async (freshInputs) => {
-      // Resolve image URL from upstream
-      const runImage = asImageInput(freshInputs?.image)
-      if (!runImage) throw new Error('Image URL is required')
+      const runImages = asImageInputs(freshInputs?.image)
+      if (runImages.length === 0) throw new Error('Image URL is required')
       if (!userPrompt.trim()) throw new Error('User prompt is required')
       if (!s.model) throw new Error('Select a writer model')
 
-      const maxVariants = Math.max(1, fanoutLimits.max_variants)
-      const requestedVariants = clampInt(Number(variants), 1, maxVariants)
-      const maxParallel = clampInt(Number(fanoutLimits.max_parallel), 1, maxVariants)
-      const concurrency = Math.min(requestedVariants, maxParallel)
+      const totalJobs = runImages.length
+      const maxParallel = clampInt(Number(fanoutLimits.max_parallel), 1, totalJobs)
 
       let settled = 0
       const setProgress = () => {
-        setStatusMessage(`Generating prompts ${Math.min(settled, requestedVariants)}/${requestedVariants}...`)
+        setStatusMessage(`Generating prompts ${Math.min(settled, totalJobs)}/${totalJobs}...`)
       }
       setProgress()
 
-      const makeVariantPrompt = (idx: number): string => {
-        if (requestedVariants === 1) return userPrompt
-        return `${userPrompt}\n\nVariant ${idx + 1}/${requestedVariants}: produce a distinct alternative prompt while keeping the same core intent.`
-      }
+      // Process all images in parallel with concurrency limit
+      const prompts: Array<{ idx: number; text: string }> = []
+      const failures: Array<{ idx: number; error: string }> = []
 
-      const workers = new Array(concurrency).fill(null).map(async (_unused, workerIdx) => {
-        const outputs: Array<{ idx: number; text: string }> = []
-        const errors: Array<{ idx: number; error: string }> = []
-        for (let idx = workerIdx; idx < requestedVariants; idx += concurrency) {
+      const workers = new Array(Math.min(maxParallel, totalJobs)).fill(null).map(async (_unused, workerIdx) => {
+        for (let idx = workerIdx; idx < totalJobs; idx += maxParallel) {
           try {
             const res = await generatePrompt({
               model: s.model,
               system_prompt: activeSystemPrompt,
-              user_prompt: makeVariantPrompt(idx),
-              image_url: runImage,
+              user_prompt: userPrompt,
+              image_url: runImages[idx],
               temperature: s.temperature,
               max_tokens: s.max_tokens,
             })
             if (!res?.ok) throw new Error(res?.error ?? 'Generation failed')
             const text = String(res.output_text || '').trim()
             if (!text) throw new Error('Empty output from writer')
-            outputs.push({ idx, text })
+            prompts.push({ idx, text })
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
-            errors.push({ idx, error: message || 'Generation failed' })
+            failures.push({ idx, error: message || 'Generation failed' })
           } finally {
             settled += 1
             setProgress()
           }
         }
-        return { outputs, errors }
       })
 
-      const results = await Promise.all(workers)
-      const prompts: Array<{ idx: number; text: string }> = []
-      const failures: Array<{ idx: number; error: string }> = []
-      for (const result of results) {
-        prompts.push(...result.outputs)
-        failures.push(...result.errors)
-      }
-
+      await Promise.all(workers)
       prompts.sort((a, b) => a.idx - b.idx)
       failures.sort((a, b) => a.idx - b.idx)
 
       if (prompts.length === 0) {
         const detail = failures.map((f) => `#${f.idx + 1}: ${f.error}`).join('; ')
-        throw new Error(`All ${requestedVariants} prompt variants failed${detail ? ` (${detail})` : ''}`)
+        throw new Error(`All ${totalJobs} prompts failed${detail ? ` (${detail})` : ''}`)
       }
 
       if (prompts.length === 1) {
@@ -329,19 +307,20 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
         setOutput('prompt', promptTexts)
       }
 
+      // Also forward all images so ComfyGen can pair them
+      setOutput('image', runImages.length === 1 ? runImages[0] : runImages)
+
       if (failures.length > 0) {
-        const msg = `${prompts.length}/${requestedVariants} done, ${failures.length} failed`
+        const detail = failures.map((f) => `image ${f.idx + 1}: ${f.error}`).join('; ')
+        const msg = `${prompts.length}/${totalJobs} done, ${failures.length} failed — ${detail}`
         setStatusMessage(msg)
         return { partialFailure: true }
       }
 
-      setStatusMessage(`Generated ${prompts.length}/${requestedVariants} prompts`)
+      setStatusMessage(`Generated ${prompts.length}/${totalJobs} prompts`)
       return undefined
     })
   }) // re-register on every render
-
-  const maxVariants = Math.max(1, fanoutLimits.max_variants)
-  const uiVariants = clampInt(Number(variants), 1, maxVariants)
 
   return (
     <div className="space-y-3">
@@ -444,8 +423,8 @@ export const blockDef: BlockDef = {
   canStart: true,
   starterPrereqs: ['uploadImageToTmpfiles'],
   inputs: [{ name: 'image', kind: PORT_IMAGE, required: true }],
-  outputs: [{ name: 'prompt', kind: PORT_TEXT }],
-  configKeys: ['local_settings', 'variants', 'user_prompt', 'output'],
+  outputs: [{ name: 'prompt', kind: PORT_TEXT }, { name: 'image', kind: PORT_IMAGE }],
+  configKeys: ['local_settings', 'user_prompt', 'output'],
   component: I2VPromptWriterBlock,
 }
 

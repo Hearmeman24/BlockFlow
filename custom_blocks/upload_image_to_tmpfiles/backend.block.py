@@ -18,7 +18,9 @@ TMPFILES_UPLOAD_URL = "https://tmpfiles.org/api/v1/upload"
 
 @router.post("/save-local")
 async def save_local(request: Request) -> JSONResponse:
-    """Save uploaded image to local /outputs directory."""
+    """Save uploaded image to local /outputs directory. Deduplicates by content hash."""
+    import hashlib
+
     body = await request.body()
     filename = request.headers.get("X-Filename", "image.png")
 
@@ -27,6 +29,15 @@ async def save_local(request: Request) -> JSONResponse:
 
     try:
         config.LOCAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Check if this exact file already exists in output dir by content hash
+        content_hash = hashlib.sha256(body).hexdigest()[:16]
+        for existing in config.LOCAL_OUTPUT_DIR.iterdir():
+            if existing.is_file() and existing.stat().st_size == len(body):
+                if hashlib.sha256(existing.read_bytes()).hexdigest()[:16] == content_hash:
+                    image_url = f"/outputs/{existing.name}"
+                    return JSONResponse({"ok": True, "image_url": image_url})
+
         ts = time.strftime("%Y%m%d_%H%M%S")
         safe_name = Path(filename).name
         dest = config.LOCAL_OUTPUT_DIR / f"{ts}_{safe_name}"

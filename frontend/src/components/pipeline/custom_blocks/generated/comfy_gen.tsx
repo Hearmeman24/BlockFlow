@@ -279,16 +279,16 @@ function AutoSelectMulti({
   }
   return (
     <div className="space-y-1">
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" className={`${triggerClassName || 'h-7 text-xs'} w-full justify-between font-normal`}>
             <span className="truncate">{selectedValues.length > 0 ? `${selectedValues.length} selected` : (placeholder || 'Select...')}</span>
             <svg className="w-3 h-3 ml-1 shrink-0 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent className="max-h-[200px] overflow-y-auto">
+        <DropdownMenuContent className="max-h-[200px] overflow-y-auto" onCloseAutoFocus={(e) => e.preventDefault()}>
           {options.map((opt) => (
-            <DropdownMenuCheckboxItem key={opt} checked={selectedValues.includes(opt)} onCheckedChange={() => toggle(opt)} className="text-xs">
+            <DropdownMenuCheckboxItem key={opt} checked={selectedValues.includes(opt)} onCheckedChange={() => toggle(opt)} onSelect={(e) => e.preventDefault()} className="text-xs">
               <span className="truncate">{opt}</span>
             </DropdownMenuCheckboxItem>
           ))}
@@ -297,8 +297,8 @@ function AutoSelectMulti({
       {selectedValues.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {selectedValues.map((v) => (
-            <Badge key={v} variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 cursor-pointer hover:bg-destructive/20 max-w-[140px]" onClick={() => toggle(v)}>
-              <span className="truncate">{v}</span> <span className="text-muted-foreground/60 shrink-0">x</span>
+            <Badge key={v} variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 cursor-pointer hover:bg-destructive/20" onClick={() => toggle(v)}>
+              <span className="break-all">{v}</span> <span className="text-muted-foreground/60 shrink-0">x</span>
             </Badge>
           ))}
         </div>
@@ -1103,6 +1103,15 @@ function ComfyGenBlock({
         }
       }
 
+      // Auto-detect upstream image array → add as batch axis
+      const upstreamImageRaw = freshInputs.image
+      const upstreamImages = Array.isArray(upstreamImageRaw)
+        ? (upstreamImageRaw as string[]).filter((p) => typeof p === 'string' && p.trim())
+        : []
+      if (upstreamImages.length > 1 && nodeMappings.some((m) => m.portKind === 'image')) {
+        axes.push({ key: '__upstream_image__', values: upstreamImages, label: 'image' })
+      }
+
       if (axes.length > 0) {
         const combinations = cartesianProduct(axes)
 
@@ -1176,12 +1185,24 @@ function ComfyGenBlock({
                 }
               }
             }
+            // Expand synthetic __upstream_image__ key to file_inputs per combo
+            let comboFileInputs = fileInputs
+            if (merged.__upstream_image__) {
+              const imageUrl = merged.__upstream_image__
+              delete merged.__upstream_image__
+              comboFileInputs = { ...fileInputs }
+              for (const mapping of nodeMappings) {
+                if (mapping.portKind === 'image') {
+                  comboFileInputs[mapping.node_id] = { field: mapping.field, media_url: imageUrl }
+                }
+              }
+            }
             const res = await fetch(RUN_ENDPOINT, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 endpoint_id: endpointId || undefined, workflow,
-                file_inputs: fileInputs,
+                file_inputs: comboFileInputs,
                 overrides: Object.keys(merged).length > 0 ? merged : undefined,
                 lock_seed: lockSeed || undefined,
                 bypass_loras: bypassLoras.length > 0 ? bypassLoras : undefined,

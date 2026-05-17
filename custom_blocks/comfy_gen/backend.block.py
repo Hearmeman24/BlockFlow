@@ -511,6 +511,7 @@ def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 _KNOWN_LATENT_NODES = {
     "EmptyLatentImage", "SDXLEmptyLatentSizePicker+",
     "EmptyLTXVLatentVideo", "EmptySD3LatentImage",
+    "EmptyFlux2LatentImage",
 }
 
 _PRIMITIVE_TYPES = {"PrimitiveInt", "PrimitiveFloat", "Primitive int [Crystools]"}
@@ -1279,8 +1280,15 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
             services._update_job(job_id, local_file=str(local_path),
                                  local_video_url=local_url, local_image_url=local_url)
 
+            # Extract prompt from overrides (keys like "65.text") if comfy-gen didn't return it
+            override_prompt = output_data.get("prompt", "")
+            if not override_prompt and overrides:
+                text_vals = [v for k, v in overrides.items() if k.endswith(".text") and v.strip()]
+                if text_vals:
+                    override_prompt = text_vals[0]
+
             meta = media_meta.build_generation_meta(
-                prompt=output_data.get("prompt", ""),
+                prompt=override_prompt,
                 negative_prompt=output_data.get("negative_prompt", ""),
                 seed=seed,
                 model=output_data.get("model_cls", ""),

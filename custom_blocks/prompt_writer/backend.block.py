@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
@@ -57,6 +60,7 @@ async def generate(request: Request) -> JSONResponse:
     user_prompt = str(payload.get("user_prompt") or "")
     temperature = float(payload.get("temperature", 0.9))
     max_tokens = int(payload.get("max_tokens", 600))
+    reasoning_effort = str(payload.get("reasoning_effort") or "medium").lower()
 
     if not model:
         return JSONResponse({"ok": False, "error": "model is required"}, status_code=400)
@@ -65,16 +69,22 @@ async def generate(request: Request) -> JSONResponse:
 
     messages: list[dict[str, Any]] = []
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "system", "content": [
+            {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
+        ]})
     messages.append({"role": "user", "content": user_prompt})
 
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if reasoning_effort in ("low", "medium", "high"):
+        body["reasoning"] = {"effort": reasoning_effort}
+
     try:
-        resp = services._openrouter_request_json("POST", "/chat/completions", {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }, timeout=120)
+        resp = services._openrouter_request_json("POST", "/chat/completions", body, timeout=120)
         text = services._extract_openrouter_completion_text(resp)
         return JSONResponse({"ok": True, "output_text": text})
     except Exception as e:
@@ -95,8 +105,9 @@ CRITICAL RULES:
 - Include specific visual details: clothing items, colors, locations, time of day.
 - These will be expanded into full detailed prompts by another system, so keep them as creative seeds.
 
-Respond with ONLY a JSON array of strings, no markdown, no explanation:
-["idea 1", "idea 2", "idea 3", ...]"""
+Use the user's exact words and terminology. If the user uses explicit or NSFW language, repeat those same words in each idea — never euphemize, sanitize, or rephrase them.
+
+If the user's description requests a specific setting, mood, style, or aesthetic, that is the highest priority — adapt all choices to serve their vision."""
 
 
 @router.post("/generate-ideas")
@@ -106,6 +117,7 @@ async def generate_ideas(request: Request) -> JSONResponse:
     description = str(payload.get("description") or "")
     count = int(payload.get("count", 8))
     temperature = float(payload.get("temperature", 0.9))
+    reasoning_effort = str(payload.get("reasoning_effort") or "medium").lower()
 
     if not model:
         return JSONResponse({"ok": False, "error": "model is required"}, status_code=400)
@@ -115,41 +127,72 @@ async def generate_ideas(request: Request) -> JSONResponse:
     count = max(1, min(count, 64))
 
     messages = [
-        {"role": "system", "content": _IDEA_SYSTEM_PROMPT},
+        {"role": "system", "content": [
+            {"type": "text", "text": _IDEA_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+        ]},
         {"role": "user", "content": f"Generate {count} prompt ideas for: {description}"},
     ]
 
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": count * 1500,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "prompt_ideas",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "ideas": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["ideas"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+    }
+    if reasoning_effort in ("low", "medium", "high"):
+        body["reasoning"] = {"effort": reasoning_effort}
+
     try:
-        resp = services._openrouter_request_json("POST", "/chat/completions", {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": count * 200,
-        }, timeout=120)
+        resp = services._openrouter_request_json("POST", "/chat/completions", body, timeout=120)
         text = services._extract_openrouter_completion_text(resp)
 
-        # Parse JSON array from response
         import json as _json
+
+        if not text or not text.strip():
+            log.error("[generate-ideas] Empty response from LLM. Raw response: %s", json.dumps(resp, default=str)[:1000])
+            return JSONResponse({"ok": False, "error": "Empty response from LLM"})
+
         try:
-            ideas = _json.loads(text)
-        except _json.JSONDecodeError:
-            # Try extracting from markdown code block
+            parsed = _json.loads(text)
+            ideas = parsed.get("ideas", []) if isinstance(parsed, dict) else parsed
+        except _json.JSONDecodeError as parse_err:
+            log.error("[generate-ideas] JSON parse failed: %s\nFull LLM response (%d chars):\n%s", parse_err, len(text), text)
+            # Fallback: try extracting array from text
             import re
-            match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+            match = re.search(r"\[[\s\S]*\]", text)
             if match:
-                ideas = _json.loads(match.group(1).strip())
+                ideas = _json.loads(match.group(0))
             else:
-                # Try finding array in text
-                match = re.search(r"\[[\s\S]*\]", text)
-                if match:
-                    ideas = _json.loads(match.group(0))
-                else:
-                    return JSONResponse({"ok": False, "error": "Failed to parse ideas from LLM response"})
+                return JSONResponse({"ok": False, "error": "Failed to parse ideas from LLM — check console logs for full response"})
 
         if not isinstance(ideas, list):
+            log.error("[generate-ideas] Expected list, got %s: %s", type(ideas).__name__, str(ideas)[:500])
             return JSONResponse({"ok": False, "error": "Expected array of ideas"})
 
         ideas = [str(i).strip() for i in ideas if str(i).strip()]
+        if not ideas:
+            log.error("[generate-ideas] Empty ideas array. Raw text (%d chars):\n%s", len(text), text)
+            return JSONResponse({"ok": False, "error": "LLM returned empty ideas"})
+
         return JSONResponse({"ok": True, "ideas": ideas, "count": len(ideas)})
     except Exception as e:
+        log.exception("[generate-ideas] Unexpected error")
         return JSONResponse({"ok": False, "error": str(e)})

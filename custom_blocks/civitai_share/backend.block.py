@@ -95,24 +95,159 @@ def _civitai_request(url: str, data: bytes | None, headers: dict[str, str], meth
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _resolve_local_file(media_url: str) -> Path | None:
+    """Resolve a media_url to a local file path, or None."""
+    if media_url.startswith("/outputs/"):
+        from backend import config
+        return config.OUTPUT_DIR / media_url.split("/outputs/", 1)[1]
+    local = Path(media_url)
+    if local.exists():
+        return local
+    return None
+
+
+def _upload_media_file(local_file: Path, token: str) -> tuple[str, str]:
+    """Upload a single media file to CivitAI. Returns (upload_id, media_type)."""
+    suffix = local_file.suffix.lower()
+    mime = "video/mp4" if suffix == ".mp4" else "video/webm" if suffix == ".webm" else "image/png" if suffix == ".png" else "image/jpeg"
+
+    # Get presigned upload URL
+    upload_req_body = json.dumps({"filename": local_file.name}).encode()
+    upload_resp = _civitai_request(
+        f"{CIVITAI_API_BASE}/v1/image-upload",
+        upload_req_body,
+        _api_headers(token),
+    )
+    upload_url = upload_resp.get("uploadURL", "")
+    upload_id = upload_resp.get("id", "")
+    if not upload_url:
+        raise ValueError(f"No upload URL for {local_file.name}: {upload_resp}")
+
+    # Upload to presigned S3 URL (curl — Cloudflare blocks Python urllib's TLS fingerprint)
+    put_result = subprocess.run(
+        ["curl", "-s", "-X", "PUT", upload_url,
+         "-H", f"Content-Type: {mime}",
+         "--data-binary", f"@{local_file}",
+         "-w", "%{http_code}", "-o", "/dev/null"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if put_result.stdout.strip() not in ("200", "201"):
+        raise ValueError(f"Upload failed for {local_file.name}: HTTP {put_result.stdout.strip()}")
+
+    media_type = "video" if suffix in (".mp4", ".webm") else "image"
+    return upload_id, media_type
+
+
+def _build_civitai_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    """Build CivitAI metadata dict from generation metadata."""
+    civitai_meta: dict[str, Any] = {}
+
+    prompt = meta.get("prompt", "")
+    if not prompt:
+        task = meta.get("task_type", "generation")
+        model_names = [
+            name.rsplit(".", 1)[0]
+            for name, info in meta.get("model_hashes", {}).items()
+            if info.get("strength") is not None
+        ]
+        if model_names:
+            prompt = f"AI {task} with {', '.join(model_names)}"
+        else:
+            prompt = f"AI {task}"
+    civitai_meta["prompt"] = prompt
+    if meta.get("negative_prompt"):
+        civitai_meta["negativePrompt"] = meta["negative_prompt"]
+    if meta.get("seed") is not None:
+        civitai_meta["seed"] = meta["seed"]
+    if meta.get("steps") is not None:
+        civitai_meta["steps"] = meta["steps"]
+    if meta.get("sampler"):
+        civitai_meta["sampler"] = meta["sampler"]
+    if meta.get("cfg_scale") is not None:
+        cfg = meta["cfg_scale"]
+        civitai_meta["cfgScale"] = cfg[0] if isinstance(cfg, list) else cfg
+    if meta.get("resolution"):
+        civitai_meta["Size"] = meta["resolution"]
+    civitai_meta["software"] = meta.get("software", "BlockFlow (comfy-gen)")
+
+    # Build hashes + resources from model_hashes
+    hashes_map: dict[str, str] = {}
+    resources_list: list[dict[str, Any]] = []
+
+    model_hashes: dict[str, dict[str, Any]] = meta.get("model_hashes", {})
+    if model_hashes:
+        for filename, info in model_hashes.items():
+            sha256 = info.get("sha256", "")
+            if not sha256:
+                continue
+            autov2 = sha256[:10].upper()
+            base_name = filename.rsplit(".", 1)[0]
+            strength = info.get("strength")
+            is_lora = strength is not None
+            hash_key = f"lora:{base_name}" if is_lora else f"model:{base_name}"
+            hashes_map[hash_key] = autov2
+            resource: dict[str, Any] = {
+                "type": "lora" if is_lora else "checkpoint",
+                "name": base_name,
+                "hash": autov2,
+            }
+            if is_lora:
+                resource["weight"] = strength
+            resources_list.append(resource)
+    else:
+        lora_hashes: dict[str, str] = meta.get("lora_hashes", {})
+        loras: list[dict[str, Any]] = meta.get("loras", [])
+        for lora_name, full_sha256 in lora_hashes.items():
+            autov2 = full_sha256[:10].upper()
+            strength = 1.0
+            for lora in loras:
+                if lora.get("name") == lora_name:
+                    strength = lora.get("strength", 1.0)
+                    break
+            base_name = lora_name.rsplit(".", 1)[0]
+            hashes_map[f"lora:{base_name}"] = autov2
+            resources_list.append({
+                "type": "lora",
+                "name": base_name,
+                "weight": strength,
+                "hash": autov2,
+            })
+
+    if hashes_map:
+        civitai_meta["hashes"] = hashes_map
+    if resources_list:
+        civitai_meta["resources"] = resources_list
+
+    return civitai_meta
+
+
 @router.post("/share")
 async def share(request: Request) -> JSONResponse:
-    """Upload media and create a CivitAI post with metadata.
+    """Upload media and create a single CivitAI post with all images.
+
+    Accepts either a single media_url or a list of media_urls.
+    All media files are uploaded and added to one post.
 
     Flow:
-    1. Get presigned upload URL
-    2. Upload media file
-    3. Create post
-    4. Add image/video with generation metadata (hashes for auto-resolve)
-    5. Publish post
+    1. Resolve and upload all media files
+    2. Create one post
+    3. Add each image/video to the post with incrementing index
+    4. Add tags, set NSFW, publish
     """
     body = await request.json()
     token = body.get("token") or _get_token()
     if not token:
         return JSONResponse({"ok": False, "error": "No CivitAI API key"}, status_code=400)
 
-    media_path = body.get("media_path", "")
-    media_url = body.get("media_url", "")
+    # Accept single media_url or list of media_urls
+    media_urls: list[str] = body.get("media_urls", [])
+    if not media_urls:
+        single = body.get("media_url", "")
+        if single:
+            media_urls = [single]
+    if not media_urls:
+        return JSONResponse({"ok": False, "error": "media_url or media_urls required"}, status_code=400)
+
     title = body.get("title", "")
     description = body.get("description", "")
     tags = body.get("tags", [])
@@ -120,55 +255,22 @@ async def share(request: Request) -> JSONResponse:
     publish = body.get("publish", True)
     meta = body.get("meta", {})
 
-    # Resolve media file
-    local_file: Path | None = None
-    if media_path:
-        local_file = Path(media_path)
-        if not local_file.exists():
-            return JSONResponse({"ok": False, "error": f"File not found: {media_path}"}, status_code=400)
-    elif media_url:
-        if media_url.startswith("/outputs/"):
-            from backend import config
-            local_file = config.OUTPUT_DIR / media_url.split("/outputs/", 1)[1]
-        elif media_url.startswith("http"):
-            return JSONResponse({"ok": False, "error": "External URLs not supported yet, use local path"}, status_code=400)
-        if local_file and not local_file.exists():
-            return JSONResponse({"ok": False, "error": f"Output file not found: {local_file}"}, status_code=400)
-    else:
-        return JSONResponse({"ok": False, "error": "media_path or media_url required"}, status_code=400)
-
-    if not local_file:
-        return JSONResponse({"ok": False, "error": "Could not resolve media file"}, status_code=400)
-
-    suffix = local_file.suffix.lower()
-    mime = "video/mp4" if suffix == ".mp4" else "video/webm" if suffix == ".webm" else "image/png" if suffix == ".png" else "image/jpeg"
+    # Resolve all media files to local paths
+    local_files: list[Path] = []
+    for url in media_urls:
+        local_file = _resolve_local_file(url)
+        if not local_file or not local_file.exists():
+            return JSONResponse({"ok": False, "error": f"File not found: {url}"}, status_code=400)
+        local_files.append(local_file)
 
     try:
-        # Step 1: Get presigned upload URL
-        upload_req_body = json.dumps({"filename": local_file.name}).encode()
-        upload_resp = _civitai_request(
-            f"{CIVITAI_API_BASE}/v1/image-upload",
-            upload_req_body,
-            _api_headers(token),
-        )
-        upload_url = upload_resp.get("uploadURL", "")
-        upload_id = upload_resp.get("id", "")
-        if not upload_url:
-            return JSONResponse({"ok": False, "error": f"No upload URL: {upload_resp}"})
+        # Step 1: Upload all media files
+        uploads: list[tuple[str, str, Path]] = []  # (upload_id, media_type, local_file)
+        for local_file in local_files:
+            upload_id, media_type = _upload_media_file(local_file, token)
+            uploads.append((upload_id, media_type, local_file))
 
-        # Step 2: Upload media file to presigned S3 URL
-        # Must use curl — Cloudflare blocks Python urllib's TLS fingerprint (error 1010)
-        put_result = subprocess.run(
-            ["curl", "-s", "-X", "PUT", upload_url,
-             "-H", f"Content-Type: {mime}",
-             "--data-binary", f"@{local_file}",
-             "-w", "%{http_code}", "-o", "/dev/null"],
-            capture_output=True, text=True, timeout=120,
-        )
-        if put_result.stdout.strip() not in ("200", "201"):
-            return JSONResponse({"ok": False, "error": f"Upload failed: HTTP {put_result.stdout.strip()}"})
-
-        # Step 3: Create post
+        # Step 2: Create post
         create_input = {"json": {"title": title or None}}
         create_body = json.dumps(create_input).encode()
         create_resp = _civitai_request(
@@ -180,118 +282,67 @@ async def share(request: Request) -> JSONResponse:
         if not post_id:
             return JSONResponse({"ok": False, "error": f"Failed to create post: {create_resp}"})
 
-        # Step 4: Add image/video with metadata
-        # Probe real dimensions from the file — metadata width/height can be wrong
-        probed = _probe_dimensions(local_file)
-        real_w = probed[0] if probed else meta.get("width", 1024)
-        real_h = probed[1] if probed else meta.get("height", 1024)
+        # Step 3: Add each image/video to the post
+        civitai_meta = _build_civitai_meta(meta)
 
-        add_image_input: dict[str, Any] = {
-            "json": {
-                "postId": post_id,
-                "url": upload_id,
-                "type": "video" if suffix in (".mp4", ".webm") else "image",
-                "width": real_w,
-                "height": real_h,
-                "name": local_file.name,
-                "index": 0,
-            }
-        }
+        for idx, (upload_id, media_type, local_file) in enumerate(uploads):
+            probed = _probe_dimensions(local_file)
+            real_w = probed[0] if probed else meta.get("width", 1024)
+            real_h = probed[1] if probed else meta.get("height", 1024)
 
-        # Build CivitAI meta from generation metadata
-        civitai_meta: dict[str, Any] = {}
-
-        # CivitAI requires a prompt — generate one from available metadata if absent
-        prompt = meta.get("prompt", "")
-        if not prompt:
-            task = meta.get("task_type", "generation")
-            model_names = [
-                name.rsplit(".", 1)[0]
-                for name, info in meta.get("model_hashes", {}).items()
-                if info.get("strength") is not None  # user LoRAs only
-            ]
-            if model_names:
-                prompt = f"AI {task} with {', '.join(model_names)}"
-            else:
-                prompt = f"AI {task}"
-        civitai_meta["prompt"] = prompt
-        if meta.get("negative_prompt"):
-            civitai_meta["negativePrompt"] = meta["negative_prompt"]
-        if meta.get("seed") is not None:
-            civitai_meta["seed"] = meta["seed"]
-        if meta.get("steps") is not None:
-            civitai_meta["steps"] = meta["steps"]
-        if meta.get("sampler"):
-            civitai_meta["sampler"] = meta["sampler"]
-        if meta.get("cfg_scale") is not None:
-            cfg = meta["cfg_scale"]
-            # sample_guide_scale can be a list like [4, 3] — CivitAI needs a single number
-            civitai_meta["cfgScale"] = cfg[0] if isinstance(cfg, list) else cfg
-        if meta.get("resolution"):
-            civitai_meta["Size"] = meta["resolution"]
-        civitai_meta["software"] = meta.get("software", "BlockFlow (comfy-gen)")
-
-        # Build hashes + resources from model_hashes (all .safetensors used)
-        # AutoV2 = first 10 hex chars of SHA-256, uppercase
-        # CivitAI auto-resolves resources from these hashes
-        hashes_map: dict[str, str] = {}
-        resources_list: list[dict[str, Any]] = []
-
-        model_hashes: dict[str, dict[str, Any]] = meta.get("model_hashes", {})
-        if model_hashes:
-            for filename, info in model_hashes.items():
-                sha256 = info.get("sha256", "")
-                if not sha256:
-                    continue
-                autov2 = sha256[:10].upper()
-                base_name = filename.rsplit(".", 1)[0]
-                strength = info.get("strength")
-                # Anything with a strength is a user LoRA; otherwise infer from type
-                is_lora = strength is not None
-                hash_key = f"lora:{base_name}" if is_lora else f"model:{base_name}"
-                hashes_map[hash_key] = autov2
-                resource: dict[str, Any] = {
-                    "type": "lora" if is_lora else "checkpoint",
-                    "name": base_name,
-                    "hash": autov2,
+            add_image_input: dict[str, Any] = {
+                "json": {
+                    "postId": post_id,
+                    "url": upload_id,
+                    "type": media_type,
+                    "width": real_w,
+                    "height": real_h,
+                    "name": local_file.name,
+                    "index": idx,
                 }
-                if is_lora:
-                    resource["weight"] = strength
-                resources_list.append(resource)
-        else:
-            # Backwards compat: fall back to lora_hashes + loras list
-            lora_hashes: dict[str, str] = meta.get("lora_hashes", {})
-            loras: list[dict[str, Any]] = meta.get("loras", [])
-            for lora_name, full_sha256 in lora_hashes.items():
-                autov2 = full_sha256[:10].upper()
-                strength = 1.0
-                for lora in loras:
-                    if lora.get("name") == lora_name:
-                        strength = lora.get("strength", 1.0)
-                        break
-                base_name = lora_name.rsplit(".", 1)[0]
-                hashes_map[f"lora:{base_name}"] = autov2
-                resources_list.append({
-                    "type": "lora",
-                    "name": base_name,
-                    "weight": strength,
-                    "hash": autov2,
-                })
+            }
+            # Attach metadata to every image so CivitAI resolves models on each
+            if civitai_meta:
+                add_image_input["json"]["meta"] = civitai_meta
 
-        if hashes_map:
-            civitai_meta["hashes"] = hashes_map
-        if resources_list:
-            civitai_meta["resources"] = resources_list
+            add_image_body = json.dumps(add_image_input).encode()
+            _civitai_request(
+                f"{CIVITAI_TRPC_BASE}/post.addImage",
+                add_image_body,
+                _trpc_headers(token),
+            )
 
-        if civitai_meta:
-            add_image_input["json"]["meta"] = civitai_meta
+        # Step 4: Resolve modelVersionId from first LoRA hash and link post to model
+        model_version_id = None
+        model_hashes: dict[str, dict[str, Any]] = meta.get("model_hashes", {})
+        for filename, info in model_hashes.items():
+            sha256 = info.get("sha256", "")
+            if not sha256 or info.get("strength") is None:
+                continue  # skip non-LoRA models
+            try:
+                resolve_resp = _civitai_request(
+                    f"{CIVITAI_API_BASE}/v1/model-versions/by-hash/{sha256}",
+                    None,
+                    _api_headers(token),
+                    method="GET",
+                )
+                vid = resolve_resp.get("id")
+                if vid:
+                    model_version_id = vid
+                    break
+            except Exception:
+                continue
 
-        add_image_body = json.dumps(add_image_input).encode()
-        add_resp = _civitai_request(
-            f"{CIVITAI_TRPC_BASE}/post.addImage",
-            add_image_body,
-            _trpc_headers(token),
-        )
+        if model_version_id:
+            try:
+                link_input = {"json": {"id": post_id, "modelVersionId": model_version_id}}
+                _civitai_request(
+                    f"{CIVITAI_TRPC_BASE}/post.update",
+                    json.dumps(link_input).encode(),
+                    _trpc_headers(token),
+                )
+            except Exception:
+                pass  # Non-critical — post still works without model link
 
         # Step 5: Add tags
         for tag_name in (tags or []):
@@ -305,9 +356,9 @@ async def share(request: Request) -> JSONResponse:
                     _trpc_headers(token),
                 )
             except Exception:
-                pass  # Tag failures are non-critical
+                pass
 
-        # Step 6: Set NSFW rating if needed
+        # Step 5: Set NSFW rating if needed
         if nsfw:
             try:
                 nsfw_input = {"json": {"id": post_id, "nsfw": True, "nsfwLevel": 28}}
@@ -319,7 +370,7 @@ async def share(request: Request) -> JSONResponse:
             except Exception:
                 pass
 
-        # Step 7: Publish
+        # Step 6: Publish
         post_url = f"https://civitai.com/posts/{post_id}"
         if publish:
             try:
@@ -347,6 +398,7 @@ async def share(request: Request) -> JSONResponse:
                     "ok": True,
                     "post_id": post_id,
                     "post_url": post_url,
+                    "image_count": len(uploads),
                     "published": False,
                     "publish_error": str(e),
                 })
@@ -355,16 +407,17 @@ async def share(request: Request) -> JSONResponse:
             "ok": True,
             "post_id": post_id,
             "post_url": post_url,
+            "image_count": len(uploads),
             "published": publish,
         })
 
     except urllib.error.HTTPError as e:
-        body = ""
+        body_text = ""
         try:
-            body = e.read().decode("utf-8", errors="replace")[:500]
+            body_text = e.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             pass
-        return JSONResponse({"ok": False, "error": f"HTTP Error {e.code}: {e.reason}", "detail": body}, status_code=500)
+        return JSONResponse({"ok": False, "error": f"HTTP Error {e.code}: {e.reason}", "detail": body_text}, status_code=500)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
@@ -588,5 +641,138 @@ async def auto_tags(request: Request) -> JSONResponse:
         except Exception:
             pass
         return JSONResponse({"ok": False, "error": f"OpenRouter error {e.code}: {detail}"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.post("/post-info")
+async def post_info(request: Request) -> JSONResponse:
+    """Fetch post info from CivitAI to validate it's a showcase post."""
+    body = await request.json()
+    token = body.get("token") or _get_token()
+    post_id = body.get("post_id")
+    if not token:
+        return JSONResponse({"ok": False, "error": "No CivitAI API key"}, status_code=400)
+    if not post_id:
+        return JSONResponse({"ok": False, "error": "post_id required"}, status_code=400)
+
+    try:
+        input_data = json.dumps({"json": {"id": int(post_id)}})
+        encoded = urllib.parse.quote(input_data)
+        resp = _civitai_request(
+            f"{CIVITAI_TRPC_BASE}/post.getEdit?input={encoded}",
+            None,
+            _trpc_headers(token),
+            method="GET",
+        )
+        post = resp.get("result", {}).get("data", {}).get("json", {})
+        if not post or not post.get("id"):
+            return JSONResponse({"ok": False, "error": "Post not found"})
+
+        images = post.get("images", [])
+        return JSONResponse({
+            "ok": True,
+            "post": {
+                "id": post.get("id"),
+                "title": post.get("title"),
+                "modelVersionId": post.get("modelVersionId"),
+                "nsfwLevel": post.get("nsfwLevel"),
+                "publishedAt": post.get("publishedAt"),
+                "image_count": len(images),
+                "is_showcase": post.get("modelVersionId") is not None,
+            },
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.post("/add-to-post")
+async def add_to_post(request: Request) -> JSONResponse:
+    """Add images to an existing CivitAI post."""
+    body = await request.json()
+    token = body.get("token") or _get_token()
+    post_id = body.get("post_id")
+    media_urls: list[str] = body.get("media_urls", [])
+    meta = body.get("meta", {})
+
+    if not token:
+        return JSONResponse({"ok": False, "error": "No CivitAI API key"}, status_code=400)
+    if not post_id:
+        return JSONResponse({"ok": False, "error": "post_id required"}, status_code=400)
+    if not media_urls:
+        return JSONResponse({"ok": False, "error": "media_urls required"}, status_code=400)
+
+    # Resolve all media files
+    local_files: list[Path] = []
+    for url in media_urls:
+        local_file = _resolve_local_file(url)
+        if not local_file or not local_file.exists():
+            return JSONResponse({"ok": False, "error": f"File not found: {url}"}, status_code=400)
+        local_files.append(local_file)
+
+    try:
+        # Get current image count for correct indices
+        input_data = json.dumps({"json": {"id": int(post_id)}})
+        encoded = urllib.parse.quote(input_data)
+        resp = _civitai_request(
+            f"{CIVITAI_TRPC_BASE}/post.getEdit?input={encoded}",
+            None,
+            _trpc_headers(token),
+            method="GET",
+        )
+        existing_images = resp.get("result", {}).get("data", {}).get("json", {}).get("images", [])
+        start_index = len(existing_images)
+
+        # Upload all files
+        uploads: list[tuple[str, str, Path]] = []
+        for local_file in local_files:
+            upload_id, media_type = _upload_media_file(local_file, token)
+            uploads.append((upload_id, media_type, local_file))
+
+        # Build metadata
+        civitai_meta = _build_civitai_meta(meta) if meta else {}
+
+        # Add each to the post
+        for idx, (upload_id, media_type, local_file) in enumerate(uploads):
+            probed = _probe_dimensions(local_file)
+            real_w = probed[0] if probed else meta.get("width", 1024)
+            real_h = probed[1] if probed else meta.get("height", 1024)
+
+            add_image_input: dict[str, Any] = {
+                "json": {
+                    "postId": int(post_id),
+                    "url": upload_id,
+                    "type": media_type,
+                    "width": real_w,
+                    "height": real_h,
+                    "name": local_file.name,
+                    "index": start_index + idx,
+                }
+            }
+            if civitai_meta:
+                add_image_input["json"]["meta"] = civitai_meta
+
+            _civitai_request(
+                f"{CIVITAI_TRPC_BASE}/post.addImage",
+                json.dumps(add_image_input).encode(),
+                _trpc_headers(token),
+            )
+
+        post_url = f"https://civitai.com/posts/{post_id}"
+        return JSONResponse({
+            "ok": True,
+            "post_id": post_id,
+            "post_url": post_url,
+            "added_count": len(uploads),
+            "total_count": start_index + len(uploads),
+        })
+
+    except urllib.error.HTTPError as e:
+        body_text = ""
+        try:
+            body_text = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        return JSONResponse({"ok": False, "error": f"HTTP Error {e.code}: {e.reason}", "detail": body_text}, status_code=500)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)

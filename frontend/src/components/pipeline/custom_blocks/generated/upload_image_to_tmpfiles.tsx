@@ -285,7 +285,7 @@ function UploadImageBlock({
 
           <p className="text-[10px] text-muted-foreground text-center">
             {files.length} image{files.length === 1 ? '' : 's'} selected
-            {files.length > 1 && ' — pipeline will iterate over each'}
+            {files.length > 1 && ' — all emitted as batch'}
           </p>
 
           <div className="grid grid-cols-2 gap-2">
@@ -318,8 +318,6 @@ export const blockDef: BlockDef = {
     'upload_mode',
     'cached_uploads',
   ],
-  iterator: true,
-  iteratorOutput: 'image',
   component: UploadImageBlock,
 }
 

@@ -64,6 +64,8 @@ Write one paragraph only.
 Plain text.
 `
 
+type ReasoningEffort = 'none' | 'low' | 'medium' | 'high'
+
 interface WriterSettings {
   mode: WriterMode
   system_prompt: string
@@ -72,6 +74,7 @@ interface WriterSettings {
   model: string
   temperature: number
   max_tokens: number
+  reasoning_effort: ReasoningEffort
 }
 
 interface ModelInfo {
@@ -118,6 +121,7 @@ interface WriterGeneratePayload {
   user_prompt: string
   temperature: number
   max_tokens: number
+  reasoning_effort?: ReasoningEffort
 }
 
 async function generatePrompt(payload: WriterGeneratePayload) {
@@ -143,7 +147,8 @@ function settingsEqual(a: WriterSettings | null, b: WriterSettings): boolean {
     a.image_system_prompt === b.image_system_prompt &&
     a.model === b.model &&
     a.temperature === b.temperature &&
-    a.max_tokens === b.max_tokens
+    a.max_tokens === b.max_tokens &&
+    a.reasoning_effort === b.reasoning_effort
   )
 }
 
@@ -200,6 +205,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
             model: String(server.model || 'x-ai/grok-4.1-fast'),
             temperature: Number(server.temperature ?? 0.6),
             max_tokens: Number(server.max_tokens ?? 100000),
+            reasoning_effort: (server.reasoning_effort as ReasoningEffort) || 'medium',
           })
         }
       })
@@ -243,6 +249,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
     model: String(localSettings?.model || 'x-ai/grok-4.1-fast'),
     temperature: Number.isFinite(Number(localSettings?.temperature)) ? Number(localSettings?.temperature) : 0.6,
     max_tokens: Number.isFinite(Number(localSettings?.max_tokens)) ? Math.max(1, Number(localSettings?.max_tokens)) : 100000,
+    reasoning_effort: (localSettings?.reasoning_effort as ReasoningEffort) || 'medium',
   }
 
   const updateLocal = (patch: Partial<WriterSettings>) => {
@@ -256,6 +263,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       model: String((patch as Partial<WriterSettings>).model ?? s.model ?? ''),
       temperature: Number.isFinite(Number((patch as Partial<WriterSettings>).temperature)) ? Number((patch as Partial<WriterSettings>).temperature) : s.temperature,
       max_tokens: Number.isFinite(Number((patch as Partial<WriterSettings>).max_tokens)) ? Math.max(1, Number((patch as Partial<WriterSettings>).max_tokens)) : s.max_tokens,
+      reasoning_effort: ((patch as Partial<WriterSettings>).reasoning_effort as ReasoningEffort) ?? s.reasoning_effort,
     }
     if (patch.mode && patch.mode !== s.mode) {
       next.system_prompt = patch.mode === 'image' ? next.image_system_prompt : next.video_system_prompt
@@ -292,35 +300,52 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       // Collect all user prompts (main + extras)
       const allUserPrompts = [userPrompt, ...extraUserPrompts].filter((p) => p.trim())
       const total = allUserPrompts.length
+      const concurrency = Math.min(total, Math.max(1, fanoutLimits.max_parallel))
 
-      setStatusMessage(`Generating prompt 1/${total}...`)
-
-      const generatedPrompts: string[] = []
-      const failures: string[] = []
-
-      for (let i = 0; i < total; i++) {
-        setStatusMessage(`Generating prompt ${i + 1}/${total}...`)
-        try {
-          const res = await generatePrompt({
-            mode: s.mode,
-            model: s.model,
-            system_prompt: activeSystemPrompt,
-            user_prompt: allUserPrompts[i],
-            temperature: s.temperature,
-            max_tokens: s.max_tokens,
-          })
-          if (!res?.ok) throw new Error(res?.error ?? 'Generation failed')
-          const text = String(res.output_text || '').trim()
-          if (!text) throw new Error('Empty output from writer')
-          generatedPrompts.push(text)
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          failures.push(`#${i + 1}: ${message}`)
-        }
+      let settled = 0
+      const setProgress = () => {
+        setStatusMessage(`Generating prompts ${Math.min(settled, total)}/${total}...`)
       }
+      setProgress()
+
+      const outputs: Array<{ idx: number; text: string }> = []
+      const failures: Array<{ idx: number; error: string }> = []
+
+      const workers = new Array(concurrency).fill(null).map(async (_unused, workerIdx) => {
+        for (let idx = workerIdx; idx < total; idx += concurrency) {
+          try {
+            const res = await generatePrompt({
+              mode: s.mode,
+              model: s.model,
+              system_prompt: activeSystemPrompt,
+              user_prompt: allUserPrompts[idx],
+              temperature: s.temperature,
+              max_tokens: s.max_tokens,
+              reasoning_effort: s.reasoning_effort,
+            })
+            if (!res?.ok) throw new Error(res?.error ?? 'Generation failed')
+            const text = String(res.output_text || '').trim()
+            if (!text) throw new Error('Empty output from writer')
+            outputs.push({ idx, text })
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            failures.push({ idx, error: message })
+          } finally {
+            settled += 1
+            setProgress()
+          }
+        }
+      })
+
+      await Promise.all(workers)
+      outputs.sort((a, b) => a.idx - b.idx)
+      failures.sort((a, b) => a.idx - b.idx)
+
+      const generatedPrompts = outputs.map((o) => o.text)
 
       if (generatedPrompts.length === 0) {
-        throw new Error(`All ${total} prompts failed: ${failures.join('; ')}`)
+        const detail = failures.map((f) => `#${f.idx + 1}: ${f.error}`).join('; ')
+        throw new Error(`All ${total} prompts failed: ${detail}`)
       }
 
       if (generatedPrompts.length === 1) {
@@ -379,6 +404,21 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
             onChange={(e) => updateLocal({ max_tokens: Number(e.target.value) })}
             className="h-8 text-xs" />
         </div>
+      </div>
+
+      <div className="space-y-1">
+        <Label className="text-xs">Reasoning Effort</Label>
+        <Select value={s.reasoning_effort} onValueChange={(v) => updateLocal({ reasoning_effort: v as ReasoningEffort })}>
+          <SelectTrigger className="w-full h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none" className="text-xs">None</SelectItem>
+            <SelectItem value="low" className="text-xs">Low</SelectItem>
+            <SelectItem value="medium" className="text-xs">Medium</SelectItem>
+            <SelectItem value="high" className="text-xs">High</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <Collapsible open={systemPromptOpen} onOpenChange={setSystemPromptOpen}>
@@ -539,7 +579,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
                     const res = await fetch(GENERATE_IDEAS_ENDPOINT, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ model: s.model, description: ideaDescription, count: ideaCount, temperature: s.temperature }),
+                      body: JSON.stringify({ model: s.model, description: ideaDescription, count: ideaCount, temperature: s.temperature, reasoning_effort: s.reasoning_effort }),
                     })
                     const data = await res.json()
                     if (data.ok && Array.isArray(data.ideas)) {

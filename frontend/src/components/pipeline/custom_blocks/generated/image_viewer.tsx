@@ -45,12 +45,13 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
   useEffect(() => {
     const key = currentUrls.join('\n')
     if (key && key !== prevKeyRef.current) {
+      // Only un-clear when genuinely new URLs arrive (not the same ones we cleared)
+      const isNew = prevKeyRef.current !== ''  // first load doesn't count as "new"
       prevKeyRef.current = key
-      setCleared(false)
       setAccumulatedUrls((prev) => {
-        // Filter out URLs already in the accumulated list
         const newUrls = currentUrls.filter((u) => !prev.includes(u))
         if (newUrls.length === 0) return prev
+        if (isNew) setCleared(false)
         const merged = [...prev, ...newUrls]
         setSelectedIndex(merged.length - 1)
         return merged
@@ -100,7 +101,7 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
           {accumulatedUrls.length > 1 && (
             <button
               type="button"
-              onClick={() => { setAccumulatedUrls([]); prevKeyRef.current = ''; setSelectedIndex(0); setCleared(true) }}
+              onClick={() => { setAccumulatedUrls([]); setSelectedIndex(0); setCleared(true) }}
               className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
             >
               Clear

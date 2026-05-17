@@ -145,6 +145,7 @@ interface LoraNodeInfo {
   lora_name: string
   strength_model?: number
   strength_clip?: number
+  chain_id?: number
 }
 
 interface LoraOverride {
@@ -152,6 +153,38 @@ interface LoraOverride {
   strength_model: string
   strength_clip: string
   enabled: boolean
+}
+
+interface AddedLora {
+  id: string
+  chain_anchor: string
+  class_type: 'LoraLoader' | 'LoraLoaderModelOnly'
+  lora_name: string
+  strength_model: string
+  strength_clip: string
+}
+
+const CHAIN_COLORS = [
+  { badge: 'bg-emerald-600/30 text-emerald-200 border-emerald-500/40', border: 'border-l-emerald-500/60' },
+  { badge: 'bg-violet-600/30 text-violet-200 border-violet-500/40', border: 'border-l-violet-500/60' },
+  { badge: 'bg-amber-600/30 text-amber-200 border-amber-500/40', border: 'border-l-amber-500/60' },
+  { badge: 'bg-rose-600/30 text-rose-200 border-rose-500/40', border: 'border-l-rose-500/60' },
+  { badge: 'bg-sky-600/30 text-sky-200 border-sky-500/40', border: 'border-l-sky-500/60' },
+] as const
+
+function serializeAddedLoras(items: AddedLora[]): Array<Record<string, unknown>> {
+  return items.map((a) => {
+    const out: Record<string, unknown> = {
+      chain_anchor: a.chain_anchor,
+      class_type: a.class_type,
+      lora_name: a.lora_name,
+      strength_model: parseFloat(a.strength_model) || 1,
+    }
+    if (a.class_type === 'LoraLoader') {
+      out.strength_clip = parseFloat(a.strength_clip) || 1
+    }
+    return out
+  })
 }
 
 interface MissingModel {
@@ -469,6 +502,7 @@ function ComfyGenBlock({
   const [refVideoOverrides, setRefVideoOverrides] = useSessionState<Record<string, string>>(`block_${blockId}_ref_video_overrides`, {})
   const [loraNodes, setLoraNodes] = useSessionState<LoraNodeInfo[]>(`block_${blockId}_lora_nodes`, [])
   const [loraOverrides, setLoraOverrides] = useSessionState<Record<string, LoraOverride>>(`block_${blockId}_lora_overrides`, {})
+  const [addedLoras, setAddedLoras] = useSessionState<AddedLora[]>(`block_${blockId}_added_loras`, [])
   const [availableLoras, setAvailableLoras] = useState<string[]>([])
   const [availableSamplers, setAvailableSamplers] = useState<string[]>([])
   const [availableSchedulers, setAvailableSchedulers] = useState<string[]>([])
@@ -803,6 +837,9 @@ function ComfyGenBlock({
           }
         }
         setLoraOverrides(initLoraOverrides)
+        // Drop any added LoRAs whose anchor node no longer exists in the reloaded workflow
+        const detectedIds = new Set(detectedLoras.map((ln) => ln.node_id))
+        setAddedLoras((prev) => prev.filter((a) => detectedIds.has(a.chain_anchor)))
 
         const otype = (data.output_type as string) || 'unknown'
         setOutputType(otype)
@@ -826,6 +863,7 @@ function ComfyGenBlock({
       setRefVideoOverrides({})
       setLoraNodes([])
       setLoraOverrides({})
+      setAddedLoras([])
       setOutputType('')
       setOutputHint?.('')
       return ''
@@ -924,6 +962,8 @@ function ComfyGenBlock({
           }
           return merged
         })
+        const detectedIds2 = new Set(detectedLoras2.map((ln) => ln.node_id))
+        setAddedLoras((prev) => prev.filter((a) => detectedIds2.has(a.chain_anchor)))
 
         const otype2 = (data.output_type as string) || 'unknown'
         setOutputType(otype2)
@@ -1204,6 +1244,7 @@ function ComfyGenBlock({
                 overrides: Object.keys(merged).length > 0 ? merged : undefined,
                 lock_seed: lockSeed || undefined,
                 bypass_loras: bypassLoras.length > 0 ? bypassLoras : undefined,
+                added_loras: addedLoras.length > 0 ? serializeAddedLoras(addedLoras) : undefined,
               }),
             })
             const data = await res.json()
@@ -1326,6 +1367,7 @@ function ComfyGenBlock({
           overrides: Object.keys(baseOverrides).length > 0 ? baseOverrides : undefined,
           lock_seed: lockSeed || undefined,
           bypass_loras: bypassLoras.length > 0 ? bypassLoras : undefined,
+          added_loras: addedLoras.length > 0 ? serializeAddedLoras(addedLoras) : undefined,
         }),
       })
       const data = await res.json()
@@ -1835,89 +1877,212 @@ function ComfyGenBlock({
         </CollapsibleSection>
       )}
 
-      {/* LoRA overrides */}
-      {loraNodes.length > 0 && (
-        <CollapsibleSection
-          label="LoRAs"
-          badge={(() => {
-            const enabledCount = loraNodes.filter((ln) => loraOverrides[ln.node_id]?.enabled !== false).length
-            return enabledCount === loraNodes.length ? `${loraNodes.length}` : `${enabledCount}/${loraNodes.length}`
-          })()}
-        >
-          {loraNodes.map((ln) => {
-            const ov = loraOverrides[ln.node_id]
-            const hasClip = ln.class_type === 'LoraLoader'
-            const isEnabled = ov?.enabled !== false
-            return (
-              <div key={ln.node_id} className="space-y-1.5">
-                {loraNodes.length > 1 && (
-                  <span className="text-[10px] text-muted-foreground">{ln.label}</span>
-                )}
-                <div className="flex items-center gap-2">
-                  <div className={`min-w-0 flex-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
-                    {availableLoras.length > 0 ? (
-                      <AutoSelectMulti
-                        value={ov?.lora_name || ln.lora_name}
-                        onValueChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], lora_name: v } }))}
-                        options={availableLoras}
-                        selectedValues={autoSelect[`${ln.node_id}.lora_name`] || []}
-                        onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ln.node_id}.lora_name`]: vals }))}
-                        automateEnabled={automateEnabled}
-                        placeholder={ln.lora_name}
-                        triggerClassName="h-7 text-xs"
-                      />
-                    ) : (
-                      <Input
-                        value={ov?.lora_name ?? ln.lora_name}
-                        onChange={(e) => setLoraOverrides((prev) => ({
-                          ...prev,
-                          [ln.node_id]: { ...prev[ln.node_id], lora_name: e.target.value },
-                        }))}
-                        placeholder={ln.lora_name}
-                        className="h-7 text-xs"
-                      />
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setLoraOverrides((prev) => ({
-                      ...prev,
-                      [ln.node_id]: { ...prev[ln.node_id], enabled: !isEnabled },
-                    }))}
-                    className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${
-                      isEnabled ? 'bg-blue-600' : 'bg-muted-foreground/30'
-                    }`}
-                  >
-                    <span className={`absolute top-[2px] left-[2px] w-[14px] h-[14px] rounded-full bg-white transition-transform ${
-                      isEnabled ? 'translate-x-[14px]' : 'translate-x-0'
-                    }`} />
-                  </button>
+      {/* LoRA overrides — grouped by chain */}
+      {loraNodes.length > 0 && (() => {
+        // Group loraNodes by chain_id (fallback 0 for legacy data without chain_id)
+        const chainsMap = new Map<number, LoraNodeInfo[]>()
+        for (const ln of loraNodes) {
+          const cid = ln.chain_id ?? 0
+          const arr = chainsMap.get(cid) ?? []
+          arr.push(ln)
+          chainsMap.set(cid, arr)
+        }
+        const chains = Array.from(chainsMap.entries()).sort((a, b) => a[0] - b[0])
+        const enabledCount = loraNodes.filter((ln) => loraOverrides[ln.node_id]?.enabled !== false).length
+        const totalCount = loraNodes.length + addedLoras.length
+        const enabledTotal = enabledCount + addedLoras.length
+        const showChainBadges = chains.length > 1
+
+        const renderOriginalRow = (ln: LoraNodeInfo) => {
+          const ov = loraOverrides[ln.node_id]
+          const hasClip = ln.class_type === 'LoraLoader'
+          const isEnabled = ov?.enabled !== false
+          return (
+            <div key={`orig-${ln.node_id}`} className="space-y-1.5">
+              <span className="text-[10px] text-muted-foreground">{ln.label}</span>
+              <div className="flex items-center gap-2">
+                <div className={`min-w-0 flex-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                  {availableLoras.length > 0 ? (
+                    <AutoSelectMulti
+                      value={ov?.lora_name || ln.lora_name}
+                      onValueChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], lora_name: v } }))}
+                      options={availableLoras}
+                      selectedValues={autoSelect[`${ln.node_id}.lora_name`] || []}
+                      onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ln.node_id}.lora_name`]: vals }))}
+                      automateEnabled={automateEnabled}
+                      placeholder={ln.lora_name}
+                      triggerClassName="h-7 text-xs"
+                    />
+                  ) : (
+                    <Input
+                      value={ov?.lora_name ?? ln.lora_name}
+                      onChange={(e) => setLoraOverrides((prev) => ({
+                        ...prev,
+                        [ln.node_id]: { ...prev[ln.node_id], lora_name: e.target.value },
+                      }))}
+                      placeholder={ln.lora_name}
+                      className="h-7 text-xs"
+                    />
+                  )}
                 </div>
-                <div className={`space-y-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                <button
+                  type="button"
+                  onClick={() => setLoraOverrides((prev) => ({
+                    ...prev,
+                    [ln.node_id]: { ...prev[ln.node_id], enabled: !isEnabled },
+                  }))}
+                  className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${
+                    isEnabled ? 'bg-blue-600' : 'bg-muted-foreground/30'
+                  }`}
+                >
+                  <span className={`absolute top-[2px] left-[2px] w-[14px] h-[14px] rounded-full bg-white transition-transform ${
+                    isEnabled ? 'translate-x-[14px]' : 'translate-x-0'
+                  }`} />
+                </button>
+              </div>
+              <div className={`space-y-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                <AutoSliderInput
+                  label="Model"
+                  value={ov?.strength_model ?? (ln.strength_model != null ? String(ln.strength_model) : '1')}
+                  onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_model: v } }))}
+                  multiValues={autoNumeric[`${ln.node_id}.strength_model`] || []}
+                  onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_model`]: vals }))}
+                  automateEnabled={automateEnabled}
+                />
+                {hasClip && (
                   <AutoSliderInput
-                    label="Model"
-                    value={ov?.strength_model ?? (ln.strength_model != null ? String(ln.strength_model) : '1')}
-                    onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_model: v } }))}
-                    multiValues={autoNumeric[`${ln.node_id}.strength_model`] || []}
-                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_model`]: vals }))}
+                    label="CLIP"
+                    value={ov?.strength_clip ?? (ln.strength_clip != null ? String(ln.strength_clip) : '1')}
+                    onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_clip: v } }))}
+                    multiValues={autoNumeric[`${ln.node_id}.strength_clip`] || []}
+                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_clip`]: vals }))}
                     automateEnabled={automateEnabled}
                   />
-                  {hasClip && (
-                    <AutoSliderInput
-                      label="CLIP"
-                      value={ov?.strength_clip ?? (ln.strength_clip != null ? String(ln.strength_clip) : '1')}
-                      onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_clip: v } }))}
-                      multiValues={autoNumeric[`${ln.node_id}.strength_clip`] || []}
-                      onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_clip`]: vals }))}
-                      automateEnabled={automateEnabled}
+                )}
+              </div>
+            </div>
+          )
+        }
+
+        const renderAddedRow = (a: AddedLora, colors: typeof CHAIN_COLORS[number]) => {
+          const hasClip = a.class_type === 'LoraLoader'
+          const updateAdded = (patch: Partial<AddedLora>) =>
+            setAddedLoras((prev) => prev.map((x) => (x.id === a.id ? { ...x, ...patch } : x)))
+          const removeAdded = () =>
+            setAddedLoras((prev) => prev.filter((x) => x.id !== a.id))
+          return (
+            <div key={`added-${a.id}`} className={`space-y-1.5 pl-2 border-l-2 border-dashed ${colors.border}`}>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-muted-foreground">
+                  added <span className="text-[9px] opacity-60">({a.class_type === 'LoraLoader' ? 'with CLIP' : 'model only'})</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={removeAdded}
+                  title="Remove added LoRA"
+                  className="text-[10px] text-muted-foreground hover:text-red-400 px-1"
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  {availableLoras.length > 0 ? (
+                    <Select value={a.lora_name || ''} onValueChange={(v) => updateAdded({ lora_name: v })}>
+                      <SelectTrigger className="h-7 text-xs">
+                        <SelectValue placeholder="Pick a LoRA..." />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableLoras.map((opt) => (
+                          <SelectItem key={opt} value={opt} className="text-xs">{opt}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input
+                      value={a.lora_name}
+                      onChange={(e) => updateAdded({ lora_name: e.target.value })}
+                      placeholder="lora_name.safetensors"
+                      className="h-7 text-xs"
                     />
                   )}
                 </div>
               </div>
-            )
-          })}
-        </CollapsibleSection>
-      )}
+              <div className="space-y-1">
+                <AutoSliderInput
+                  label="Model"
+                  value={a.strength_model}
+                  onChange={(v) => updateAdded({ strength_model: v })}
+                  multiValues={[]}
+                  onMultiChange={() => {}}
+                  automateEnabled={false}
+                />
+                {hasClip && (
+                  <AutoSliderInput
+                    label="CLIP"
+                    value={a.strength_clip}
+                    onChange={(v) => updateAdded({ strength_clip: v })}
+                    multiValues={[]}
+                    onMultiChange={() => {}}
+                    automateEnabled={false}
+                  />
+                )}
+              </div>
+            </div>
+          )
+        }
+
+        return (
+          <CollapsibleSection
+            label="LoRAs"
+            badge={enabledTotal === totalCount ? `${totalCount}` : `${enabledTotal}/${totalCount}`}
+          >
+            {chains.map(([cid, chainNodes]) => {
+              const colors = CHAIN_COLORS[cid % CHAIN_COLORS.length]
+              const tail = chainNodes[chainNodes.length - 1]
+              const addedForChain = addedLoras.filter((a) => a.chain_anchor === tail.node_id)
+              const addLora = () => {
+                const newEntry: AddedLora = {
+                  id: (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
+                    ? crypto.randomUUID()
+                    : `added_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                  chain_anchor: tail.node_id,
+                  class_type: tail.class_type === 'LoraLoader' ? 'LoraLoader' : 'LoraLoaderModelOnly',
+                  lora_name: (loraOverrides[tail.node_id]?.lora_name || tail.lora_name || ''),
+                  strength_model: (loraOverrides[tail.node_id]?.strength_model
+                    || (tail.strength_model != null ? String(tail.strength_model) : '1')),
+                  strength_clip: (loraOverrides[tail.node_id]?.strength_clip
+                    || (tail.strength_clip != null ? String(tail.strength_clip) : '1')),
+                }
+                setAddedLoras((prev) => [...prev, newEntry])
+              }
+              return (
+                <div key={`chain-${cid}`} className="space-y-2">
+                  {showChainBadges && (
+                    <div className="flex items-center gap-1.5">
+                      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${colors.badge}`}>
+                        Chain {cid + 1}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground">
+                        {chainNodes.length + addedForChain.length} LoRA{chainNodes.length + addedForChain.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                  )}
+                  {chainNodes.map(renderOriginalRow)}
+                  {addedForChain.map((a) => renderAddedRow(a, colors))}
+                  <button
+                    type="button"
+                    onClick={addLora}
+                    className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1"
+                  >
+                    <span className="text-sm font-bold leading-none">+</span> Add LoRA to {showChainBadges ? `chain ${cid + 1}` : 'chain'}
+                  </button>
+                </div>
+              )
+            })}
+          </CollapsibleSection>
+        )
+      })()}
 
       {/* Text overrides — grouped by node label */}
       {Object.entries(textOverrideGroups).map(([groupLabel, items]) => {

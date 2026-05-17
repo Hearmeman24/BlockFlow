@@ -107,7 +107,14 @@ def _run_upscale_job(
         src_meta["upscaled"] = True
         media_meta.embed_metadata(result_path, src_meta)
 
-        local_url = f"/outputs/{result_path.name}"
+        # Build URL relative to LOCAL_OUTPUT_DIR so files in subdirs (e.g. output/stitched/)
+        # remain reachable via /outputs/<subdir>/<name>.
+        try:
+            rel = result_path.resolve().relative_to(config.LOCAL_OUTPUT_DIR.resolve()).as_posix()
+            local_url = f"/outputs/{rel}"
+        except ValueError:
+            # result_path is outside LOCAL_OUTPUT_DIR; fall back to basename
+            local_url = f"/outputs/{result_path.name}"
         _update_upscale_job(
             job_id,
             status="COMPLETED",

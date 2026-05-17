@@ -49,6 +49,15 @@ COMMON_RATIOS = [
 ]
 
 
+# Cloudflare in front of api.topazlabs.com 403s requests with non-browser TLS fingerprints
+# (default Python urllib/requests). curl_cffi performs a TLS handshake byte-identical to Chrome.
+# We still retry on transient statuses in case of true rate-limits / 5xx.
+from curl_cffi import requests as _cffi_requests  # noqa: E402
+
+_TRANSIENT_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+_RETRY_DELAYS = (2.0, 5.0, 10.0, 20.0)  # 5 attempts total
+
+
 def _topaz_request(
     method: str,
     path: str,
@@ -57,22 +66,54 @@ def _topaz_request(
     timeout: int = 60,
 ) -> dict[str, Any]:
     url = f"{API_BASE}{path}"
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = {
         "X-API-Key": api_key,
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (compatible; SGS-UI/1.0)",
+        "Accept": "application/json, text/plain, */*",
+        "Origin": "https://www.topazlabs.com",
+        "Referer": "https://www.topazlabs.com/",
     }
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8")
-            return json.loads(body) if body.strip() else {}
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Topaz API {method} {path} → HTTP {e.code}: {body}") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Topaz API request failed: {e}") from e
+
+    last_err: Exception | None = None
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            resp = _cffi_requests.request(
+                method,
+                url,
+                json=payload if payload is not None else None,
+                headers=headers,
+                timeout=timeout,
+                impersonate="chrome",
+            )
+        except Exception as e:  # network / TLS errors
+            if attempt < len(_RETRY_DELAYS):
+                delay = _RETRY_DELAYS[attempt]
+                print(f"[topaz] {method} {path} network error: {e}; retrying in {delay}s", flush=True)
+                time.sleep(delay)
+                last_err = RuntimeError(f"Topaz API request failed: {e}")
+                continue
+            raise RuntimeError(f"Topaz API request failed: {e}") from e
+
+        if 200 <= resp.status_code < 300:
+            text = resp.text
+            return json.loads(text) if text.strip() else {}
+
+        body = resp.text or ""
+        if resp.status_code in _TRANSIENT_STATUSES and attempt < len(_RETRY_DELAYS):
+            delay = _RETRY_DELAYS[attempt]
+            preview = body[:200].replace("\n", " ")
+            print(
+                f"[topaz] {method} {path} → HTTP {resp.status_code}; retrying in {delay}s "
+                f"(attempt {attempt + 2}/{len(_RETRY_DELAYS) + 1}). {preview}",
+                flush=True,
+            )
+            time.sleep(delay)
+            last_err = RuntimeError(f"Topaz API {method} {path} → HTTP {resp.status_code}: {body}")
+            continue
+        raise RuntimeError(f"Topaz API {method} {path} → HTTP {resp.status_code}: {body}")
+
+    assert last_err is not None
+    raise last_err
 
 
 def _probe_video(path: Path) -> dict[str, Any]:

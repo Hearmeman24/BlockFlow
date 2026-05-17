@@ -12,7 +12,9 @@ import { blockDef as loraSelectorBlockDef } from './generated/lora_selector'
 import { blockDef as promptWriterBlockDef } from './generated/prompt_writer'
 import { blockDef as uploadImageToTmpfilesBlockDef } from './generated/upload_image_to_tmpfiles'
 import { blockDef as upscaleBlockDef } from './generated/upscale'
+import { blockDef as videoFxBlockDef } from './generated/video_fx'
 import { blockDef as videoLoaderBlockDef } from './generated/video_loader'
+import { blockDef as videoStitcherBlockDef } from './generated/video_stitcher'
 import { blockDef as videoViewerBlockDef } from './generated/video_viewer'
 import { blockDef as wan22ImageToVideoBlockDef } from './generated/wan_22_image_to_video'
 
@@ -27,6 +29,8 @@ registerBlockDef(loraSelectorBlockDef)
 registerBlockDef(promptWriterBlockDef)
 registerBlockDef(uploadImageToTmpfilesBlockDef)
 registerBlockDef(upscaleBlockDef)
+registerBlockDef(videoFxBlockDef)
 registerBlockDef(videoLoaderBlockDef)
+registerBlockDef(videoStitcherBlockDef)
 registerBlockDef(videoViewerBlockDef)
 registerBlockDef(wan22ImageToVideoBlockDef)

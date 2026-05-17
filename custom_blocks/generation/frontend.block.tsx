@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
 import {
   Select,
   SelectContent,
@@ -152,6 +153,12 @@ function GenerationBlock({
   const [seed, setSeed] = useSessionState(`block_${blockId}_seed`, 42)
   const [status, setStatus] = useSessionState(`block_${blockId}_status`, 'Ready')
   const [progressPercent, setProgressPercent] = useState<number | null>(null)
+  const [directorMode, setDirectorMode] = useSessionState(`block_${blockId}_director_mode`, false)
+  const [directorPrompts, setDirectorPrompts] = useSessionState<string[]>(
+    `block_${blockId}_director_prompts`,
+    ['', ''],
+  )
+  const [promptExpanded, setPromptExpanded] = useSessionState(`block_${blockId}_prompt_expanded`, false)
   const { get: getBinding } = useBlockBindings(blockId, 'generation', inputs)
   const promptBinding = getBinding('prompt')
   const { pipeline, addBlock, getUpstreamProducers } = usePipeline()
@@ -260,7 +267,9 @@ function GenerationBlock({
     registerExecute(async (freshInputs) => {
       const runPrompts = isPromptWired
         ? normalizePrompts(freshInputs.prompt)
-        : normalizePrompts(localPrompt)
+        : directorMode
+          ? normalizePrompts(directorPrompts)
+          : normalizePrompts(localPrompt)
       if (runPrompts.length === 0) throw new Error('Prompt is required')
 
       const runLoras = (freshInputs.loras as LoraEntry[] | undefined)
@@ -380,9 +389,31 @@ function GenerationBlock({
         />
       </div>
 
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <Label className="text-xs">Prompt</Label>
+      <div className="space-y-1 min-w-0">
+        <button
+          type="button"
+          onClick={() => setPromptExpanded(!promptExpanded)}
+          className="flex w-full items-center justify-between gap-2 hover:bg-muted/30 -mx-1 px-1 py-0.5 rounded transition-colors"
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-[10px] text-muted-foreground">{promptExpanded ? '▼' : '▶'}</span>
+            <Label className="text-xs cursor-pointer">Prompt</Label>
+            {!promptExpanded && (
+              <span className="text-[10px] text-muted-foreground truncate">
+                {isPromptWired
+                  ? `← from ${promptSourceLabel || 'pipeline'}`
+                  : directorMode
+                    ? `(${directorPrompts.filter((p) => p.trim()).length} prompts)`
+                    : displayPrompt
+                      ? `— ${displayPrompt.slice(0, 50)}${displayPrompt.length > 50 ? '…' : ''}`
+                      : '— empty'}
+              </span>
+            )}
+          </div>
+        </button>
+        {promptExpanded && (
+        <>
+        <div className="flex items-center justify-end">
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-muted-foreground">Replace with</span>
             <Select
@@ -417,12 +448,90 @@ function GenerationBlock({
             )}
           </div>
         ) : (
-          <Textarea
-            value={displayPrompt}
-            onChange={(e) => promptBinding?.setLocalValue(e.target.value)}
-            placeholder="Type a prompt..."
-            className="min-h-[80px] resize-y text-xs"
-          />
+          <>
+            <div className="flex items-center justify-between -mt-1 mb-1.5">
+              <span className="text-[10px] text-muted-foreground">
+                Director Mode {directorMode ? `(${directorPrompts.filter((p) => p.trim()).length} prompts)` : ''}
+              </span>
+              <Switch checked={directorMode} onCheckedChange={setDirectorMode} />
+            </div>
+            {directorMode ? (
+              <div className="space-y-1.5 min-w-0">
+                {directorPrompts.map((p, idx) => (
+                  <div key={idx} className="flex items-start gap-1.5 min-w-0">
+                    <span className="mt-1.5 w-4 text-[10px] text-muted-foreground text-right shrink-0">{idx + 1}.</span>
+                    <Textarea
+                      value={p}
+                      onChange={(e) => {
+                        const next = [...directorPrompts]
+                        next[idx] = e.target.value
+                        setDirectorPrompts(next)
+                      }}
+                      placeholder={`Prompt ${idx + 1}…`}
+                      className="h-[60px] resize text-xs flex-1 min-w-0 overflow-y-auto"
+                    />
+                    <div className="flex flex-col gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => {
+                          const next = [...directorPrompts]
+                          ;[next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]
+                          setDirectorPrompts(next)
+                        }}
+                        className="h-4 w-5 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
+                        title="Move up"
+                      >
+                        ▲
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === directorPrompts.length - 1}
+                        onClick={() => {
+                          const next = [...directorPrompts]
+                          ;[next[idx + 1], next[idx]] = [next[idx], next[idx + 1]]
+                          setDirectorPrompts(next)
+                        }}
+                        className="h-4 w-5 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
+                        title="Move down"
+                      >
+                        ▼
+                      </button>
+                      <button
+                        type="button"
+                        disabled={directorPrompts.length <= 1}
+                        onClick={() => {
+                          setDirectorPrompts(directorPrompts.filter((_, i) => i !== idx))
+                        }}
+                        className="h-4 w-5 text-[10px] leading-none text-red-400 hover:text-red-300 disabled:opacity-30"
+                        title="Remove"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-full h-7 text-xs"
+                  onClick={() => setDirectorPrompts([...directorPrompts, ''])}
+                >
+                  + Add prompt
+                </Button>
+              </div>
+            ) : (
+              <Textarea
+                value={displayPrompt}
+                onChange={(e) => promptBinding?.setLocalValue(e.target.value)}
+                placeholder="Type a prompt..."
+                className="h-[80px] resize text-xs w-full overflow-y-auto"
+              />
+            )}
+          </>
+        )}
+        </>
         )}
       </div>
 
@@ -503,7 +612,7 @@ export const blockDef: BlockDef = {
   description: 'Submit Wan 2.2 T2V generation jobs to RunPod',
   advanced: true,
   size: 'huge',
-  canStart: false,
+  canStart: true,
   inputs: [
     { name: 'prompt', kind: PORT_TEXT, required: false },
     { name: 'loras', kind: PORT_LORAS, required: false },
@@ -520,7 +629,7 @@ export const blockDef: BlockDef = {
       allowOverride: true,
     },
   ],
-  configKeys: ['prompt', 'prompt_override', 'width', 'height', 'frames', 'fps', 'seed_mode', 'seed'],
+  configKeys: ['prompt', 'prompt_override', 'width', 'height', 'frames', 'fps', 'seed_mode', 'seed', 'director_mode', 'director_prompts'],
   component: GenerationBlock,
 }
 

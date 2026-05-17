@@ -20,9 +20,19 @@ export async function saveRun(run: RunEntry) {
   return res.json()
 }
 
-export async function fetchRuns(limit = 50, offset = 0, favorited = false) {
+export type MediaKindFilter = 'video' | 'image' | 'other'
+
+export async function fetchRuns(
+  limit = 50,
+  offset = 0,
+  favorited = false,
+  mediaKind: MediaKindFilter | null = null,
+  promptQuery: string = '',
+) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
   if (favorited) params.set('favorited', 'true')
+  if (mediaKind) params.set('media_kind', mediaKind)
+  if (promptQuery) params.set('q', promptQuery)
   const res = await fetch(`${BASE}/api/runs?${params}`)
   return res.json()
 }

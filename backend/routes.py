@@ -171,9 +171,17 @@ def api_flows_rename(flow_name: str, payload: dict[str, Any] = {}) -> JSONRespon
 
 
 @router.get("/api/runs")
-def api_runs_list(limit: int = Query(50), offset: int = Query(0), favorited: bool = Query(False)) -> JSONResponse:
-    total = db.count_runs(favorited_only=favorited)
-    runs = db.list_runs(limit=limit, offset=offset, favorited_only=favorited)
+def api_runs_list(
+    limit: int = Query(50),
+    offset: int = Query(0),
+    favorited: bool = Query(False),
+    media_kind: str | None = Query(None),
+    q: str | None = Query(None),
+) -> JSONResponse:
+    mk = media_kind if media_kind in ("video", "image", "other") else None
+    pq = q.strip() if q and q.strip() else None
+    total = db.count_runs(favorited_only=favorited, media_kind=mk, prompt_query=pq)
+    runs = db.list_runs(limit=limit, offset=offset, favorited_only=favorited, media_kind=mk, prompt_query=pq)
     return JSONResponse({"ok": True, "runs": runs, "total": total, "limit": limit, "offset": offset})
 
 

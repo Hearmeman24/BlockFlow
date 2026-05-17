@@ -80,30 +80,104 @@ def save_run(run: dict[str, Any]) -> None:
         conn.close()
 
 
-def list_runs(limit: int = 50, offset: int = 0, favorited_only: bool = False) -> list[dict[str, Any]]:
+_PRIMARY_KIND_PRIORITY = ("video", "image", "prompt")
+
+
+def _primary_media_kind(block_results: list[dict[str, Any]]) -> str:
+    """Mirror frontend findPrimaryArtifact, then bucket into video/image/other."""
+    for kind in _PRIMARY_KIND_PRIORITY:
+        for br in reversed(block_results):
+            for out in (br.get("outputs") or {}).values():
+                if out.get("kind") == kind:
+                    return kind if kind in ("video", "image") else "other"
+    return "other"
+
+
+def _run_matches_prompt(block_results: list[dict[str, Any]], needle: str) -> bool:
+    """True if any block's metadata output contains the needle in its `prompt` field."""
+    needle = needle.lower()
+    for br in block_results:
+        for out in (br.get("outputs") or {}).values():
+            if out.get("kind") != "metadata":
+                continue
+            value = out.get("value")
+            metas = value if isinstance(value, list) else [value]
+            for m in metas:
+                if isinstance(m, dict):
+                    p = m.get("prompt")
+                    if isinstance(p, str) and needle in p.lower():
+                        return True
+    return False
+
+
+def list_runs(
+    limit: int = 50,
+    offset: int = 0,
+    favorited_only: bool = False,
+    media_kind: str | None = None,
+    prompt_query: str | None = None,
+) -> list[dict[str, Any]]:
+    if not media_kind and not prompt_query:
+        conn = _get_conn()
+        if favorited_only:
+            rows = conn.execute(
+                "SELECT * FROM runs WHERE favorited = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM runs ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        conn.close()
+        return [_row_to_dict(r) for r in rows]
+
+    filtered = _filtered_runs(favorited_only, media_kind, prompt_query)
+    return filtered[offset : offset + limit]
+
+
+def count_runs(
+    favorited_only: bool = False,
+    media_kind: str | None = None,
+    prompt_query: str | None = None,
+) -> int:
+    if not media_kind and not prompt_query:
+        conn = _get_conn()
+        if favorited_only:
+            row = conn.execute("SELECT COUNT(*) AS count FROM runs WHERE favorited = 1").fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) AS count FROM runs").fetchone()
+        conn.close()
+        return int(row["count"]) if row else 0
+
+    return len(_filtered_runs(favorited_only, media_kind, prompt_query))
+
+
+def _filtered_runs(
+    favorited_only: bool,
+    media_kind: str | None,
+    prompt_query: str | None,
+) -> list[dict[str, Any]]:
+    """Load candidate rows and apply Python-side filters. Returns newest-first."""
     conn = _get_conn()
     if favorited_only:
         rows = conn.execute(
-            "SELECT * FROM runs WHERE favorited = 1 ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            "SELECT * FROM runs WHERE favorited = 1 ORDER BY created_at DESC"
         ).fetchall()
     else:
-        rows = conn.execute(
-            "SELECT * FROM runs ORDER BY created_at DESC LIMIT ? OFFSET ?",
-            (limit, offset),
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM runs ORDER BY created_at DESC").fetchall()
     conn.close()
-    return [_row_to_dict(r) for r in rows]
 
-
-def count_runs(favorited_only: bool = False) -> int:
-    conn = _get_conn()
-    if favorited_only:
-        row = conn.execute("SELECT COUNT(*) AS count FROM runs WHERE favorited = 1").fetchone()
-    else:
-        row = conn.execute("SELECT COUNT(*) AS count FROM runs").fetchone()
-    conn.close()
-    return int(row["count"]) if row else 0
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = _row_to_dict(r)
+        br = d.get("block_results") or []
+        if media_kind and _primary_media_kind(br) != media_kind:
+            continue
+        if prompt_query and not _run_matches_prompt(br, prompt_query):
+            continue
+        out.append(d)
+    return out
 
 
 def get_run(run_id: str) -> dict[str, Any] | None:

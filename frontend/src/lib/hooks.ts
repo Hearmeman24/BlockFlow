@@ -1,14 +1,20 @@
 'use client'
 
 import useSWR from 'swr'
-import { fetchRuns } from './api'
+import { fetchRuns, type MediaKindFilter } from './api'
 import type { RunEntry } from './types'
 
-export function useRuns(limit = 50, offset = 0, favorited = false) {
+export function useRuns(
+  limit = 50,
+  offset = 0,
+  favorited = false,
+  mediaKind: MediaKindFilter | null = null,
+  promptQuery: string = '',
+) {
   const { data, error, isLoading, mutate } = useSWR(
-    ['runs', limit, offset, favorited],
-    () => fetchRuns(limit, offset, favorited),
-    { revalidateOnFocus: true }
+    ['runs', limit, offset, favorited, mediaKind, promptQuery],
+    () => fetchRuns(limit, offset, favorited, mediaKind, promptQuery),
+    { revalidateOnFocus: true, keepPreviousData: true }
   )
 
   return {

@@ -800,25 +800,33 @@ def _detect_lora_nodes(workflow: dict[str, Any]) -> list[dict[str, Any]]:
     # Find roots (LoRAs whose model source is not another LoRA)
     roots = [nid for nid, n in remaining.items()
              if n.get("_model_source") not in lora_ids]
-    # Follow chains from roots
+    # Follow chains from roots, assigning a chain_id per root
     placed = set()
+    chain_id = 0
     for root in roots:
         current = root
+        chain_assigned = False
         while current and current in remaining and current not in placed:
             node = remaining[current]
             placed.add(current)
             clean = {k: v for k, v in node.items() if not k.startswith("_")}
+            clean["chain_id"] = chain_id
             ordered.append(clean)
+            chain_assigned = True
             # Find next LoRA that uses this one as model source
             current = next(
                 (nid for nid, n in remaining.items()
                  if n.get("_model_source") == current and nid not in placed),
                 None,
             )
-    # Add any remaining (disconnected) LoRAs
+        if chain_assigned:
+            chain_id += 1
+    # Add any remaining (disconnected) LoRAs — each gets its own chain_id
     for nid, node in remaining.items():
         if nid not in placed:
             clean = {k: v for k, v in node.items() if not k.startswith("_")}
+            clean["chain_id"] = chain_id
+            chain_id += 1
             ordered.append(clean)
 
     return ordered
@@ -1440,6 +1448,81 @@ async def parse_workflow(request: Request) -> JSONResponse:
     })
 
 
+def _insert_lora_nodes(workflow: dict, added: list[dict]) -> dict:
+    """Splice runtime-added LoRA loaders into the workflow.
+
+    Each entry: {chain_anchor, class_type, lora_name, strength_model, strength_clip?}.
+    The new loader is inserted at the *current* tail of the chain that starts
+    at `chain_anchor` — i.e. walk forward through LoRA loaders that consume the
+    anchor's MODEL output until none do, then splice after that node. This
+    means multiple entries sharing an anchor stack in input order.
+    """
+    if not added:
+        return workflow
+
+    def _alloc_id() -> str:
+        used = {int(k) for k in workflow.keys() if str(k).isdigit()}
+        return str((max(used) + 1) if used else 1)
+
+    def _walk_to_tail(anchor_id: str) -> str:
+        current = anchor_id
+        while True:
+            nxt = None
+            for nid, node in workflow.items():
+                if not isinstance(node, dict):
+                    continue
+                if node.get("class_type") not in _LORA_CLASS_TYPES:
+                    continue
+                m = node.get("inputs", {}).get("model")
+                if isinstance(m, list) and len(m) >= 2 and str(m[0]) == str(current):
+                    nxt = nid
+                    break
+            if nxt is None:
+                return current
+            current = nxt
+
+    for entry in added:
+        anchor = str(entry.get("chain_anchor", ""))
+        if anchor not in workflow:
+            continue
+        anchor_node = workflow[anchor]
+        if not isinstance(anchor_node, dict) or anchor_node.get("class_type") not in _LORA_CLASS_TYPES:
+            continue
+        tail_id = _walk_to_tail(anchor)
+        class_type = entry.get("class_type") or anchor_node.get("class_type")
+        new_id = _alloc_id()
+        new_inputs: dict[str, object] = {
+            "lora_name": entry.get("lora_name", ""),
+            "strength_model": float(entry.get("strength_model", 1.0)),
+            "model": [tail_id, 0],
+        }
+        if class_type == "LoraLoader":
+            new_inputs["strength_clip"] = float(entry.get("strength_clip", entry.get("strength_model", 1.0)))
+            new_inputs["clip"] = [tail_id, 1]
+        workflow[new_id] = {
+            "class_type": class_type,
+            "inputs": new_inputs,
+            "_meta": {"title": f"Load LoRA (added: {entry.get('lora_name', '')})"},
+        }
+        # Rewire downstream consumers of tail's MODEL (index 0) and CLIP (index 1) to new node
+        for nid, node in workflow.items():
+            if nid in (new_id, tail_id):
+                continue
+            if not isinstance(node, dict):
+                continue
+            for field, value in node.get("inputs", {}).items():
+                if not isinstance(value, list) or len(value) != 2:
+                    continue
+                if str(value[0]) != str(tail_id):
+                    continue
+                if value[1] == 0:
+                    node["inputs"][field] = [new_id, 0]
+                elif value[1] == 1 and class_type == "LoraLoader":
+                    node["inputs"][field] = [new_id, 1]
+
+    return workflow
+
+
 def _bypass_lora_nodes(workflow: dict, bypass_node_ids: list[str]) -> dict:
     """Bypass LoRA loader nodes by rewiring downstream references to the LoRA's inputs.
 
@@ -1484,11 +1567,16 @@ async def run(request: Request) -> JSONResponse:
     raw_file_inputs = body.get("file_inputs", {})  # {node_id: {field, media_url}}
     raw_overrides = body.get("overrides", {})  # {"node_id.param": "value"}
     bypass_loras = body.get("bypass_loras", [])  # list of node_id strings to bypass
+    added_loras = body.get("added_loras", [])  # list of {chain_anchor, class_type, lora_name, strength_model, strength_clip?}
     endpoint_id = str(body.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
 
-    # Apply LoRA bypass before processing
-    if bypass_loras:
-        workflow = _bypass_lora_nodes(copy.deepcopy(workflow), bypass_loras)
+    # Apply LoRA bypass + insertion before processing
+    if bypass_loras or added_loras:
+        workflow = copy.deepcopy(workflow)
+        if bypass_loras:
+            workflow = _bypass_lora_nodes(workflow, bypass_loras)
+        if added_loras:
+            workflow = _insert_lora_nodes(workflow, added_loras)
 
     if not workflow:
         return JSONResponse({"ok": False, "error": "workflow is required"}, status_code=400)

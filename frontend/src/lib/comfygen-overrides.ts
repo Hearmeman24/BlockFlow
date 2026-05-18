@@ -32,6 +32,7 @@ export interface LoraNodeInfo {
   lora_name: string
   strength_model?: number
   strength_clip?: number
+  chain_id?: number
 }
 
 export interface LoraOverride {

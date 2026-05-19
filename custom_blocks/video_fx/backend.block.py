@@ -59,6 +59,7 @@ class FxRequest(BaseModel):
     speed: float = Field(1.0, gt=0.0, le=8.0)
     smooth: bool = False
     smooth_fps: int = Field(60, ge=24, le=120)
+    smooth_match_source: bool = True
     loop_enabled: bool = False
     loop_count: int = Field(2, ge=1, le=8)
     boomerang: bool = False
@@ -209,10 +210,16 @@ def _rife_preprocess(
 
 def _run_fx_one(src: Path, req: FxRequest, lut_path: Path | None, out_path: Path) -> None:
     use_rife = req.smooth and req.speed_enabled and abs(req.speed - 1.0) > 1e-3
+    target_fps: int | None = None
     with tempfile.TemporaryDirectory(prefix="vfx_rife_") as td:
         actual_src = src
         if use_rife:
-            actual_src, _ = _rife_preprocess(src, req.smooth_fps, req.speed, Path(td))
+            # match-source: probe once, round to nearest int, share with RIFE preproc.
+            if req.smooth_match_source:
+                target_fps = max(1, round(_probe_fps(src)))
+            else:
+                target_fps = req.smooth_fps
+            actual_src, _ = _rife_preprocess(src, target_fps, req.speed, Path(td))
 
         filter_graph = _build_filter(req, lut_path)
         cmd = [
@@ -224,8 +231,8 @@ def _run_fx_one(src: Path, req: FxRequest, lut_path: Path | None, out_path: Path
             "-pix_fmt", "yuv420p",
             "-an",
         ]
-        if use_rife:
-            cmd += ["-r", str(req.smooth_fps)]
+        if use_rife and target_fps is not None:
+            cmd += ["-r", str(target_fps)]
         cmd.append(str(out_path))
         subprocess.run(cmd, check=True, capture_output=True, timeout=1800)
 
@@ -233,7 +240,7 @@ def _run_fx_one(src: Path, req: FxRequest, lut_path: Path | None, out_path: Path
 def _signature(src: Path, req: FxRequest) -> str:
     raw = "|".join([
         str(src),
-        f"s={req.speed_enabled}/{req.speed}/smooth={req.smooth}/{req.smooth_fps}",
+        f"s={req.speed_enabled}/{req.speed}/smooth={req.smooth}/{req.smooth_fps}/match={req.smooth_match_source}",
         f"l={req.loop_enabled}/{req.loop_count}/{req.boomerang}",
         f"lut={req.lut_enabled}/{req.lut_path or ''}",
     ])

@@ -286,8 +286,6 @@ function MetadataRow({ label, value }: { label: string; value: string }) {
   )
 }
 
-const VIEWER_BLOCK_TYPES = new Set(['imageViewer', 'videoViewer'])
-
 function UrlArtifactGallery({ urls, selectedIndex: externalIndex, onIndexChange }: { urls: string[]; selectedIndex?: number; onIndexChange?: (i: number) => void }) {
   const [internalIndex, setInternalIndex] = useState(0)
   const selectedIndex = externalIndex ?? internalIndex
@@ -501,50 +499,18 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
         {/* Expanded block outputs */}
         {expanded && (
           <div className="space-y-2 pt-1 border-t border-border/50">
-            {run.block_results
-              .filter((br) => {
-                // Hide the viewer that is the primary artifact (already shown above)
-                if (VIEWER_BLOCK_TYPES.has(br.block_type) && br.block_index === primary?.blockIndex) return false
-                return true
-              })
-              .map((br) => {
+            {run.block_results.map((br) => {
               const outputEntries = Object.entries(br.outputs)
               if (outputEntries.length === 0) return null
 
-              // Viewer blocks (non-primary): show as collapsible media row
-              if (VIEWER_BLOCK_TYPES.has(br.block_type)) {
-                const mediaOut = outputEntries.find(([, out]) => out.kind === 'image' || out.kind === 'video')
-                if (!mediaOut) return null
-                const isVideo = mediaOut[1].kind === 'video'
-                return (
-                  <details key={br.block_index} className="rounded border border-border/50">
-                    <summary className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-[10px] text-muted-foreground hover:text-foreground">
-                      <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        {isVideo ? (
-                          <><rect x="2" y="2" width="20" height="20" rx="2"/><polygon points="10 8 16 12 10 16 10 8"/></>
-                        ) : (
-                          <><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></>
-                        )}
-                      </svg>
-                      {br.block_index + 1}. {br.block_label}
-                    </summary>
-                    <div className="px-2 pb-2">
-                      {(() => {
-                        const val = mediaOut[1].value
-                        if (Array.isArray(val)) {
-                          const url = val[galleryIndex] ?? val[0]
-                          return typeof url === 'string' ? <UrlArtifact url={url} /> : null
-                        }
-                        return typeof val === 'string' ? <UrlArtifact url={val} /> : null
-                      })()}
-                    </div>
-                  </details>
-                )
-              }
-
-              // Render metadata port as formatted key-value
               const metaEntry = outputEntries.find(([, out]) => out.kind === 'metadata')
-              const otherEntries = outputEntries.filter(([, out]) => out.kind !== 'metadata')
+              const mediaEntry = outputEntries.find(([, out]) => out.kind === 'image' || out.kind === 'video')
+              const otherEntries = outputEntries.filter(([, out]) => out.kind !== 'metadata' && out.kind !== 'image' && out.kind !== 'video')
+              const isPrimaryBlock = br.block_index === primary?.blockIndex
+              const showMedia = mediaEntry && !isPrimaryBlock
+
+              // Primary block with media-only output is already shown at the top — skip entirely.
+              if (isPrimaryBlock && !metaEntry && otherEntries.length === 0) return null
 
               return (
                 <div key={br.block_index} className="space-y-1">
@@ -556,15 +522,38 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
                       ? <MetadataArtifact value={(metaEntry[1].value as unknown[])[galleryIndex] ?? metaEntry[1].value[0]} />
                       : <MetadataArtifact value={metaEntry[1].value} />
                   )}
-                  {otherEntries.map(([portName, out]) => {
-                    // Skip image/video outputs that duplicate the primary artifact
-                    if (out.kind === 'image' || out.kind === 'video') return null
+                  {showMedia && mediaEntry && (() => {
+                    const isVideo = mediaEntry[1].kind === 'video'
                     return (
-                      <div key={portName}>
-                        <ArtifactPreview kind={out.kind} value={out.value} />
-                      </div>
+                      <details className="rounded border border-border/50">
+                        <summary className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-[10px] text-muted-foreground hover:text-foreground">
+                          <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            {isVideo ? (
+                              <><rect x="2" y="2" width="20" height="20" rx="2"/><polygon points="10 8 16 12 10 16 10 8"/></>
+                            ) : (
+                              <><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></>
+                            )}
+                          </svg>
+                          {isVideo ? 'Video' : 'Image'} output
+                        </summary>
+                        <div className="px-2 pb-2">
+                          {(() => {
+                            const val = mediaEntry[1].value
+                            if (Array.isArray(val)) {
+                              const url = val[galleryIndex] ?? val[0]
+                              return typeof url === 'string' ? <UrlArtifact url={url} /> : null
+                            }
+                            return typeof val === 'string' ? <UrlArtifact url={val} /> : null
+                          })()}
+                        </div>
+                      </details>
                     )
-                  })}
+                  })()}
+                  {otherEntries.map(([portName, out]) => (
+                    <div key={portName}>
+                      <ArtifactPreview kind={out.kind} value={out.value} />
+                    </div>
+                  ))}
                 </div>
               )
             })}

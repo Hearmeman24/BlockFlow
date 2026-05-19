@@ -199,7 +199,7 @@ function VideoFxBlock({
             )}
             {smooth && (
               <p className="text-[10px] text-muted-foreground">
-                ffmpeg minterpolate (CPU) — slower; cleans up judder.
+                RIFE optical flow (Vulkan/Metal). Run scripts/install_rife.sh once.
               </p>
             )}
           </>

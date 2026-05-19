@@ -22,6 +22,10 @@ const RUN_ENDPOINT =
   typeof window !== 'undefined'
     ? `http://${window.location.hostname}:8000/api/blocks/video_fx/run`
     : '/api/blocks/video_fx/run'
+const UPLOAD_LUT_ENDPOINT =
+  typeof window !== 'undefined'
+    ? `http://${window.location.hostname}:8000/api/blocks/video_fx/upload-lut`
+    : '/api/blocks/video_fx/upload-lut'
 
 function toVideoUrls(value: unknown): string[] {
   if (typeof value === 'string') return value.trim() ? [value.trim()] : []
@@ -87,6 +91,9 @@ function VideoFxBlock({
   const [boomerang, setBoomerang] = useSessionState(`block_${blockId}_boomerang`, false)
   const [lutEnabled, setLutEnabled] = useSessionState(`block_${blockId}_lut_enabled`, false)
   const [lutPath, setLutPath] = useSessionState(`block_${blockId}_lut_path`, '')
+  const [lutName, setLutName] = useSessionState(`block_${blockId}_lut_name`, '')
+  const [lutUploading, setLutUploading] = useState(false)
+  const lutFileInputRef = useRef<HTMLInputElement>(null)
 
   const [lastInputs, setLastInputs] = useState<string[]>([])
   const [isRunning, setIsRunning] = useState(false)
@@ -171,6 +178,29 @@ function VideoFxBlock({
     setLastInputs(videos)
     runFx(videos).catch(() => { /* status already set */ })
   }, [inputs.video, isRunning, runFx])
+
+  const handleLutFile = useCallback(async (file: File | null) => {
+    if (!file) return
+    setLutUploading(true)
+    setStatusMessage(`Uploading LUT ${file.name}…`)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await fetch(UPLOAD_LUT_ENDPOINT, { method: 'POST', body: fd })
+      const data = await res.json().catch(() => null)
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error ?? `Upload failed (${res.status})`)
+      }
+      setLutPath(data.path)
+      setLutName(data.name || file.name)
+      setStatusMessage(`LUT loaded: ${data.name || file.name}`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setStatusMessage(msg)
+    } finally {
+      setLutUploading(false)
+    }
+  }, [setLutPath, setLutName, setStatusMessage])
 
   const handleRerun = useCallback(async () => {
     const videos = lastInputsRef.current.length > 0 ? lastInputsRef.current : toVideoUrls(inputs.video)
@@ -276,12 +306,35 @@ function VideoFxBlock({
           <Switch checked={lutEnabled} onCheckedChange={setLutEnabled} />
         </div>
         {lutEnabled && (
-          <Input
-            value={lutPath}
-            onChange={(e) => setLutPath(e.target.value)}
-            placeholder="/path/to/file.cube"
-            className="h-7 text-xs"
-          />
+          <div className="space-y-1.5">
+            <input
+              ref={lutFileInputRef}
+              type="file"
+              accept=".cube"
+              className="sr-only"
+              onChange={(e) => {
+                const file = e.target.files?.[0] ?? null
+                handleLutFile(file)
+                // Allow re-selecting the same file
+                if (e.target) e.target.value = ''
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="w-full h-7 text-xs"
+              disabled={lutUploading}
+              onClick={() => lutFileInputRef.current?.click()}
+            >
+              {lutUploading ? 'Uploading…' : lutName ? 'Choose another .cube' : 'Choose .cube file'}
+            </Button>
+            {lutName && (
+              <p className="text-[10px] text-muted-foreground truncate" title={lutPath}>
+                {lutName}
+              </p>
+            )}
+          </div>
         )}
       </div>
 

@@ -39,7 +39,6 @@ import {
 } from '@/lib/pipeline/registry'
 import type { LoraEntry } from '@/lib/types'
 import { DirectorLoadJsonButton } from '@/components/pipeline/director-load-json-button'
-import { DirectorPromptLengthStepper } from '@/components/pipeline/director-prompt-length-stepper'
 import { DirectorPromptLorasPopover } from '@/components/pipeline/director-prompt-loras-popover'
 import { secondsToFrames } from '@/lib/director-prompts-json'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
@@ -608,7 +607,6 @@ function Wan22ImageToVideoBlock({
                   const headerText = description.trim() || `Prompt ${idx + 1} — No description`
                   return (
                   <div key={idx} className="flex items-center gap-1.5 min-w-0">
-                    <span className="w-4 text-[10px] text-muted-foreground text-right shrink-0 self-start pt-1">{idx + 1}.</span>
                     <div className="flex-1 min-w-0 flex flex-col">
                       <button
                         type="button"
@@ -618,9 +616,10 @@ function Wan22ImageToVideoBlock({
                           setDirectorPromptCollapsed(arr)
                         }}
                         title={collapsed ? 'Click to expand prompt' : 'Click to collapse prompt'}
-                        className={`text-[10px] italic text-left pl-1 ${collapsed ? 'py-1' : 'pb-1'} truncate ${description.trim() ? 'text-muted-foreground hover:text-foreground' : 'text-muted-foreground/60 hover:text-muted-foreground'}`}
+                        className={`flex items-baseline gap-1.5 text-[10px] text-left py-1 ${description.trim() ? 'text-muted-foreground hover:text-foreground' : 'text-muted-foreground/60 hover:text-muted-foreground'}`}
                       >
-                        {headerText}
+                        <span className="w-4 text-right shrink-0 not-italic">{idx + 1}.</span>
+                        <span className="italic truncate min-w-0">{headerText}</span>
                       </button>
                       {!collapsed && (
                         <Textarea
@@ -635,15 +634,14 @@ function Wan22ImageToVideoBlock({
                         />
                       )}
                     </div>
-                    <DirectorPromptLengthStepper
-                      value={directorPromptLengths[idx] ?? null}
-                      onChange={(next) => {
-                        const arr = [...directorPromptLengths]
-                        arr[idx] = next
-                        setDirectorPromptLengths(arr)
-                      }}
-                      fallbackFrames={frames}
-                    />
+                    {directorPromptLengths[idx] != null && (
+                      <span
+                        className="text-[10px] tabular-nums text-foreground/80 shrink-0"
+                        title={`${directorPromptLengths[idx]}s → ${secondsToFrames(directorPromptLengths[idx] as number)} frames (16 fps, 4n+1)`}
+                      >
+                        {directorPromptLengths[idx]}s
+                      </span>
+                    )}
                     <DirectorPromptLorasPopover
                       promptIndex={idx}
                       value={directorPromptLoras[idx] ?? []}

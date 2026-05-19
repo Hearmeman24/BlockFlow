@@ -38,6 +38,7 @@ import {
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
 import type { LoraEntry } from '@/lib/types'
+import { DirectorLoadJsonButton } from '@/components/pipeline/director-load-json-button'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockInTree } from '@/lib/pipeline/tree-utils'
 
@@ -183,6 +184,10 @@ function Wan22ImageToVideoBlock({
   const [directorPrompts, setDirectorPrompts] = useSessionState<string[]>(
     `block_${blockId}_director_prompts`,
     ['', ''],
+  )
+  const [loadedJsonName, setLoadedJsonName] = useSessionState<string>(
+    `block_${blockId}_director_loaded_json_name`,
+    '',
   )
   const [promptExpanded, setPromptExpanded] = useSessionState(`block_${blockId}_prompt_expanded`, false)
   const { get: getBinding } = useBlockBindings(blockId, 'wan22ImageToVideo', inputs)
@@ -508,8 +513,29 @@ function Wan22ImageToVideoBlock({
               <span className="text-[10px] text-muted-foreground">
                 Director Mode {directorMode ? `(${directorPrompts.filter((p) => p.trim()).length} prompts)` : ''}
               </span>
-              <Switch checked={directorMode} onCheckedChange={setDirectorMode} />
+              <div className="flex items-center gap-2">
+                {directorMode && (
+                  <DirectorLoadJsonButton
+                    onLoaded={(name, prompts) => {
+                      setDirectorPrompts(prompts.length > 0 ? prompts : ['', ''])
+                      setLoadedJsonName(name)
+                    }}
+                  />
+                )}
+                <Switch
+                  checked={directorMode}
+                  onCheckedChange={(v) => {
+                    setDirectorMode(v)
+                    if (!v) setLoadedJsonName('')
+                  }}
+                />
+              </div>
             </div>
+            {directorMode && loadedJsonName && (
+              <div className="-mt-1 mb-1.5 text-[10px] text-muted-foreground">
+                Loaded: <span className="text-foreground/80">{loadedJsonName}</span>
+              </div>
+            )}
             {directorMode ? (
               <div className="space-y-1.5 min-w-0">
                 {directorPrompts.map((p, idx) => (

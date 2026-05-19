@@ -32,6 +32,7 @@ interface FxPayload {
   speed: number
   smooth: boolean
   smooth_fps: number
+  smooth_match_source: boolean
   loop_enabled: boolean
   loop_count: number
   boomerang: boolean
@@ -60,6 +61,10 @@ function VideoFxBlock({
   const [speed, setSpeed] = useSessionState(`block_${blockId}_speed`, 1.0)
   const [smooth, setSmooth] = useSessionState(`block_${blockId}_smooth`, false)
   const [smoothFps, setSmoothFps] = useSessionState(`block_${blockId}_smooth_fps`, 60)
+  const [smoothMatchSource, setSmoothMatchSource] = useSessionState(
+    `block_${blockId}_smooth_match_source`,
+    true,
+  )
   const [loopEnabled, setLoopEnabled] = useSessionState(`block_${blockId}_loop_enabled`, false)
   const [loopCount, setLoopCount] = useSessionState(`block_${blockId}_loop_count`, 2)
   const [boomerang, setBoomerang] = useSessionState(`block_${blockId}_boomerang`, false)
@@ -72,9 +77,13 @@ function VideoFxBlock({
   const processedKeyRef = useRef<string>('')
 
   const settingsRef = useRef({
-    speedEnabled, speed, smooth, smoothFps, loopEnabled, loopCount, boomerang, lutEnabled, lutPath,
+    speedEnabled, speed, smooth, smoothFps, smoothMatchSource,
+    loopEnabled, loopCount, boomerang, lutEnabled, lutPath,
   })
-  settingsRef.current = { speedEnabled, speed, smooth, smoothFps, loopEnabled, loopCount, boomerang, lutEnabled, lutPath }
+  settingsRef.current = {
+    speedEnabled, speed, smooth, smoothFps, smoothMatchSource,
+    loopEnabled, loopCount, boomerang, lutEnabled, lutPath,
+  }
 
   const buildPayload = useCallback((videos: string[]): FxPayload => {
     const s = settingsRef.current
@@ -84,6 +93,7 @@ function VideoFxBlock({
       speed: s.speed,
       smooth: s.smooth,
       smooth_fps: s.smoothFps,
+      smooth_match_source: s.smoothMatchSource,
       loop_enabled: s.loopEnabled,
       loop_count: s.loopCount,
       boomerang: s.boomerang,
@@ -184,6 +194,15 @@ function VideoFxBlock({
             </div>
             {smooth && (
               <div className="flex items-center justify-between gap-2">
+                <Label className="text-[10px] text-muted-foreground">Match source fps</Label>
+                <Switch
+                  checked={smoothMatchSource}
+                  onCheckedChange={setSmoothMatchSource}
+                />
+              </div>
+            )}
+            {smooth && !smoothMatchSource && (
+              <div className="flex items-center justify-between gap-2">
                 <Label className="text-[10px] text-muted-foreground">Target fps</Label>
                 <Input
                   type="number"
@@ -278,7 +297,7 @@ export const blockDef: BlockDef = {
   inputs: [{ name: 'video', kind: PORT_VIDEO, required: true }],
   outputs: [{ name: 'video', kind: PORT_VIDEO }],
   configKeys: [
-    'speed_enabled', 'speed', 'smooth', 'smooth_fps',
+    'speed_enabled', 'speed', 'smooth', 'smooth_fps', 'smooth_match_source',
     'loop_enabled', 'loop_count', 'boomerang',
     'lut_enabled', 'lut_path',
   ],

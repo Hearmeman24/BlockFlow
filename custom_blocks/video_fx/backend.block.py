@@ -184,15 +184,23 @@ def _rife_preprocess(
         raise RuntimeError(f"RIFE needs ≥2 input frames, got {n_in}")
     target_n = mult * n_in
 
-    with _RIFE_LOCK:
-        subprocess.run(
+    # RIFE prints one progress line per output frame. capture_output=True
+    # would buffer all of that in RAM and (worse) can stall the child if the
+    # pipe fills before subprocess.run drains it. Redirect to a log file
+    # we tail only on failure.
+    rife_log = work_dir / "rife.log"
+    with _RIFE_LOCK, rife_log.open("wb") as log_fh:
+        proc = subprocess.run(
             [str(bin_path),
              "-i", str(frames_in),
              "-o", str(frames_out),
              "-m", str(model_dir),
              "-n", str(target_n)],
-            check=True, capture_output=True, timeout=3600,
+            stdout=log_fh, stderr=subprocess.STDOUT, timeout=7200,
         )
+    if proc.returncode != 0:
+        tail = rife_log.read_bytes()[-1200:].decode("utf-8", errors="replace")
+        raise RuntimeError(f"rife-ncnn-vulkan exited {proc.returncode}: {tail}")
 
     intermediate_fps = src_fps * mult
     intermediate = work_dir / "interp.mp4"

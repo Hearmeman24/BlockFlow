@@ -15,7 +15,13 @@ import {
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
 
-const RUN_ENDPOINT = '/api/blocks/video_fx/run'
+// Bypass the Next.js dev-server proxy (undici has a ~5 min idle-socket
+// timeout that kills long RIFE jobs mid-flight). FastAPI is local and
+// CORS-open, so a direct call is fine here.
+const RUN_ENDPOINT =
+  typeof window !== 'undefined'
+    ? `http://${window.location.hostname}:8000/api/blocks/video_fx/run`
+    : '/api/blocks/video_fx/run'
 
 function toVideoUrls(value: unknown): string[] {
   if (typeof value === 'string') return value.trim() ? [value.trim()] : []
@@ -48,7 +54,16 @@ async function callFx(payload: FxPayload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  return res.json()
+  // FastAPI returns JSON on success and on handled errors. Anything else
+  // (proxy hang-ups, mid-stream socket closes) lands here as text — surface
+  // the body verbatim so the user sees what actually went wrong.
+  const text = await res.text()
+  try {
+    return JSON.parse(text)
+  } catch {
+    const snippet = text.slice(0, 240).trim() || `HTTP ${res.status}`
+    return { ok: false, error: `Non-JSON response (${res.status}): ${snippet}` }
+  }
 }
 
 function VideoFxBlock({

@@ -47,6 +47,8 @@ class FxRequest(BaseModel):
     videos: List[str] = Field(..., min_length=1)
     speed_enabled: bool = False
     speed: float = Field(1.0, gt=0.0, le=8.0)
+    smooth: bool = False
+    smooth_fps: int = Field(60, ge=24, le=120)
     loop_enabled: bool = False
     loop_count: int = Field(2, ge=1, le=8)
     boomerang: bool = False
@@ -89,6 +91,17 @@ def _build_filter(req: FxRequest, lut_path: Path | None) -> str:
         parts.append(f"[{label}]setpts=PTS/{req.speed:.4f}[vsp]")
         label = "vsp"
 
+    # Optical-flow smoothing: synthesize intermediate frames so retimed footage
+    # plays cleanly instead of judder/dupe-frames. Runs after speed so the
+    # retimed PTS is what gets resampled.
+    if req.smooth and req.speed_enabled and abs(req.speed - 1.0) > 1e-3:
+        parts.append(
+            f"[{label}]minterpolate="
+            f"fps={req.smooth_fps}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
+            f"[vmi]"
+        )
+        label = "vmi"
+
     if req.loop_enabled and req.boomerang:
         parts.append(
             f"[{label}]split=2[vf][vr];"
@@ -125,7 +138,7 @@ def _run_fx_one(src: Path, req: FxRequest, lut_path: Path | None, out_path: Path
 def _signature(src: Path, req: FxRequest) -> str:
     raw = "|".join([
         str(src),
-        f"s={req.speed_enabled}/{req.speed}",
+        f"s={req.speed_enabled}/{req.speed}/smooth={req.smooth}/{req.smooth_fps}",
         f"l={req.loop_enabled}/{req.loop_count}/{req.boomerang}",
         f"lut={req.lut_enabled}/{req.lut_path or ''}",
     ])

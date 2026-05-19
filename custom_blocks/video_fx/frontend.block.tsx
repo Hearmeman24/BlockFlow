@@ -30,6 +30,8 @@ interface FxPayload {
   videos: string[]
   speed_enabled: boolean
   speed: number
+  smooth: boolean
+  smooth_fps: number
   loop_enabled: boolean
   loop_count: number
   boomerang: boolean
@@ -56,6 +58,8 @@ function VideoFxBlock({
 }: BlockComponentProps) {
   const [speedEnabled, setSpeedEnabled] = useSessionState(`block_${blockId}_speed_enabled`, false)
   const [speed, setSpeed] = useSessionState(`block_${blockId}_speed`, 1.0)
+  const [smooth, setSmooth] = useSessionState(`block_${blockId}_smooth`, false)
+  const [smoothFps, setSmoothFps] = useSessionState(`block_${blockId}_smooth_fps`, 60)
   const [loopEnabled, setLoopEnabled] = useSessionState(`block_${blockId}_loop_enabled`, false)
   const [loopCount, setLoopCount] = useSessionState(`block_${blockId}_loop_count`, 2)
   const [boomerang, setBoomerang] = useSessionState(`block_${blockId}_boomerang`, false)
@@ -68,9 +72,9 @@ function VideoFxBlock({
   const processedKeyRef = useRef<string>('')
 
   const settingsRef = useRef({
-    speedEnabled, speed, loopEnabled, loopCount, boomerang, lutEnabled, lutPath,
+    speedEnabled, speed, smooth, smoothFps, loopEnabled, loopCount, boomerang, lutEnabled, lutPath,
   })
-  settingsRef.current = { speedEnabled, speed, loopEnabled, loopCount, boomerang, lutEnabled, lutPath }
+  settingsRef.current = { speedEnabled, speed, smooth, smoothFps, loopEnabled, loopCount, boomerang, lutEnabled, lutPath }
 
   const buildPayload = useCallback((videos: string[]): FxPayload => {
     const s = settingsRef.current
@@ -78,6 +82,8 @@ function VideoFxBlock({
       videos,
       speed_enabled: s.speedEnabled,
       speed: s.speed,
+      smooth: s.smooth,
+      smooth_fps: s.smoothFps,
       loop_enabled: s.loopEnabled,
       loop_count: s.loopCount,
       boomerang: s.boomerang,
@@ -170,6 +176,32 @@ function VideoFxBlock({
               onValueChange={(v) => setSpeed(Number(v[0]))}
             />
             <p className="text-[10px] text-muted-foreground">{speed.toFixed(2)}x</p>
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <Label className="text-[10px] text-muted-foreground">
+                Smooth (optical flow)
+              </Label>
+              <Switch checked={smooth} onCheckedChange={setSmooth} />
+            </div>
+            {smooth && (
+              <div className="flex items-center justify-between gap-2">
+                <Label className="text-[10px] text-muted-foreground">Target fps</Label>
+                <Input
+                  type="number"
+                  min={24}
+                  max={120}
+                  value={smoothFps}
+                  onChange={(e) =>
+                    setSmoothFps(Math.max(24, Math.min(120, Number(e.target.value) || 60)))
+                  }
+                  className="h-7 w-16 text-xs"
+                />
+              </div>
+            )}
+            {smooth && (
+              <p className="text-[10px] text-muted-foreground">
+                ffmpeg minterpolate (CPU) — slower; cleans up judder.
+              </p>
+            )}
           </>
         )}
       </div>
@@ -246,7 +278,7 @@ export const blockDef: BlockDef = {
   inputs: [{ name: 'video', kind: PORT_VIDEO, required: true }],
   outputs: [{ name: 'video', kind: PORT_VIDEO }],
   configKeys: [
-    'speed_enabled', 'speed',
+    'speed_enabled', 'speed', 'smooth', 'smooth_fps',
     'loop_enabled', 'loop_count', 'boomerang',
     'lut_enabled', 'lut_path',
   ],

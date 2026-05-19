@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -256,12 +256,13 @@ def _signature(src: Path, req: FxRequest) -> str:
 
 
 @router.post("/upload-lut")
-async def upload_lut(file: UploadFile = File(...)) -> JSONResponse:
-    """Accept a .cube LUT, cache it by content hash, return the absolute path."""
-    name = (file.filename or "").strip()
+async def upload_lut(request: Request) -> JSONResponse:
+    """Accept a .cube LUT (raw body, filename in X-Filename header),
+    cache it by content hash, return the absolute path."""
+    name = (request.headers.get("x-filename") or "").strip()
     if not name.lower().endswith(".cube"):
         return JSONResponse({"ok": False, "error": "Expected a .cube file"}, status_code=400)
-    raw = await file.read()
+    raw = await request.body()
     if not raw:
         return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
     digest = hashlib.sha1(raw + b"|upload").hexdigest()[:16]

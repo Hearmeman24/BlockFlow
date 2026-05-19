@@ -184,12 +184,20 @@ function VideoFxBlock({
     setLutUploading(true)
     setStatusMessage(`Uploading LUT ${file.name}…`)
     try {
-      const fd = new FormData()
-      fd.append('file', file)
-      const res = await fetch(UPLOAD_LUT_ENDPOINT, { method: 'POST', body: fd })
-      const data = await res.json().catch(() => null)
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error ?? `Upload failed (${res.status})`)
+      const res = await fetch(UPLOAD_LUT_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Filename': file.name,
+        },
+        body: file,
+      })
+      const text = await res.text()
+      let data: { ok?: boolean; path?: string; name?: string; error?: string } | null = null
+      try { data = JSON.parse(text) } catch { /* fall through */ }
+      if (!res.ok || !data?.ok || !data?.path) {
+        const snippet = text.slice(0, 240).trim() || `HTTP ${res.status}`
+        throw new Error(data?.error ?? `Upload failed: ${snippet}`)
       }
       setLutPath(data.path)
       setLutName(data.name || file.name)

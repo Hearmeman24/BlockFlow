@@ -41,6 +41,8 @@ import {
 } from '@/lib/pipeline/registry'
 import type { LoraEntry } from '@/lib/types'
 import { DirectorLoadJsonButton } from '@/components/pipeline/director-load-json-button'
+import { DirectorPromptLengthStepper } from '@/components/pipeline/director-prompt-length-stepper'
+import { secondsToFrames } from '@/lib/director-prompts-json'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockInTree } from '@/lib/pipeline/tree-utils'
 
@@ -191,6 +193,24 @@ function Wan22ImageToVideoBlock({
     `block_${blockId}_director_loaded_json_name`,
     '',
   )
+  const [directorPromptLengths, setDirectorPromptLengths] = useSessionState<(number | null)[]>(
+    `block_${blockId}_director_prompt_lengths`,
+    [null, null],
+  )
+  const [directorPromptDescriptions, setDirectorPromptDescriptions] = useSessionState<string[]>(
+    `block_${blockId}_director_prompt_descriptions`,
+    ['', ''],
+  )
+  const [useBlockFramesOverride, setUseBlockFramesOverride] = useSessionState<boolean>(
+    `block_${blockId}_director_use_block_frames`,
+    false,
+  )
+  const hasAnyLength = directorMode && directorPromptLengths.some((l) => l !== null)
+  const allHaveLength = directorMode
+    && directorPrompts.length > 0
+    && directorPrompts.every((p, i) => !p.trim() || directorPromptLengths[i] !== null)
+    && directorPromptLengths.some((l) => l !== null)
+  const framesDisabled = allHaveLength && !useBlockFramesOverride
   const [promptExpanded, setPromptExpanded] = useSessionState(`block_${blockId}_prompt_expanded`, false)
   const { get: getBinding } = useBlockBindings(blockId, 'wan22ImageToVideo', inputs)
   const promptBinding = getBinding('prompt')
@@ -294,17 +314,29 @@ function Wan22ImageToVideoBlock({
 
   useEffect(() => {
     registerExecute(async (freshInputs) => {
-      const runPrompts = isPromptWired
-        ? normalizePrompts(freshInputs.prompt)
-        : directorMode
-          ? normalizePrompts(directorPrompts)
-          : normalizePrompts(localPrompt)
+      type RunUnit = { prompt: string; frames: number }
+      let runUnits: RunUnit[]
+      if (isPromptWired) {
+        runUnits = normalizePrompts(freshInputs.prompt).map((p) => ({ prompt: p, frames }))
+      } else if (directorMode) {
+        runUnits = directorPrompts
+          .map((p, idx) => ({ prompt: p.trim(), idx }))
+          .filter((x) => x.prompt.length > 0)
+          .map(({ prompt, idx }) => {
+            const len = directorPromptLengths[idx]
+            const f = !useBlockFramesOverride && len !== null ? secondsToFrames(len) : frames
+            return { prompt, frames: f }
+          })
+      } else {
+        runUnits = normalizePrompts(localPrompt).map((p) => ({ prompt: p, frames }))
+      }
       const runImage = isImageWired
         ? asImageInput(freshInputs.image)
         : String(imageBinding?.localValue ?? '')
 
-      if (runPrompts.length === 0) throw new Error('Prompt is required')
+      if (runUnits.length === 0) throw new Error('Prompt is required')
       if (!runImage.trim()) throw new Error('Image input is required')
+      const runPrompts = runUnits.map((u) => u.prompt)
 
       const runLoras = (freshInputs.loras as LoraEntry[] | undefined)
         ?.filter((l) => l.name && l.name !== '__none__') ?? []
@@ -317,15 +349,15 @@ function Wan22ImageToVideoBlock({
 
       const imageValue = runImage.trim()
       const submissions = await Promise.allSettled(
-        runPrompts.map(async (prompt, idx) => {
+        runUnits.map(async (unit, idx) => {
           const payload: Wan22I2vPayload = {
             endpoint_id: endpointId,
             task_type: 'i2v',
             image_url: imageValue,
-            prompt,
+            prompt: unit.prompt,
             width,
             height,
-            frames,
+            frames: unit.frames,
             fps,
             parallel_count: 1,
             seed_mode: seedMode,
@@ -511,30 +543,44 @@ function Wan22ImageToVideoBlock({
           </div>
         ) : (
           <>
-            <div className="flex items-center justify-between -mt-1 mb-1.5">
+            <div className="flex items-center justify-between -mt-1 mb-1">
               <span className="text-[10px] text-muted-foreground">
                 Director Mode {directorMode ? `(${directorPrompts.filter((p) => p.trim()).length} prompts)` : ''}
               </span>
-              <div className="flex items-center gap-2">
-                {directorMode && (
-                  <DirectorLoadJsonButton
-                    onLoaded={(name, prompts) => {
-                      setDirectorPrompts(prompts.length > 0 ? prompts : ['', ''])
-                      setLoadedJsonName(name)
-                    }}
-                  />
-                )}
-                <Switch
-                  checked={directorMode}
-                  onCheckedChange={(v) => {
-                    setDirectorMode(v)
-                    if (!v) setLoadedJsonName('')
+              <Switch
+                checked={directorMode}
+                onCheckedChange={(v) => {
+                  setDirectorMode(v)
+                  if (!v) {
+                    setLoadedJsonName('')
+                    setDirectorPromptLengths(directorPrompts.map(() => null))
+                    setDirectorPromptDescriptions(directorPrompts.map(() => ''))
+                    setUseBlockFramesOverride(false)
+                  }
+                }}
+              />
+            </div>
+            {directorMode && (
+              <div className="flex items-center justify-between mb-1">
+                <DirectorLoadJsonButton
+                  onLoaded={(name, prompts, lengths, descriptions) => {
+                    const ps = prompts.length > 0 ? prompts : ['', '']
+                    const ls = prompts.length > 0 ? lengths : [null, null]
+                    const ds = prompts.length > 0 ? descriptions : ['', '']
+                    setDirectorPrompts(ps)
+                    setDirectorPromptLengths(ls)
+                    setDirectorPromptDescriptions(ds)
+                    setLoadedJsonName(name)
+                    setUseBlockFramesOverride(false)
                   }}
                 />
+                {hasAnyLength && (
+                  <span className="text-[10px] text-muted-foreground" title="16 fps, 4n+1 frame count">16 fps</span>
+                )}
               </div>
-            </div>
+            )}
             {directorMode && loadedJsonName && (
-              <div className="-mt-1 mb-1.5 text-[10px] text-muted-foreground">
+              <div className="mb-1.5 text-[10px] text-muted-foreground">
                 Loaded: <span className="text-foreground/80">{loadedJsonName}</span>
               </div>
             )}
@@ -543,15 +589,37 @@ function Wan22ImageToVideoBlock({
                 {directorPrompts.map((p, idx) => (
                   <div key={idx} className="flex items-start gap-1.5 min-w-0">
                     <span className="mt-1.5 w-4 text-[10px] text-muted-foreground text-right shrink-0">{idx + 1}.</span>
-                    <Textarea
-                      value={p}
-                      onChange={(e) => {
-                        const next = [...directorPrompts]
-                        next[idx] = e.target.value
-                        setDirectorPrompts(next)
+                    <div className="flex-1 min-w-0 flex flex-col gap-1">
+                      <Input
+                        value={directorPromptDescriptions[idx] ?? ''}
+                        onChange={(e) => {
+                          const arr = [...directorPromptDescriptions]
+                          arr[idx] = e.target.value.slice(0, 50)
+                          setDirectorPromptDescriptions(arr)
+                        }}
+                        maxLength={50}
+                        placeholder="Short description (optional)"
+                        className="h-5 text-[10px] italic text-muted-foreground px-1.5 bg-transparent"
+                      />
+                      <Textarea
+                        value={p}
+                        onChange={(e) => {
+                          const next = [...directorPrompts]
+                          next[idx] = e.target.value
+                          setDirectorPrompts(next)
+                        }}
+                        placeholder={`Prompt ${idx + 1}…`}
+                        className="h-[60px] resize text-xs w-full overflow-y-auto"
+                      />
+                    </div>
+                    <DirectorPromptLengthStepper
+                      value={directorPromptLengths[idx] ?? null}
+                      onChange={(next) => {
+                        const arr = [...directorPromptLengths]
+                        arr[idx] = next
+                        setDirectorPromptLengths(arr)
                       }}
-                      placeholder={`Prompt ${idx + 1}…`}
-                      className="h-[60px] resize text-xs flex-1 min-w-0 overflow-y-auto"
+                      fallbackFrames={frames}
                     />
                     <div className="flex flex-col gap-0.5 shrink-0">
                       <button
@@ -561,6 +629,12 @@ function Wan22ImageToVideoBlock({
                           const next = [...directorPrompts]
                           ;[next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]
                           setDirectorPrompts(next)
+                          const lens = [...directorPromptLengths]
+                          ;[lens[idx - 1], lens[idx]] = [lens[idx], lens[idx - 1]]
+                          setDirectorPromptLengths(lens)
+                          const descs = [...directorPromptDescriptions]
+                          ;[descs[idx - 1], descs[idx]] = [descs[idx], descs[idx - 1]]
+                          setDirectorPromptDescriptions(descs)
                         }}
                         className="h-4 w-5 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
                         title="Move up"
@@ -574,6 +648,12 @@ function Wan22ImageToVideoBlock({
                           const next = [...directorPrompts]
                           ;[next[idx + 1], next[idx]] = [next[idx], next[idx + 1]]
                           setDirectorPrompts(next)
+                          const lens = [...directorPromptLengths]
+                          ;[lens[idx + 1], lens[idx]] = [lens[idx], lens[idx + 1]]
+                          setDirectorPromptLengths(lens)
+                          const descs = [...directorPromptDescriptions]
+                          ;[descs[idx + 1], descs[idx]] = [descs[idx], descs[idx + 1]]
+                          setDirectorPromptDescriptions(descs)
                         }}
                         className="h-4 w-5 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
                         title="Move down"
@@ -585,6 +665,8 @@ function Wan22ImageToVideoBlock({
                         disabled={directorPrompts.length <= 1}
                         onClick={() => {
                           setDirectorPrompts(directorPrompts.filter((_, i) => i !== idx))
+                          setDirectorPromptLengths(directorPromptLengths.filter((_, i) => i !== idx))
+                          setDirectorPromptDescriptions(directorPromptDescriptions.filter((_, i) => i !== idx))
                         }}
                         className="h-4 w-5 text-[10px] leading-none text-red-400 hover:text-red-300 disabled:opacity-30"
                         title="Remove"
@@ -599,7 +681,11 @@ function Wan22ImageToVideoBlock({
                   variant="outline"
                   size="sm"
                   className="w-full h-7 text-xs"
-                  onClick={() => setDirectorPrompts([...directorPrompts, ''])}
+                  onClick={() => {
+                    setDirectorPrompts([...directorPrompts, ''])
+                    setDirectorPromptLengths([...directorPromptLengths, null])
+                    setDirectorPromptDescriptions([...directorPromptDescriptions, ''])
+                  }}
                 >
                   + Add prompt
                 </Button>
@@ -633,9 +719,26 @@ function Wan22ImageToVideoBlock({
 
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
-          <Label className="text-xs">Frames</Label>
+          <div className="flex items-center justify-between">
+            <Label className={`text-xs ${framesDisabled ? 'opacity-50' : ''}`}>Frames</Label>
+            {allHaveLength && (
+              <label className="text-[10px] text-muted-foreground flex items-center gap-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useBlockFramesOverride}
+                  onChange={(e) => setUseBlockFramesOverride(e.target.checked)}
+                  className="h-3 w-3"
+                />
+                override
+              </label>
+            )}
+          </div>
           <Input type="number" min={5} step={4} value={frames}
-            onChange={(e) => setFrames(Number(e.target.value))} className="h-8 text-xs" />
+            disabled={framesDisabled}
+            onChange={(e) => setFrames(Number(e.target.value))}
+            className={`h-8 text-xs ${framesDisabled ? 'opacity-50' : ''}`}
+            title={framesDisabled ? 'Per-prompt lengths from loaded JSON are used. Toggle override to use this value.' : undefined}
+          />
         </div>
         <div className="space-y-1">
           <Label className="text-xs">FPS</Label>

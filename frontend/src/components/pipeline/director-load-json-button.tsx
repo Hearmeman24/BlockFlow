@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 import { parseDirectorPromptsJson } from '@/lib/director-prompts-json'
 
 interface Props {
-  onLoaded: (name: string, prompts: string[]) => void
+  onLoaded: (name: string, prompts: string[], lengths: (number | null)[], descriptions: string[]) => void
 }
 
 export function DirectorLoadJsonButton({ onLoaded }: Props) {
@@ -32,7 +32,7 @@ export function DirectorLoadJsonButton({ onLoaded }: Props) {
       return
     }
     setError('')
-    onLoaded(r.name, r.prompts)
+    onLoaded(r.name, r.prompts, r.lengths, r.descriptions)
   }
 
   return (

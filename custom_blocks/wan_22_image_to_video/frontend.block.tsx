@@ -204,6 +204,10 @@ function Wan22ImageToVideoBlock({
     `block_${blockId}_director_prompt_loras`,
     [[], []],
   )
+  const [directorPromptCollapsed, setDirectorPromptCollapsed] = useSessionState<boolean[]>(
+    `block_${blockId}_director_prompt_collapsed`,
+    [true, true],
+  )
   const [useBlockFramesOverride, setUseBlockFramesOverride] = useSessionState<boolean>(
     `block_${blockId}_director_use_block_frames`,
     false,
@@ -563,6 +567,7 @@ function Wan22ImageToVideoBlock({
                     setDirectorPromptLengths(directorPrompts.map(() => null))
                     setDirectorPromptDescriptions(directorPrompts.map(() => ''))
                     setDirectorPromptLoras(directorPrompts.map(() => []))
+                    setDirectorPromptCollapsed(directorPrompts.map(() => true))
                     setUseBlockFramesOverride(false)
                   }
                 }}
@@ -580,6 +585,7 @@ function Wan22ImageToVideoBlock({
                     setDirectorPromptLengths(ls)
                     setDirectorPromptDescriptions(ds)
                     setDirectorPromptLoras(lrs)
+                    setDirectorPromptCollapsed(ps.map(() => true))
                     setLoadedJsonName(name)
                     setUseBlockFramesOverride(false)
                   }}
@@ -598,30 +604,36 @@ function Wan22ImageToVideoBlock({
               <div className="space-y-1.5 min-w-0">
                 {directorPrompts.map((p, idx) => {
                   const description = directorPromptDescriptions[idx] ?? ''
+                  const collapsed = directorPromptCollapsed[idx] ?? true
+                  const headerText = description.trim() || `Prompt ${idx + 1} — No description`
                   return (
-                  <div key={idx} className="flex items-start gap-1.5 min-w-0">
-                    <div className="flex flex-col items-end shrink-0 pt-1">
-                      <span className="w-4 text-[10px] text-muted-foreground text-right">{idx + 1}.</span>
-                    </div>
+                  <div key={idx} className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-4 text-[10px] text-muted-foreground text-right shrink-0 self-start pt-1">{idx + 1}.</span>
                     <div className="flex-1 min-w-0 flex flex-col">
-                      {description && (
-                        <span
-                          className="text-[10px] italic text-muted-foreground pl-1 pb-1 truncate"
-                          title={description}
-                        >
-                          {description}
-                        </span>
-                      )}
-                      <Textarea
-                        value={p}
-                        onChange={(e) => {
-                          const next = [...directorPrompts]
-                          next[idx] = e.target.value
-                          setDirectorPrompts(next)
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const arr = [...directorPromptCollapsed]
+                          arr[idx] = !(arr[idx] ?? true)
+                          setDirectorPromptCollapsed(arr)
                         }}
-                        placeholder={`Prompt ${idx + 1}…`}
-                        className="h-[60px] resize text-xs w-full overflow-y-auto"
-                      />
+                        title={collapsed ? 'Click to expand prompt' : 'Click to collapse prompt'}
+                        className={`text-[10px] italic text-left pl-1 ${collapsed ? 'py-1' : 'pb-1'} truncate ${description.trim() ? 'text-muted-foreground hover:text-foreground' : 'text-muted-foreground/60 hover:text-muted-foreground'}`}
+                      >
+                        {headerText}
+                      </button>
+                      {!collapsed && (
+                        <Textarea
+                          value={p}
+                          onChange={(e) => {
+                            const next = [...directorPrompts]
+                            next[idx] = e.target.value
+                            setDirectorPrompts(next)
+                          }}
+                          placeholder={`Prompt ${idx + 1}…`}
+                          className="h-[60px] resize text-xs w-full overflow-y-auto"
+                        />
+                      )}
                     </div>
                     <DirectorPromptLengthStepper
                       value={directorPromptLengths[idx] ?? null}
@@ -641,66 +653,21 @@ function Wan22ImageToVideoBlock({
                         setDirectorPromptLoras(arr)
                       }}
                     />
-                    <div className="flex flex-col gap-0.5 shrink-0">
-                      <button
-                        type="button"
-                        disabled={idx === 0}
-                        onClick={() => {
-                          const next = [...directorPrompts]
-                          ;[next[idx - 1], next[idx]] = [next[idx], next[idx - 1]]
-                          setDirectorPrompts(next)
-                          const lens = [...directorPromptLengths]
-                          ;[lens[idx - 1], lens[idx]] = [lens[idx], lens[idx - 1]]
-                          setDirectorPromptLengths(lens)
-                          const descs = [...directorPromptDescriptions]
-                          ;[descs[idx - 1], descs[idx]] = [descs[idx], descs[idx - 1]]
-                          setDirectorPromptDescriptions(descs)
-                          const lrs = [...directorPromptLoras]
-                          ;[lrs[idx - 1], lrs[idx]] = [lrs[idx], lrs[idx - 1]]
-                          setDirectorPromptLoras(lrs)
-                        }}
-                        className="h-4 w-5 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
-                        title="Move up"
-                      >
-                        ▲
-                      </button>
-                      <button
-                        type="button"
-                        disabled={idx === directorPrompts.length - 1}
-                        onClick={() => {
-                          const next = [...directorPrompts]
-                          ;[next[idx + 1], next[idx]] = [next[idx], next[idx + 1]]
-                          setDirectorPrompts(next)
-                          const lens = [...directorPromptLengths]
-                          ;[lens[idx + 1], lens[idx]] = [lens[idx], lens[idx + 1]]
-                          setDirectorPromptLengths(lens)
-                          const descs = [...directorPromptDescriptions]
-                          ;[descs[idx + 1], descs[idx]] = [descs[idx], descs[idx + 1]]
-                          setDirectorPromptDescriptions(descs)
-                          const lrs = [...directorPromptLoras]
-                          ;[lrs[idx + 1], lrs[idx]] = [lrs[idx], lrs[idx + 1]]
-                          setDirectorPromptLoras(lrs)
-                        }}
-                        className="h-4 w-5 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
-                        title="Move down"
-                      >
-                        ▼
-                      </button>
-                      <button
-                        type="button"
-                        disabled={directorPrompts.length <= 1}
-                        onClick={() => {
-                          setDirectorPrompts(directorPrompts.filter((_, i) => i !== idx))
-                          setDirectorPromptLengths(directorPromptLengths.filter((_, i) => i !== idx))
-                          setDirectorPromptDescriptions(directorPromptDescriptions.filter((_, i) => i !== idx))
-                          setDirectorPromptLoras(directorPromptLoras.filter((_, i) => i !== idx))
-                        }}
-                        className="h-4 w-5 text-[10px] leading-none text-red-400 hover:text-red-300 disabled:opacity-30"
-                        title="Remove"
-                      >
-                        ×
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      disabled={directorPrompts.length <= 1}
+                      onClick={() => {
+                        setDirectorPrompts(directorPrompts.filter((_, i) => i !== idx))
+                        setDirectorPromptLengths(directorPromptLengths.filter((_, i) => i !== idx))
+                        setDirectorPromptDescriptions(directorPromptDescriptions.filter((_, i) => i !== idx))
+                        setDirectorPromptLoras(directorPromptLoras.filter((_, i) => i !== idx))
+                        setDirectorPromptCollapsed(directorPromptCollapsed.filter((_, i) => i !== idx))
+                      }}
+                      className="h-4 w-5 text-[10px] leading-none text-red-400 hover:text-red-300 disabled:opacity-30 shrink-0"
+                      title="Remove"
+                    >
+                      ×
+                    </button>
                   </div>
                   )
                 })}
@@ -714,6 +681,7 @@ function Wan22ImageToVideoBlock({
                     setDirectorPromptLengths([...directorPromptLengths, null])
                     setDirectorPromptDescriptions([...directorPromptDescriptions, ''])
                     setDirectorPromptLoras([...directorPromptLoras, []])
+                    setDirectorPromptCollapsed([...directorPromptCollapsed, false])
                   }}
                 >
                   + Add prompt

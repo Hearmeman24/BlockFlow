@@ -495,6 +495,19 @@ def _run_training(job_id: str, api_key: str, dataset_dir: Path, trigger_word: st
                 v = _as_float(output.get("loss"));         v is not None and fields.update(loss=v)
                 stage = output.get("stage")
                 if isinstance(stage, str): fields["stage"] = stage
+                # Accumulate (step, loss) series for the live sparkline.
+                loss_val = _as_float(output.get("loss"))
+                step_val = _as_int(output.get("step"))
+                if loss_val is not None and step_val is not None:
+                    with JOBS_LOCK:
+                        rec = JOBS.get(job_id)
+                        if rec is not None:
+                            series: list[dict[str, float]] = rec.setdefault("loss_series", [])
+                            if not series or series[-1].get("step") != step_val:
+                                series.append({"step": step_val, "loss": loss_val})
+                                # cap memory — keep last 1000 points
+                                if len(series) > 1000:
+                                    del series[: len(series) - 1000]
             # Fall back to regex on the textual message if the structured
             # fields weren't provided (e.g. an older trainer build).
             if "epoch_done" not in fields or "epoch_total" not in fields:
@@ -666,6 +679,7 @@ async def run(request: Request) -> JSONResponse:
         "epoch_total": int(overrides.get("epochs") or MODEL_DEFAULTS[model_type]["epochs"]),
         "step_done": None,
         "step_total": None,
+        "loss_series": [],
         "started_at": time.time(),
         "ended_at": None,
         "error": "",

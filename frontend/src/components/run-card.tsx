@@ -76,13 +76,19 @@ function classifyUrl(url: string): 'video' | 'audio' | 'image' | 'file' {
   return 'file'
 }
 
-/** Find the primary artifact from block results (scan in reverse: dataset > video > image > prompt > any). */
-function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unknown; label: string; blockIndex: number } | null {
-  const priority = ['dataset', 'video', 'image', 'prompt']
+/** Find the primary artifact from block results (scan in reverse: lora > dataset > video > image > prompt > any). */
+function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unknown; label: string; blockIndex: number; siblings: Record<string, { kind: string; value: unknown }> } | null {
+  const priority = ['loras', 'lora', 'dataset', 'video', 'image', 'prompt']
   for (const kind of priority) {
     for (let i = results.length - 1; i >= 0; i--) {
       for (const [, out] of Object.entries(results[i].outputs)) {
-        if (out.kind === kind) return { kind: out.kind, value: out.value, label: results[i].block_label, blockIndex: results[i].block_index }
+        if (out.kind === kind) return {
+          kind: out.kind,
+          value: out.value,
+          label: results[i].block_label,
+          blockIndex: results[i].block_index,
+          siblings: results[i].outputs,
+        }
       }
     }
   }
@@ -91,7 +97,13 @@ function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unk
     const entries = Object.entries(results[i].outputs)
     if (entries.length > 0) {
       const [, out] = entries[0]
-      return { kind: out.kind, value: out.value, label: results[i].block_label, blockIndex: results[i].block_index }
+      return {
+        kind: out.kind,
+        value: out.value,
+        label: results[i].block_label,
+        blockIndex: results[i].block_index,
+        siblings: results[i].outputs,
+      }
     }
   }
   return null
@@ -337,7 +349,7 @@ function UrlArtifactGallery({ urls, selectedIndex: externalIndex, onIndexChange 
   )
 }
 
-function ArtifactPreview({ kind, value, galleryIndex, onGalleryIndexChange }: { kind: string; value: unknown; galleryIndex?: number; onGalleryIndexChange?: (i: number) => void }) {
+function ArtifactPreview({ kind, value, galleryIndex, onGalleryIndexChange, siblings }: { kind: string; value: unknown; galleryIndex?: number; onGalleryIndexChange?: (i: number) => void; siblings?: Record<string, { kind: string; value: unknown }> }) {
   if (value == null) {
     return (
       <div className="w-full h-16 bg-muted/30 rounded flex items-center justify-center">
@@ -410,15 +422,85 @@ function ArtifactPreview({ kind, value, galleryIndex, onGalleryIndexChange }: { 
       }
       if (typeof value === 'string') return <UrlArtifact url={value} />
       return <JsonArtifact value={value} />
+    case 'lora':
     case 'loras': {
       const loras = Array.isArray(value) ? value : []
+      // Two shapes in the wild:
+      //  - {name, strength}  — from LoRA Selector (workflow composition)
+      //  - {filename, url, noise_variant}  — from LoRA Train (downloadable artifact)
+      const isTrained = loras.length > 0
+        && typeof (loras[0] as Record<string, unknown>)?.filename === 'string'
+      if (!isTrained) {
+        return (
+          <div className="flex flex-wrap gap-1">
+            {loras.map((l: { name?: string }, i: number) => (
+              <Badge key={i} variant="secondary" className="text-[10px]">
+                {String(l?.name ?? 'LoRA').replace('.safetensors', '')}
+              </Badge>
+            ))}
+          </div>
+        )
+      }
+      // Sibling metadata (from lora_train block's `metadata` output) gives
+      // trigger word + dataset thumbnail + epoch/step/loss for a rich card.
+      const metaOut = siblings && Object.values(siblings).find((o) => o.kind === 'metadata')
+      const meta = (metaOut?.value && typeof metaOut.value === 'object'
+        ? metaOut.value as Record<string, unknown>
+        : {}) as Record<string, unknown>
+      const trigger = typeof meta.trigger_word === 'string' ? meta.trigger_word : ''
+      const model = typeof meta.model === 'string' ? meta.model : ''
+      const dsName = typeof meta.dataset_name === 'string' ? meta.dataset_name : ''
+      const dsThumb = typeof meta.dataset_thumb_url === 'string' ? meta.dataset_thumb_url : ''
+      const epDone = typeof meta.epochs_done === 'number' ? meta.epochs_done : null
+      const epTotal = typeof meta.epochs_total === 'number' ? meta.epochs_total : null
+      const stDone = typeof meta.steps_done === 'number' ? meta.steps_done : null
+      const stTotal = typeof meta.steps_total === 'number' ? meta.steps_total : null
+      const loss = typeof meta.final_loss === 'number' ? meta.final_loss : null
+      const elapsed = typeof meta.elapsed_seconds === 'number' ? meta.elapsed_seconds : null
+      const fmtElapsed = (s: number) => s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
       return (
-        <div className="flex flex-wrap gap-1">
-          {loras.map((l: { name?: string }, i: number) => (
-            <Badge key={i} variant="secondary" className="text-[10px]">
-              {String(l?.name ?? 'LoRA').replace('.safetensors', '')}
-            </Badge>
-          ))}
+        <div className="rounded border border-violet-500/30 bg-violet-500/5 p-2 space-y-2">
+          <div className="flex items-center gap-2">
+            {dsThumb ? (
+              <img src={dsThumb} alt="" className="h-12 w-12 rounded object-cover bg-muted/40 shrink-0" loading="lazy" />
+            ) : (
+              <div className="h-12 w-12 rounded bg-violet-500/10 flex items-center justify-center shrink-0">
+                <span className="text-[9px] text-violet-300 font-mono">LoRA</span>
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              {trigger && (
+                <p className="text-[11px] font-medium font-mono truncate">{trigger}</p>
+              )}
+              <p className="text-[10px] text-muted-foreground truncate">
+                {model || 'lora'}{dsName ? ` · ${dsName}` : ''}
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                {loras.length} file{loras.length === 1 ? '' : 's'}
+                {epDone != null && epTotal != null && ` · ${epDone}/${epTotal} ep`}
+                {stDone != null && stTotal != null && ` · ${stDone}/${stTotal} st`}
+                {loss != null && ` · loss ${loss.toFixed(3)}`}
+                {elapsed != null && ` · ${fmtElapsed(elapsed)}`}
+              </p>
+            </div>
+          </div>
+          <div className="space-y-0.5 pt-1 border-t border-violet-500/20">
+            {loras.map((l: { filename?: string; url?: string; noise_variant?: string }, i: number) => {
+              const fn = String(l?.filename ?? `lora_${i + 1}.safetensors`)
+              const url = String(l?.url ?? '')
+              const variant = l?.noise_variant ? ` (${l.noise_variant})` : ''
+              return url ? (
+                <a key={i} href={url} target="_blank" rel="noreferrer"
+                  className="block text-[10px] text-blue-400 hover:text-blue-300 truncate font-mono">
+                  ↓ {fn}{variant}
+                </a>
+              ) : (
+                <p key={i} className="text-[10px] text-muted-foreground truncate font-mono">
+                  {fn}{variant}
+                </p>
+              )
+            })}
+          </div>
         </div>
       )
     }
@@ -488,7 +570,7 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
       {/* Primary artifact preview */}
       {primary && (
         <div className="p-3 pb-0">
-          <ArtifactPreview kind={primary.kind} value={primary.value} galleryIndex={galleryIndex} onGalleryIndexChange={setGalleryIndex} />
+          <ArtifactPreview kind={primary.kind} value={primary.value} galleryIndex={galleryIndex} onGalleryIndexChange={setGalleryIndex} siblings={primary.siblings} />
         </div>
       )}
 

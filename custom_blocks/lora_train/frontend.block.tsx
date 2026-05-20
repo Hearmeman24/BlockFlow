@@ -9,6 +9,7 @@ import { useSessionState } from '@/lib/use-session-state'
 import {
   PORT_DATASET,
   PORT_LORAS,
+  PORT_METADATA,
   PORT_TEXT,
   type BlockDef,
   type BlockComponentProps,
@@ -59,6 +60,7 @@ interface JobSnap {
   percent?: number | null
   loss?: number | null
   stage?: string | null
+  loss_series?: Array<{ step: number; loss: number }>
   started_at: number
   ended_at: number | null
   error: string
@@ -94,7 +96,6 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
   const [rank, setRank] = useSessionState<string>(`${prefix}rank`, '')
   const [lr, setLr] = useSessionState<string>(`${prefix}lr`, '')
   const [saveEvery, setSaveEvery] = useSessionState<string>(`${prefix}save_every`, '')
-  const [numRepeats, setNumRepeats] = useSessionState<string>(`${prefix}num_repeats`, '')
   const [datasetFolder, setDatasetFolder] = useSessionState<string>(`${prefix}dataset_folder`, '')
   const [autoCaption, setAutoCaption] = useSessionState<boolean>(`${prefix}auto_caption`, true)
   const [lastJobId, setLastJobId] = useSessionState<string>(`${prefix}last_job_id`, '')
@@ -200,6 +201,35 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
 
   const defaults = health?.model_defaults?.[model]
 
+  // Build a metadata object that gets emitted on `metadata` output at
+  // completion. Captured into the artifact record so the artifacts page
+  // can show training config + dataset preview.
+  const buildMetadata = (snap: JobSnap): Record<string, unknown> => {
+    const dsEntry = datasets.find((d) => d.id === snap.dataset_name)
+    const dsThumb = upstreamDataset
+      ? (Array.isArray(upstreamDataset.images) && typeof upstreamDataset.images[0] === 'string'
+          ? (upstreamDataset.images[0] as string)
+          : null)
+      : (dsEntry?.thumb_urls && dsEntry.thumb_urls[0]) || null
+    return {
+      task_type: 'lora_training',
+      model: snap.model_type,
+      trigger_word: snap.trigger_word,
+      dataset_name: snap.dataset_name,
+      dataset_thumb_url: dsThumb,
+      epochs_done: snap.epoch_done,
+      epochs_total: snap.epoch_total,
+      steps_done: snap.step_done,
+      steps_total: snap.step_total,
+      final_loss: snap.loss ?? null,
+      elapsed_seconds: snap.started_at && snap.ended_at
+        ? Math.round(snap.ended_at - snap.started_at)
+        : null,
+      remote_job_id: snap.remote_job_id,
+      file_count: (snap.results || []).length,
+    }
+  }
+
   // Auto-reconnect to a previously-running job on mount
   useEffect(() => {
     if (reconnectFiredRef.current || !lastJobId) return
@@ -214,6 +244,7 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
           } else if ((d.job.status as string) === 'COMPLETED') {
             setOutput('loras', d.job.results)
             setOutput('logs', (d.job.logs || []).join('\n'))
+            setOutput('metadata', buildMetadata(d.job as JobSnap))
           }
         }
       })
@@ -246,6 +277,7 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
       if (snap.status === 'COMPLETED') {
         setOutput('loras', snap.results)
         setOutput('logs', (snap.logs || []).join('\n'))
+        setOutput('metadata', buildMetadata(snap))
         return snap
       }
       if (snap.status === 'FAILED') throw new Error(snap.error || 'Training failed')
@@ -267,7 +299,7 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
         const n = Number(v); if (Number.isFinite(n) && v.trim()) overrides[k] = n
       }
       addNum('epochs', epochs); addNum('rank', rank); addNum('lr', lr)
-      addNum('save_every_n_epochs', saveEvery); addNum('num_repeats', numRepeats)
+      addNum('save_every_n_epochs', saveEvery)
 
       setStatusMessage(`Submitting ${MODEL_LABEL[model]} training...`)
       const startRes = await fetch('/api/blocks/lora_train/run', {
@@ -412,11 +444,6 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
           <Input value={saveEvery} onChange={(e) => setSaveEvery(e.target.value.replace(/[^0-9]/g, ''))}
             placeholder={String(defaults?.save_every_n_epochs ?? '')} className="h-7 text-xs" />
         </div>
-        <div className="space-y-1 col-span-2">
-          <Label className="text-[11px]">Dataset repeats (optional)</Label>
-          <Input value={numRepeats} onChange={(e) => setNumRepeats(e.target.value.replace(/[^0-9]/g, ''))}
-            placeholder="auto" className="h-7 text-xs" />
-        </div>
       </div>
 
       {/* Env health */}
@@ -458,6 +485,43 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
               {progress.stage ? `${progress.stage}: ` : ''}{progress.last_progress || ''}
             </p>
           )}
+
+          {/* Loss/step sparkline — accumulated across training */}
+          {progress.loss_series && progress.loss_series.length >= 2 && (() => {
+            const series = progress.loss_series
+            const losses = series.map((p) => p.loss)
+            const lo = Math.min(...losses)
+            const hi = Math.max(...losses)
+            const range = hi - lo || 1
+            const W = 240
+            const H = 36
+            const lastIdx = series.length - 1
+            const stepLo = series[0].step
+            const stepHi = series[lastIdx].step
+            const stepRange = stepHi - stepLo || 1
+            const path = series.map((p, i) => {
+              const x = ((p.step - stepLo) / stepRange) * W
+              const y = H - ((p.loss - lo) / range) * H
+              return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+            }).join(' ')
+            return (
+              <div className="space-y-0.5 pt-1">
+                <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span>loss · {series.length} samples</span>
+                  <span className="font-mono">{lo.toFixed(3)} → {hi.toFixed(3)}</span>
+                </div>
+                <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-9" preserveAspectRatio="none">
+                  <path d={path} fill="none" stroke="currentColor" strokeWidth="1.2" className="text-violet-400" />
+                  <circle
+                    cx={((series[lastIdx].step - stepLo) / stepRange) * W}
+                    cy={H - ((series[lastIdx].loss - lo) / range) * H}
+                    r="1.8"
+                    className="fill-violet-300"
+                  />
+                </svg>
+              </div>
+            )
+          })()}
           <div className="flex items-center justify-between">
             <button type="button"
               onClick={() => setShowLogs((v) => !v)}
@@ -568,6 +632,7 @@ export const blockDef: BlockDef = {
   ],
   outputs: [
     { name: 'loras', kind: PORT_LORAS },
+    { name: 'metadata', kind: PORT_METADATA },
     { name: 'logs', kind: PORT_TEXT },
   ],
   suggestedUpstream: ['datasetCaption', 'datasetCreate'],
@@ -578,7 +643,6 @@ export const blockDef: BlockDef = {
     'rank',
     'lr',
     'save_every',
-    'num_repeats',
     'dataset_folder',
     'auto_caption',
     'last_job_id',

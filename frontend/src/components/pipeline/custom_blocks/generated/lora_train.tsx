@@ -124,6 +124,26 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
     completed_files?: unknown[]
   } | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+
+  const cancelTraining = async () => {
+    if (!progress || progress.status !== 'RUNNING' || cancelling) return
+    if (!confirm('Cancel this training run? The current RunPod job will be aborted; partial epochs (if any) won\'t be downloadable.')) return
+    setCancelling(true)
+    try {
+      const res = await fetch(`/api/blocks/lora_train/cancel/${progress.job_id}`, { method: 'POST' })
+      const d = await res.json()
+      if (!d.ok) {
+        alert(`Cancel failed: ${d.error || 'unknown error'}`)
+      }
+      // The polling loop will pick up the CANCELLED status on the next tick
+      // and surface it in the live panel.
+    } catch (e) {
+      alert(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   const upstreamDataset = isDatasetValue(inputs.dataset) ? inputs.dataset : null
   const upstreamImages = useMemo(() => {
@@ -455,12 +475,25 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
       {/* Live status */}
       {progress && (
         <div className="space-y-1 rounded border border-border/60 p-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] text-muted-foreground font-mono">{progress.status}</span>
-            <span className="text-[10px] text-muted-foreground">
-              {fmtDuration(elapsed)}
-              {etaSec != null && progress.status === 'RUNNING' ? ` · ETA ${fmtDuration(etaSec)}` : ''}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-muted-foreground">
+                {fmtDuration(elapsed)}
+                {etaSec != null && progress.status === 'RUNNING' ? ` · ETA ${fmtDuration(etaSec)}` : ''}
+              </span>
+              {progress.status === 'RUNNING' && (
+                <button
+                  type="button"
+                  onClick={cancelTraining}
+                  disabled={cancelling}
+                  className="rounded border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20 hover:text-red-200 text-[10px] font-medium px-2 py-0.5 transition-colors disabled:opacity-50"
+                  title="Cancel this training run on RunPod"
+                >
+                  {cancelling ? 'Cancelling…' : 'Cancel'}
+                </button>
+              )}
+            </div>
           </div>
           {epochsTotal != null && (
             <>

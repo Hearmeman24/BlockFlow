@@ -75,6 +75,24 @@ function UploadImageBlock({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Expose the current file set to downstream blocks at edit time, before the
+  // pipeline has run. Prefer the cached uploaded URL when present (so refs are
+  // immediately usable on a re-mount); otherwise fall back to the local blob:
+  // previewUrl (which the pipeline runner will replace with a real URL on run).
+  useEffect(() => {
+    const urls = files.map((entry) => {
+      const cached = cachedUploads[entry.fingerprint]
+      return cached?.url || entry.previewUrl
+    })
+    if (urls.length === 0) {
+      setOutput('image', undefined)
+    } else if (urls.length === 1) {
+      setOutput('image', urls[0])
+    } else {
+      setOutput('image', urls)
+    }
+  }, [files, cachedUploads, setOutput])
+
   const addFiles = useCallback(async (newFiles: File[]) => {
     const imageFiles = newFiles.filter((f) => f.type.startsWith('image/'))
     if (imageFiles.length === 0) return

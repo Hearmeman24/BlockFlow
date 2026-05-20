@@ -76,13 +76,26 @@ function classifyUrl(url: string): 'video' | 'audio' | 'image' | 'file' {
   return 'file'
 }
 
+/** True when a `loras` output is a trained downloadable LoRA (LoRA Train),
+ *  not a LoRA Selector workflow config. */
+function looksLikeTrainedLora(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length === 0) return false
+  const head = value[0] as Record<string, unknown> | null
+  if (!head || typeof head !== 'object') return false
+  return typeof head.url === 'string' || typeof head.filename === 'string'
+}
+
 /** Find the primary artifact from block results (scan in reverse: lora > dataset > video > image > prompt > any). */
 function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unknown; label: string; blockIndex: number; siblings: Record<string, { kind: string; value: unknown }> } | null {
   const priority = ['loras', 'lora', 'dataset', 'video', 'image', 'prompt']
   for (const kind of priority) {
     for (let i = results.length - 1; i >= 0; i--) {
       for (const [, out] of Object.entries(results[i].outputs)) {
-        if (out.kind === kind) return {
+        if (out.kind !== kind) continue
+        if ((kind === 'loras' || kind === 'lora') && !looksLikeTrainedLora(out.value)) {
+          continue
+        }
+        return {
           kind: out.kind,
           value: out.value,
           label: results[i].block_label,

@@ -83,17 +83,34 @@ def save_run(run: dict[str, Any]) -> None:
 _PRIMARY_KIND_PRIORITY = ("lora", "loras", "dataset", "video", "image", "prompt")
 
 
+def _looks_like_trained_lora(value: Any) -> bool:
+    """LoRA Selector emits {name, strength} per entry; LoRA Train emits
+    {filename, url, noise_variant}. Only the trained shape is an actual
+    downloadable artifact — Selector outputs are workflow config, not files."""
+    if not isinstance(value, list) or not value:
+        return False
+    head = value[0]
+    if not isinstance(head, dict):
+        return False
+    return bool(head.get("url")) or bool(head.get("filename"))
+
+
 def _primary_media_kind(block_results: list[dict[str, Any]]) -> str:
     """Mirror frontend findPrimaryArtifact, then bucket into video/image/dataset/lora/other."""
     for kind in _PRIMARY_KIND_PRIORITY:
         for br in reversed(block_results):
             for out in (br.get("outputs") or {}).values():
-                if out.get("kind") == kind:
-                    if kind in ("video", "image", "dataset"):
-                        return kind
-                    if kind in ("lora", "loras"):
-                        return "lora"
-                    return "other"
+                if out.get("kind") != kind:
+                    continue
+                if kind in ("lora", "loras"):
+                    # Only count it as a "lora" artifact when it's a trained
+                    # downloadable LoRA — not a LoRA Selector workflow config.
+                    if not _looks_like_trained_lora(out.get("value")):
+                        continue
+                    return "lora"
+                if kind in ("video", "image", "dataset"):
+                    return kind
+                return "other"
     return "other"
 
 

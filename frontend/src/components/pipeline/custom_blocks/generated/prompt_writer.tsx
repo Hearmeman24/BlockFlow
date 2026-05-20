@@ -124,6 +124,7 @@ interface WriterGeneratePayload {
   temperature: number
   max_tokens: number
   reasoning_effort?: ReasoningEffort
+  num_prompts?: number
 }
 
 async function generatePrompt(payload: WriterGeneratePayload) {
@@ -158,6 +159,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
   const prefix = `block_${blockId}_`
   const [localSettings, setLocalSettings] = useSessionState<WriterSettings | null>(`${prefix}local_settings`, null)
   const [variants, setVariants] = useSessionState<number>(`${prefix}variants`, 1)
+  const [numPrompts, setNumPrompts] = useSessionState<number>(`${prefix}num_prompts`, 1)
   const [userPrompt, setUserPrompt] = useSessionState(`${prefix}user_prompt`, '')
   const [extraUserPrompts, setExtraUserPrompts] = useSessionState<string[]>(`${prefix}extra_user_prompts`, [])
   const [output, setOutputText] = useSessionState(`${prefix}output`, '')
@@ -313,6 +315,11 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       const outputs: Array<{ idx: number; text: string }> = []
       const failures: Array<{ idx: number; error: string }> = []
 
+      const safeN = Math.max(1, Math.min(Number(numPrompts) || 1, fanoutLimits.max_variants))
+      // Per-call N — only the first (main) user prompt gets N; extras stay at 1 each.
+      const perCallN = (idx: number) => (idx === 0 ? safeN : 1)
+      const expandedOutputs: Array<{ idx: number; subIdx: number; text: string }> = []
+
       const workers = new Array(concurrency).fill(null).map(async (_unused, workerIdx) => {
         for (let idx = workerIdx; idx < total; idx += concurrency) {
           try {
@@ -324,11 +331,23 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
               temperature: s.temperature,
               max_tokens: s.max_tokens,
               reasoning_effort: s.reasoning_effort,
+              num_prompts: perCallN(idx),
             })
             if (!res?.ok) throw new Error(res?.error ?? 'Generation failed')
-            const text = String(res.output_text || '').trim()
-            if (!text) throw new Error('Empty output from writer')
-            outputs.push({ idx, text })
+            // N>1 response uses `prompts: string[]`; N==1 uses `output_text`.
+            const arr = Array.isArray(res.prompts)
+              ? (res.prompts as unknown[]).map((s) => String(s).trim()).filter(Boolean)
+              : null
+            const single = arr ? null : String(res.output_text || '').trim()
+            if (arr) {
+              if (arr.length === 0) throw new Error('Empty prompts array from writer')
+              arr.forEach((text, sub) => expandedOutputs.push({ idx, subIdx: sub, text }))
+              outputs.push({ idx, text: arr[0] })
+            } else {
+              if (!single) throw new Error('Empty output from writer')
+              expandedOutputs.push({ idx, subIdx: 0, text: single })
+              outputs.push({ idx, text: single })
+            }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             failures.push({ idx, error: message })
@@ -340,10 +359,10 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       })
 
       await Promise.all(workers)
-      outputs.sort((a, b) => a.idx - b.idx)
+      expandedOutputs.sort((a, b) => (a.idx - b.idx) || (a.subIdx - b.subIdx))
       failures.sort((a, b) => a.idx - b.idx)
 
-      const generatedPrompts = outputs.map((o) => o.text)
+      const generatedPrompts = expandedOutputs.map((o) => o.text)
 
       if (generatedPrompts.length === 0) {
         const detail = failures.map((f) => `#${f.idx + 1}: ${f.error}`).join('; ')
@@ -406,6 +425,25 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
             onChange={(e) => updateLocal({ max_tokens: Number(e.target.value) })}
             className="h-8 text-xs" />
         </div>
+      </div>
+
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">Prompts (N)</Label>
+          <span className="text-[10px] text-muted-foreground">max {fanoutLimits.max_variants}</span>
+        </div>
+        <Input
+          type="number"
+          min={1}
+          max={fanoutLimits.max_variants}
+          step={1}
+          value={Math.max(1, Math.min(Number(numPrompts) || 1, fanoutLimits.max_variants))}
+          onChange={(e) => setNumPrompts(clampInt(Number(e.target.value), 1, fanoutLimits.max_variants))}
+          className="h-8 text-xs"
+        />
+        <p className="text-[10px] text-muted-foreground">
+          Generate N distinct prompts from one query (JSON structured output). Extras stay at 1 each.
+        </p>
       </div>
 
       <div className="space-y-1">
@@ -631,7 +669,7 @@ export const blockDef: BlockDef = {
   canStart: true,
   inputs: [],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],
-  configKeys: ['local_settings', 'variants', 'user_prompt', 'extra_user_prompts', 'output'],
+  configKeys: ['local_settings', 'variants', 'num_prompts', 'user_prompt', 'extra_user_prompts', 'output'],
   component: PromptWriterBlock,
 }
 

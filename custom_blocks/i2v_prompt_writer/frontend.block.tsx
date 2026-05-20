@@ -65,6 +65,7 @@ interface ModelInfo {
 
 interface FanoutLimits {
   max_parallel: number
+  max_variants?: number
 }
 
 interface SettingsResponse {
@@ -101,7 +102,10 @@ interface I2VGeneratePayload {
   image_url: string
   temperature: number
   max_tokens: number
+  num_prompts?: number
 }
+
+const DEFAULT_MAX_VARIANTS = 8
 
 async function generatePrompt(payload: I2VGeneratePayload) {
   const res = await fetch(GENERATE_ENDPOINT, {
@@ -134,6 +138,8 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   const prefix = `block_${blockId}_`
   const [localSettings, setLocalSettings] = useSessionState<WriterSettings | null>(`${prefix}local_settings`, null)
   const [userPrompt, setUserPrompt] = useSessionState(`${prefix}user_prompt`, '')
+  const [numPrompts, setNumPrompts] = useSessionState<number>(`${prefix}num_prompts`, 1)
+  const [maxVariants, setMaxVariants] = useState<number>(DEFAULT_MAX_VARIANTS)
   const [output, setOutputText] = useSessionState(`${prefix}output`, '')
   const [saving, setSaving] = useState(false)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -160,6 +166,8 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
         const rawMaxParallel = Number(res?.fanout_limits?.max_parallel ?? DEFAULT_MAX_PARALLEL)
         const maxParallel = Math.max(1, Math.trunc(Number.isFinite(rawMaxParallel) ? rawMaxParallel : DEFAULT_MAX_PARALLEL))
         setFanoutLimits({ max_parallel: maxParallel })
+        const rawMaxVariants = Number(res?.fanout_limits?.max_variants ?? DEFAULT_MAX_VARIANTS)
+        setMaxVariants(Math.max(1, Math.trunc(Number.isFinite(rawMaxVariants) ? rawMaxVariants : DEFAULT_MAX_VARIANTS)))
 
         const server = res?.settings
         if (server && !localSettings) {
@@ -258,8 +266,9 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
       setProgress()
 
       // Process all images in parallel with concurrency limit
-      const prompts: Array<{ idx: number; text: string }> = []
+      const prompts: Array<{ idx: number; subIdx: number; text: string }> = []
       const failures: Array<{ idx: number; error: string }> = []
+      const safeN = Math.max(1, Math.min(Number(numPrompts) || 1, maxVariants))
 
       const workers = new Array(Math.min(maxParallel, totalJobs)).fill(null).map(async (_unused, workerIdx) => {
         for (let idx = workerIdx; idx < totalJobs; idx += maxParallel) {
@@ -271,11 +280,20 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
               image_url: runImages[idx],
               temperature: s.temperature,
               max_tokens: s.max_tokens,
+              num_prompts: safeN,
             })
             if (!res?.ok) throw new Error(res?.error ?? 'Generation failed')
-            const text = String(res.output_text || '').trim()
-            if (!text) throw new Error('Empty output from writer')
-            prompts.push({ idx, text })
+            const arr = Array.isArray(res.prompts)
+              ? (res.prompts as unknown[]).map((s) => String(s).trim()).filter(Boolean)
+              : null
+            if (arr) {
+              if (arr.length === 0) throw new Error('Empty prompts array from writer')
+              arr.forEach((text, sub) => prompts.push({ idx, subIdx: sub, text }))
+            } else {
+              const text = String(res.output_text || '').trim()
+              if (!text) throw new Error('Empty output from writer')
+              prompts.push({ idx, subIdx: 0, text })
+            }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             failures.push({ idx, error: message || 'Generation failed' })
@@ -287,7 +305,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
       })
 
       await Promise.all(workers)
-      prompts.sort((a, b) => a.idx - b.idx)
+      prompts.sort((a, b) => (a.idx - b.idx) || (a.subIdx - b.subIdx))
       failures.sort((a, b) => a.idx - b.idx)
 
       if (prompts.length === 0) {
@@ -305,8 +323,10 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
         setOutput('prompt', promptTexts)
       }
 
-      // Also forward all images so ComfyGen can pair them
-      setOutput('image', runImages.length === 1 ? runImages[0] : runImages)
+      // Forward images so downstream blocks can pair prompt[i] with image[i].
+      // When num_prompts > 1, expand each input image N times to match the prompts array length.
+      const pairedImages = prompts.map((p) => runImages[p.idx])
+      setOutput('image', pairedImages.length === 1 ? pairedImages[0] : pairedImages)
 
       if (failures.length > 0) {
         const detail = failures.map((f) => `image ${f.idx + 1}: ${f.error}`).join('; ')
@@ -355,6 +375,25 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
             onChange={(e) => updateLocal({ max_tokens: Number(e.target.value) })}
             className="h-8 text-xs" />
         </div>
+      </div>
+
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">Prompts per image (N)</Label>
+          <span className="text-[10px] text-muted-foreground">max {maxVariants}</span>
+        </div>
+        <Input
+          type="number"
+          min={1}
+          max={maxVariants}
+          step={1}
+          value={Math.max(1, Math.min(Number(numPrompts) || 1, maxVariants))}
+          onChange={(e) => setNumPrompts(clampInt(Number(e.target.value), 1, maxVariants))}
+          className="h-8 text-xs"
+        />
+        <p className="text-[10px] text-muted-foreground">
+          Generate N distinct prompts per reference image (JSON structured output).
+        </p>
       </div>
 
       <Collapsible open={systemPromptOpen} onOpenChange={setSystemPromptOpen}>
@@ -422,7 +461,7 @@ export const blockDef: BlockDef = {
   starterPrereqs: ['uploadImageToTmpfiles'],
   inputs: [{ name: 'image', kind: PORT_IMAGE, required: true }],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }, { name: 'image', kind: PORT_IMAGE }],
-  configKeys: ['local_settings', 'user_prompt', 'output'],
+  configKeys: ['local_settings', 'user_prompt', 'num_prompts', 'output'],
   component: I2VPromptWriterBlock,
 }
 

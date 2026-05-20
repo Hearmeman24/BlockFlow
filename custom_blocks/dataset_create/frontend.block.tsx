@@ -60,15 +60,30 @@ type JobSnap = {
 }
 
 function toReferenceUrls(value: unknown): string[] {
-  if (typeof value === 'string' && value.trim()) {
-    if (value.startsWith('http')) return [value.trim()]
-    return []
+  const out: string[] = []
+  const push = (v: unknown) => {
+    if (typeof v !== 'string') return
+    const t = v.trim()
+    if (!t) return
+    // accept http(s) URLs (RunPod-fetchable) and local /outputs paths
+    if (t.startsWith('http') || t.startsWith('/')) out.push(t)
+  }
+  if (typeof value === 'string') push(value)
+  else if (Array.isArray(value)) value.forEach(push)
+  // Dedupe while preserving insertion order — upstream pair-outputs (e.g. from
+  // I2V Prompt Writer with N>1) repeat the same reference once per prompt.
+  return Array.from(new Set(out))
+}
+
+function toPromptList(value: unknown): string[] {
+  if (typeof value === 'string') {
+    return value.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)
   }
   if (Array.isArray(value)) {
     return value
       .filter((v): v is string => typeof v === 'string')
       .map((v) => v.trim())
-      .filter((v) => v.startsWith('http'))
+      .filter((v) => v.length > 0)
   }
   return []
 }
@@ -105,8 +120,7 @@ function DatasetCreateBlock({
   const cancelRequestedRef = useRef(false)
 
   const referenceUrls = toReferenceUrls(inputs.image)
-  const upstreamText = typeof inputs.text === 'string' ? inputs.text : ''
-  const upstreamPromptCount = upstreamText.split('\n').filter((l) => l.trim().length > 0).length
+  const upstreamPromptCount = toPromptList(inputs.text).length
 
   // Fetch health + packs on mount
   useEffect(() => {
@@ -158,11 +172,9 @@ function DatasetCreateBlock({
       if (refs.length > MAX_REFERENCES) {
         throw new Error(`Too many reference images (${refs.length}). Max ${MAX_REFERENCES}.`)
       }
-      // Pull upstream prompts when enabled and an upstream text input is present
-      const upstreamRaw = typeof freshInputs.text === 'string' ? freshInputs.text : ''
-      const upstreamList = useUpstreamPrompts
-        ? upstreamRaw.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)
-        : []
+      // Pull upstream prompts when enabled. Accept either a single string
+      // (Prompt Writer N=1) or string[] (Prompt Writer N>1).
+      const upstreamList = useUpstreamPrompts ? toPromptList(freshInputs.text) : []
 
       if (selectedPacks.length === 0 && !customPrompt.trim() && upstreamList.length === 0) {
         throw new Error('Select a prompt pack, enter custom prompts, or enable "Use upstream prompts" with a connected Prompt Writer.')

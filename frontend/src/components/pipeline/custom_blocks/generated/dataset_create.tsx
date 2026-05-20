@@ -502,7 +502,7 @@ export const blockDef: BlockDef = {
   canStart: false,
   inputs: [
     { name: 'image', kind: PORT_IMAGE, required: true },
-    { name: 'text', kind: PORT_TEXT, required: false },
+    { name: 'text', kind: PORT_TEXT, required: false, hidden: true },
   ],
   outputs: [
     { name: 'dataset', kind: PORT_DATASET },

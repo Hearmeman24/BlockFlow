@@ -142,6 +142,8 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   const [userPrompt, setUserPrompt] = useSessionState(`${prefix}user_prompt`, '')
   const [numPrompts, setNumPrompts] = useSessionState<number>(`${prefix}num_prompts`, 1)
   const [maxVariants, setMaxVariants] = useState<number>(DEFAULT_MAX_VARIANTS)
+  // -1 means "all upstream images"; 0..N-1 picks one
+  const [targetImageIndex, setTargetImageIndex] = useSessionState<number>(`${prefix}target_image_idx`, -1)
   const [output, setOutputText] = useSessionState(`${prefix}output`, '')
   const [saving, setSaving] = useState(false)
   const [systemPromptOpen, setSystemPromptOpen] = useState(false)
@@ -253,11 +255,15 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
 
   useEffect(() => {
     registerExecute(async (freshInputs) => {
-      const runImages = asImageInputs(freshInputs?.image)
-      if (runImages.length === 0) throw new Error('Image URL is required')
+      const allImages = asImageInputs(freshInputs?.image)
+      if (allImages.length === 0) throw new Error('Image URL is required')
       if (!userPrompt.trim()) throw new Error('User prompt is required')
       if (!s.model) throw new Error('Select a writer model')
 
+      // Narrow to the selected target if user picked one; otherwise use all.
+      const runImages = (targetImageIndex >= 0 && targetImageIndex < allImages.length)
+        ? [allImages[targetImageIndex]]
+        : allImages
       const totalJobs = runImages.length
       const maxParallel = clampInt(Number(fanoutLimits.max_parallel), 1, totalJobs)
 
@@ -380,6 +386,28 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
       </div>
 
       <div className="space-y-1">
+        <Label className="text-xs">Target image</Label>
+        <Select
+          value={String(targetImageIndex)}
+          onValueChange={(v) => setTargetImageIndex(Number(v))}
+        >
+          <SelectTrigger className="w-full h-8 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="-1" className="text-xs">
+              All upstream images{inputImages.length > 0 ? ` (${inputImages.length})` : ''}
+            </SelectItem>
+            {inputImages.map((_url, i) => (
+              <SelectItem key={i} value={String(i)} className="text-xs">
+                Image {i + 1}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label className="text-xs">Prompts per image (N)</Label>
           <span className="text-[10px] text-muted-foreground">max {maxVariants}</span>
@@ -393,9 +421,18 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
           onChange={(e) => setNumPrompts(clampInt(Number(e.target.value), 1, maxVariants))}
           className="h-8 text-xs"
         />
-        <p className="text-[10px] text-muted-foreground">
-          Generate N distinct prompts per reference image (JSON structured output).
-        </p>
+        {(() => {
+          const n = Math.max(1, Math.min(Number(numPrompts) || 1, maxVariants))
+          const m = (targetImageIndex >= 0 && targetImageIndex < inputImages.length) ? 1 : inputImages.length
+          if (m === 0) {
+            return <p className="text-[10px] text-muted-foreground">Connect upstream images to begin.</p>
+          }
+          return (
+            <p className="text-[10px] text-muted-foreground">
+              {`Generating ${n} prompt${n === 1 ? '' : 's'} per image · ${m} image${m === 1 ? '' : 's'} · ${n * m} total`}
+            </p>
+          )
+        })()}
       </div>
 
       <Collapsible open={systemPromptOpen} onOpenChange={setSystemPromptOpen}>
@@ -463,7 +500,7 @@ export const blockDef: BlockDef = {
   starterPrereqs: ['uploadImageToTmpfiles'],
   inputs: [{ name: 'image', kind: PORT_IMAGE, required: true }],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }, { name: 'image', kind: PORT_IMAGE }],
-  configKeys: ['local_settings', 'user_prompt', 'num_prompts', 'output'],
+  configKeys: ['local_settings', 'user_prompt', 'num_prompts', 'target_image_idx', 'output'],
   component: I2VPromptWriterBlock,
 }
 

@@ -29,6 +29,11 @@ export interface PortDef {
    *  Required inputs that can't be satisfied show a warning and block execution.
    *  Optional inputs lock the local field when provided, fall back to local state when absent. */
   required?: boolean
+  /** Hide this input from the block-card header source selector. The port still
+   *  exists for data routing — auto-resolution picks the most recent matching
+   *  upstream producer. Use for ports that are wired via an in-block control
+   *  (toggle/dropdown) rather than the header. */
+  hidden?: boolean
 }
 
 // ---- Block Component Interface ----

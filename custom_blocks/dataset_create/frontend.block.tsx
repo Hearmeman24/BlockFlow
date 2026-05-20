@@ -183,8 +183,9 @@ function DatasetCreateBlock({
       // Pull upstream prompts when enabled. Accept either a single string
       // (Prompt Writer N=1) or string[] (Prompt Writer N>1).
       const upstreamList = useUpstreamPrompts ? toPromptList(freshInputs.text) : []
+      const customLines = customPrompt.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)
 
-      if (selectedPacks.length === 0 && !customPrompt.trim() && upstreamList.length === 0) {
+      if (selectedPacks.length === 0 && customLines.length === 0 && upstreamList.length === 0) {
         throw new Error('Select a prompt pack, enter custom prompts, or enable "Use upstream prompts" with a connected Prompt Writer.')
       }
 
@@ -193,12 +194,15 @@ function DatasetCreateBlock({
         throw new Error('RunPod API key not detected in .env — enable Override and paste a key.')
       }
 
-      const customPrompts = [
-        ...customPrompt.split('\n').map((l) => l.trim()).filter((l) => l.length > 0),
-        ...upstreamList,
-      ]
+      // Compute image_count and prompts from `freshInputs` to avoid stale-
+      // closure values (the render-derived `effectiveImageCount` may lag the
+      // upstream Prompt Writer's output by one render at execute time).
+      const customPrompts = [...customLines, ...upstreamList]
+      const explicitTotal = customPrompts.length
+      const finalImageCount = explicitTotal > 0 ? explicitTotal : imageCount
+      const finalPackIds = explicitTotal > 0 ? [] : selectedPacks
 
-      setStatusMessage(`Submitting dataset job (${imageCount} images)...`)
+      setStatusMessage(`Submitting dataset job (${finalImageCount} images)...`)
       cancelRequestedRef.current = false
 
       const startRes = await fetch('/api/blocks/dataset_create/run', {
@@ -208,8 +212,8 @@ function DatasetCreateBlock({
           name,
           quality,
           aspect_ratios: aspectRatios,
-          image_count: effectiveImageCount,
-          pack_ids: hasExplicitPrompts ? [] : selectedPacks,
+          image_count: finalImageCount,
+          pack_ids: finalPackIds,
           custom_prompts: customPrompts,
           reference_image_urls: refs,
           runpod_api_key: apiKey || undefined,

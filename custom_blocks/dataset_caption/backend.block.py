@@ -32,14 +32,61 @@ router = APIRouter()
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 DATASETS_DIR = config.LOCAL_OUTPUT_DIR / "datasets"
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are writing a single-sentence caption for a LoRA training dataset. "
-    "Describe ONLY what is visible: clothing, pose, location, lighting, background. "
-    "Do NOT describe the subject's identity (no names, no hair colour, no facial features) "
-    "— the trigger word handles identity. Keep it to one dense sentence, no preamble, no quotes, "
-    "no markdown."
-)
-DEFAULT_USER_PROMPT = "Caption this image for LoRA training. One sentence."
+DEFAULT_SYSTEM_PROMPT_TEMPLATE = """You are a Senior Continuity Supervisor for a film production. Your job is to generate training captions for a specific Character LoRA.
+
+Your objective is to describe the **SCENE, ACTION, AND WARDROBE** in extreme detail, while keeping the **SUBJECT DESCRIPTION** generic so the AI learns the character's likeness implicitly.
+
+Start every caption with your trigger word, followed by the class descriptor (e.g., "{trigger_word}, a woman...").
+
+### 1. SUBJECT HANDLING (The "Name + Class" Rule)
+* **Structure:** You must ALWAYS pair the trigger word with a class.
+    * *Correct:* "{trigger_word}, a woman standing..."
+    * *Correct:* "{trigger_word}, a subject sitting..."
+    * *Incorrect:* "{trigger_word} standing..." (Too vague).
+* **Identity Protection (CRITICAL):**
+    * **FORBIDDEN:** Do NOT describe immutable traits (e.g., "blue eyes," "small nose," "blonde hair," "mole on cheek"). Let the LoRA learn these.
+    * **EXCEPTION:** Only describe features if they vary from the norm (e.g., "wearing red lipstick," "wet hair," "face covered in dirt").
+
+### 2. WARDROBE & ACCESSORIES (High Priority)
+* You must "strip" the outfit from the identity. Describe clothing materials, cuts, and colors precisely.
+* *Example:* Instead of "wearing a dress," write "wearing a sleeveless red silk evening gown with a high slit."
+* *Example:* "wearing a silver chain necklace," "wearing oversized sunglasses."
+
+### 3. POSE & ACTION
+* Describe the body language to prevent the model from "freezing" the character in one pose.
+* *Examples:* "standing with arms crossed," "sitting on a barstool looking over shoulder," "running towards camera," "laughing with head thrown back."
+
+### 4. ENVIRONMENT & LIGHTING
+* Describe the setting to separate it from the character.
+* *Examples:* "in a cluttered kitchen," "on a busy city street," "against a plain white studio wall."
+* *Lighting:* "soft window light," "harsh cinematic lighting," "neon club lights."
+
+### OUTPUT FORMAT
+* You must return the caption only, no other text or formatting, thinking processes or any metadata, no explanation or any other text, just the caption.
+* Use natural, flowing phrases.
+
+### EXAMPLES
+
+**Example 1 (Standard Look)**
+{trigger_word}, a woman standing in a garden, arms resting on hips, smiling at the camera, wearing a floral sundress with spaghetti straps, soft natural daylight, blurred green foliage in background.
+
+**Example 2 (Unique Outfit/Action)**
+{trigger_word}, a woman crouching down to tie her shoe, profile view, wearing a thick grey hoodie and black running shorts, white sneakers, hair tied back in a messy ponytail (temporary style), sweat on forehead, gym environment, fluorescent overhead lighting.
+
+**Example 3 (Close Up)**
+{trigger_word}, a woman, extreme close-up on face, applying mascara, mouth slightly open, hand holding a makeup brush, bathroom setting, mirror reflection, bright vanity lights."""
+
+DEFAULT_USER_PROMPT_TEMPLATE = "Caption this image using the trigger word: {trigger_word}"
+
+
+def _render_default_system_prompt(trigger_word: str) -> str:
+    tw = trigger_word.strip() or "<TRIGGER>"
+    return DEFAULT_SYSTEM_PROMPT_TEMPLATE.format(trigger_word=tw)
+
+
+def _render_default_user_prompt(trigger_word: str) -> str:
+    tw = trigger_word.strip() or "<TRIGGER>"
+    return DEFAULT_USER_PROMPT_TEMPLATE.format(trigger_word=tw)
 
 # ---------------------------------------------------------------------------
 # Job state
@@ -164,7 +211,7 @@ def _run_captioning(job_id: str, dataset_dir: Path, model: str,
         completed = 0
         failed = 0
         errors: list[str] = []
-        prefix = (trigger_word.strip() + ", ") if trigger_word.strip() else ""
+        tw = trigger_word.strip()
 
         def _one(img: Path) -> tuple[Path, str | None, str | None]:
             try:
@@ -174,7 +221,13 @@ def _run_captioning(job_id: str, dataset_dir: Path, model: str,
                 caption = _caption_one(model, system_prompt, user_prompt, img, max_tokens, temperature)
                 if not caption:
                     return img, None, "empty caption"
-                final = prefix + caption
+                # The default system prompt instructs the model to start the
+                # caption with the trigger word itself. Only prepend if the
+                # model forgot (e.g. user passed a custom prompt that didn't
+                # require it) — avoids double trigger like "tw, tw, ...".
+                final = caption
+                if tw and not caption.lower().startswith(tw.lower() + ",") and not caption.lower().startswith(tw.lower() + " "):
+                    final = f"{tw}, {caption}"
                 img.with_suffix(".txt").write_text(final + "\n", encoding="utf-8")
                 return img, final, None
             except Exception as exc:
@@ -211,8 +264,8 @@ def health() -> JSONResponse:
     return JSONResponse({
         "ok": True,
         "openrouter_key_present": bool(config.OPENROUTER_API_KEY),
-        "default_system_prompt": DEFAULT_SYSTEM_PROMPT,
-        "default_user_prompt": DEFAULT_USER_PROMPT,
+        "default_system_prompt": _render_default_system_prompt(""),
+        "default_user_prompt": _render_default_user_prompt(""),
     })
 
 
@@ -243,10 +296,10 @@ async def run(request: Request) -> JSONResponse:
     trigger_word = str(body.get("trigger_word") or "").strip()
     overwrite = bool(body.get("overwrite", False))
     concurrency = int(body.get("concurrency") or 4)
-    max_tokens = int(body.get("max_tokens") or 2000)
-    temperature = float(body.get("temperature", 0.4))
-    system_prompt = str(body.get("system_prompt") or DEFAULT_SYSTEM_PROMPT)
-    user_prompt = str(body.get("user_prompt") or DEFAULT_USER_PROMPT)
+    max_tokens = int(body.get("max_tokens") or 4096)
+    temperature = float(body.get("temperature", 0.2))
+    system_prompt = str(body.get("system_prompt") or "").strip() or _render_default_system_prompt(trigger_word)
+    user_prompt = str(body.get("user_prompt") or "").strip() or _render_default_user_prompt(trigger_word)
     dataset_spec = body.get("dataset") if isinstance(body.get("dataset"), dict) else None
     dataset_folder = body.get("dataset_folder")
 

@@ -61,6 +61,7 @@ export function ChainRenderer({
               {isTrunk && insertTypes.length > 0 ? (
                 <InsertBlockConnector
                   validTypes={insertTypes}
+                  upstreamType={index > 0 ? chain[index - 1]?.type : ancestors[ancestors.length - 1]?.type}
                   onInsert={(type) => addBlock(type, globalIndex)}
                 />
               ) : (
@@ -99,6 +100,7 @@ export function ChainRenderer({
             {isTrunk && insertTypes.length > 0 ? (
               <InsertBlockConnector
                 validTypes={insertTypes}
+                upstreamType={index > 0 ? beforeFork[index - 1]?.type : ancestors[ancestors.length - 1]?.type}
                 onInsert={(type) => addBlock(type, globalIndex)}
               />
             ) : (
@@ -270,6 +272,7 @@ function ForkLanes({
             <ForkRailSegment hasAbove dashed />
             <AddBlockButton
               validTypes={validTypesForSecondBranch}
+              upstreamType={forkBlock.type}
               onAdd={(type) => {
                 const newBranchIndex = branches.length
                 addBranch(forkBlock.id)
@@ -353,6 +356,7 @@ function BranchChain({
     return (
       <AddBlockButton
         validTypes={validTypes}
+        upstreamType={ancestors[ancestors.length - 1]?.type}
         onAdd={(type) => addBlockToBranch(forkBlockId, branchIndex, type)}
       />
     )
@@ -446,7 +450,11 @@ function TrailingButtons({
         <BlockConnector />
         <div className="flex items-center gap-2 shrink-0">
           {validTypes.length > 0 && (
-            <AddBlockButton validTypes={validTypes} onAdd={(type) => addBlock(type)} />
+            <AddBlockButton
+              validTypes={validTypes}
+              upstreamType={chain[chain.length - 1]?.type}
+              onAdd={(type) => addBlock(type)}
+            />
           )}
           {lastForkable && (
             <ForkButton onFork={() => addBranch(lastForkable.id)} disabled={isRunning} />
@@ -482,6 +490,7 @@ function TrailingBranchButtons({
           {validTypes.length > 0 && (
             <AddBlockButton
               validTypes={validTypes}
+              upstreamType={chain[chain.length - 1]?.type}
               onAdd={(type) => addBlockToBranch(forkBlockId, branchIndex, type)}
             />
           )}

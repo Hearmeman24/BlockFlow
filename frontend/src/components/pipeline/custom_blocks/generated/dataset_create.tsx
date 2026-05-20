@@ -549,6 +549,8 @@ export const blockDef: BlockDef = {
     { name: 'dataset', kind: PORT_DATASET },
     { name: 'images', kind: PORT_IMAGE },
   ],
+  suggestedUpstream: ['uploadImageToTmpfiles', 'i2vPromptWriter', 'promptWriter'],
+  suggestedDownstream: ['datasetCaption', 'loraTrain', 'imageViewer'],
   configKeys: [
     'name',
     'quality',

@@ -665,6 +665,7 @@ export const blockDef: BlockDef = {
   description: 'Generate an image or video prompt using an LLM',
   size: 'lg',
   canStart: true,
+  suggestedDownstream: ['datasetCreate', 'comfyGen'],
   inputs: [],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],
   configKeys: ['local_settings', 'variants', 'num_prompts', 'user_prompt', 'extra_user_prompts', 'output'],

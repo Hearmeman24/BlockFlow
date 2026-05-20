@@ -165,6 +165,7 @@ export const blockDef: BlockDef = {
   description: 'Load prompts from .txt files — one prompt per line',
   size: 'md',
   canStart: true,
+  suggestedDownstream: ['datasetCreate', 'comfyGen', 'promptWriter'],
   inputs: [],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],
   configKeys: ['prompts', 'file_names'],

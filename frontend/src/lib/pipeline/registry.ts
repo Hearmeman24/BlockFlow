@@ -106,6 +106,13 @@ export interface NodeTypeDef {
   canStart: boolean
   inputs: PortDef[]
   outputs: PortDef[]
+  /** Block types that typically feed THIS block. Surfaced as "Suggested" in the
+   *  add-block picker when this block is the one being added — informational
+   *  only, not auto-inserted. Use slugs from `BlockDef.type`. */
+  suggestedUpstream?: string[]
+  /** Block types that typically come AFTER this block. Surfaced as "Suggested"
+   *  in the add-block picker when this block is the upstream. */
+  suggestedDownstream?: string[]
 }
 
 // ---- Block Definition (self-contained: metadata + component) ----

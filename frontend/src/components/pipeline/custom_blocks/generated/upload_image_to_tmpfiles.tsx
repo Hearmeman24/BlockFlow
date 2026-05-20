@@ -415,6 +415,7 @@ export const blockDef: BlockDef = {
   description: 'Upload one or more images (local save or tmpfiles.org)',
   size: 'md',
   canStart: true,
+  suggestedDownstream: ['i2vPromptWriter', 'datasetCreate', 'comfyGen', 'imageViewer'],
   inputs: [{ name: 'text', kind: PORT_TEXT, required: false }],
   outputs: [
     { name: 'image', kind: PORT_IMAGE },

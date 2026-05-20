@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -7,14 +8,34 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import type { NodeTypeDef } from '@/lib/pipeline/registry'
+import { getNodeType, type NodeTypeDef } from '@/lib/pipeline/registry'
 
 interface AddBlockButtonProps {
   validTypes: NodeTypeDef[]
   onAdd: (type: string) => void
+  /** Type of the immediately upstream block, if any. Used to surface
+   *  bidirectional "Suggested" hints from `suggestedUpstream`/`suggestedDownstream`. */
+  upstreamType?: string
 }
 
-export function AddBlockButton({ validTypes, onAdd }: AddBlockButtonProps) {
+function isSuggested(candidate: NodeTypeDef, upstreamType: string | undefined): boolean {
+  if (!upstreamType) return false
+  if (candidate.suggestedUpstream?.includes(upstreamType)) return true
+  const upstreamDef = getNodeType(upstreamType)
+  if (upstreamDef?.suggestedDownstream?.includes(candidate.type)) return true
+  return false
+}
+
+export function AddBlockButton({ validTypes, onAdd, upstreamType }: AddBlockButtonProps) {
+  const ordered = useMemo(() => {
+    const decorated = validTypes.map((def) => ({ def, suggested: isSuggested(def, upstreamType) }))
+    // Suggested first, otherwise preserve original order
+    return decorated.sort((a, b) => {
+      if (a.suggested === b.suggested) return 0
+      return a.suggested ? -1 : 1
+    })
+  }, [validTypes, upstreamType])
+
   if (validTypes.length === 0) return null
 
   return (
@@ -32,10 +53,17 @@ export function AddBlockButton({ validTypes, onAdd }: AddBlockButtonProps) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
-          {validTypes.map((def) => (
+          {ordered.map(({ def, suggested }) => (
             <DropdownMenuItem key={def.type} onClick={() => onAdd(def.type)}>
-              <div className="flex flex-col">
-                <span className="font-medium">{def.label}</span>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium">{def.label}</span>
+                  {suggested && (
+                    <span className="rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] px-1 py-0 leading-tight font-medium uppercase tracking-wider">
+                      Suggested
+                    </span>
+                  )}
+                </div>
                 <span className="text-xs text-muted-foreground">{def.description}</span>
               </div>
             </DropdownMenuItem>

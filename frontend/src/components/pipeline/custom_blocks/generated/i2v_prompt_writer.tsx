@@ -492,6 +492,8 @@ export const blockDef: BlockDef = {
   description: 'Generate a video prompt from an image using a vision LLM',
   size: 'lg',
   canStart: true,
+  suggestedUpstream: ['uploadImageToTmpfiles', 'datasetCreate'],
+  suggestedDownstream: ['datasetCreate', 'comfyGen'],
   starterPrereqs: ['uploadImageToTmpfiles'],
   inputs: [{ name: 'image', kind: PORT_IMAGE, required: true }],
   outputs: [{ name: 'prompt', kind: PORT_TEXT }],

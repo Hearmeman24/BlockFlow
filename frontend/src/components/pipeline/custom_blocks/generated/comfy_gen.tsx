@@ -2214,6 +2214,8 @@ export const blockDef: BlockDef = {
   description: 'Run ComfyUI workflows on RunPod serverless',
   size: 'huge',
   canStart: true,
+  suggestedUpstream: ['promptWriter', 'i2vPromptWriter', 'uploadImageToTmpfiles', 'loraTrain'],
+  suggestedDownstream: ['imageViewer', 'videoViewer'],
   iterator: true,
   inputs: [
     { name: 'image', kind: PORT_IMAGE, required: false },

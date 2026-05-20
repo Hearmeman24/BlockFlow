@@ -234,6 +234,7 @@ export const blockDef: BlockDef = {
   description: 'View image or dataset outputs inline',
   size: 'lg',
   canStart: false,
+  suggestedUpstream: ['comfyGen', 'datasetCreate', 'uploadImageToTmpfiles'],
   inputs: [
     { name: 'image', kind: PORT_IMAGE, required: false },
     { name: 'dataset', kind: PORT_DATASET, required: false },

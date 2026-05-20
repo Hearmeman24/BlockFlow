@@ -543,6 +543,7 @@ export const blockDef: BlockDef = {
     { name: 'loras', kind: PORT_LORAS },
     { name: 'logs', kind: PORT_TEXT },
   ],
+  suggestedUpstream: ['datasetCaption', 'datasetCreate'],
   configKeys: [
     'model',
     'trigger_word',

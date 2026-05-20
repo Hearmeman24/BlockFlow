@@ -1,7 +1,7 @@
 {
-  "id": "ugc_v1",
-  "title": "UGC Influencer (v1)",
-  "description": "23 UGC-style influencer prompts: selfies, candid pose framings, lighting variations.",
+  "id": "UGC_Prompts",
+  "title": "UGC_Prompts",
+  "description": "",
   "category": "scene",
   "mode": "random",
   "tags": [],

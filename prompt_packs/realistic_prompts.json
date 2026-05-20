@@ -1,7 +1,7 @@
 {
-  "id": "realistic_v1",
-  "title": "Realistic iPhone Portraits (v1)",
-  "description": "47 hyper-realistic iPhone-shot portrait prompts spanning casual, summer, cafe, beach and indoor scenes.",
+  "id": "realistic_prompts",
+  "title": "realistic_prompts",
+  "description": "",
   "category": "scene",
   "mode": "random",
   "tags": [],

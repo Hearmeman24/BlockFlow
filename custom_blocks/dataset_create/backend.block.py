@@ -533,8 +533,8 @@ async def run(request: Request) -> JSONResponse:
     for ar in aspect_ratios:
         if ar not in ALLOWED_ASPECT:
             return JSONResponse({"ok": False, "error": f"unsupported aspect_ratio {ar!r}"}, status_code=400)
-    if image_count < 1 or image_count > 200:
-        return JSONResponse({"ok": False, "error": "image_count must be 1..200"}, status_code=400)
+    if image_count < 1 or image_count > 1000:
+        return JSONResponse({"ok": False, "error": "image_count must be 1..1000"}, status_code=400)
     if not isinstance(references, list) or not references:
         return JSONResponse({"ok": False, "error": "reference_image_urls required (at least 1)"}, status_code=400)
     if len(references) > MAX_REFERENCE_IMAGES:

@@ -105,9 +105,8 @@ function DatasetCreateBlock({
   const [selectedPacks, setSelectedPacks] = useSessionState<string[]>(`block_${blockId}_packs`, [])
   const [overrideKey, setOverrideKey] = useSessionState<boolean>(`block_${blockId}_override_key`, false)
   const [apiKeyOverride, setApiKeyOverride] = useState<string>('')
-  const [concurrency, setConcurrency] = useSessionState<number>(`block_${blockId}_concurrency`, 10)
-  const [seed, setSeed] = useSessionState<string>(`block_${blockId}_seed`, '')
   const [customPrompt, setCustomPrompt] = useSessionState<string>(`block_${blockId}_custom_prompt`, '')
+  const [customPromptsOpen, setCustomPromptsOpen] = useState<boolean>(false)
   const [useUpstreamPrompts, setUseUpstreamPrompts] = useSessionState<boolean>(`block_${blockId}_use_upstream_prompts`, false)
 
   const [packs, setPacks] = useState<PromptPack[]>([])
@@ -121,6 +120,15 @@ function DatasetCreateBlock({
 
   const referenceUrls = toReferenceUrls(inputs.image)
   const upstreamPromptCount = toPromptList(inputs.text).length
+  const upstreamSynced = useUpstreamPrompts && upstreamPromptCount > 0
+  const customPromptCount = customPrompt.split('\n').filter((l) => l.trim().length > 0).length
+  const hasExplicitPrompts = upstreamSynced || customPromptCount > 0
+
+  // When explicit prompts are present (upstream or custom), count is derived
+  // from them — one image per prompt. Otherwise (pack-only mode) the user
+  // picks how many to sample from the pool via the slider.
+  const derivedImageCount = (upstreamSynced ? upstreamPromptCount : 0) + customPromptCount
+  const effectiveImageCount = hasExplicitPrompts ? derivedImageCount : imageCount
 
   // Fetch health + packs on mount
   useEffect(() => {
@@ -200,13 +208,11 @@ function DatasetCreateBlock({
           name,
           quality,
           aspect_ratios: aspectRatios,
-          image_count: imageCount,
-          pack_ids: selectedPacks,
+          image_count: effectiveImageCount,
+          pack_ids: hasExplicitPrompts ? [] : selectedPacks,
           custom_prompts: customPrompts,
           reference_image_urls: refs,
           runpod_api_key: apiKey || undefined,
-          concurrency,
-          seed: seed.trim() ? Number(seed) : undefined,
         }),
       })
       const startData = await startRes.json()
@@ -315,28 +321,33 @@ function DatasetCreateBlock({
       </div>
 
       {/* Image count */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <Label className="text-[11px]">Image count</Label>
-          <span className="text-[11px] text-muted-foreground font-mono">{imageCount}</span>
+      {/* Image count — only when sampling from packs. With explicit prompts
+          (upstream or custom) the count is one image per prompt. */}
+      {hasExplicitPrompts ? (
+        <div className="rounded border border-border/60 px-2 py-1.5">
+          <p className="text-[11px]">
+            <span className="font-medium">{derivedImageCount}</span>
+            <span className="text-muted-foreground">
+              {' image'}{derivedImageCount === 1 ? '' : 's'} — one per prompt
+              {upstreamSynced ? ` (${upstreamPromptCount} upstream${customPromptCount > 0 ? ` + ${customPromptCount} custom` : ''})` : ` (${customPromptCount} custom)`}
+            </span>
+          </p>
         </div>
-        <Slider min={1} max={100} step={1} value={[imageCount]} onValueChange={(v) => setImageCount(v[0])} />
-      </div>
-
-      {/* Concurrency */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <Label className="text-[11px]">Concurrency</Label>
-          <span className="text-[11px] text-muted-foreground font-mono">{concurrency}</span>
+      ) : (
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <Label className="text-[11px]">Image count (sampled from packs)</Label>
+            <span className="text-[11px] text-muted-foreground font-mono">{imageCount}</span>
+          </div>
+          <Slider
+            min={1}
+            max={100}
+            step={1}
+            value={[imageCount]}
+            onValueChange={(v) => setImageCount(v[0])}
+          />
         </div>
-        <Slider min={1} max={10} step={1} value={[concurrency]} onValueChange={(v) => setConcurrency(v[0])} />
-      </div>
-
-      {/* Seed */}
-      <div className="space-y-1">
-        <Label htmlFor={`${blockId}-seed`} className="text-[11px]">Seed (optional, for reproducible prompt sampling)</Label>
-        <Input id={`${blockId}-seed`} value={seed} onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ''))} placeholder="random" className="h-7 text-xs font-mono" />
-      </div>
+      )}
 
       {/* Prompt packs */}
       <div className="space-y-1">
@@ -347,17 +358,17 @@ function DatasetCreateBlock({
         {packs.length === 0 ? (
           <p className="text-[10px] text-muted-foreground italic">No packs found in ./prompt_packs/</p>
         ) : (
-          <div className="space-y-1 max-h-[180px] overflow-y-auto rounded border border-border/60 p-1.5">
+          // 4 rows visible (~26px each incl. padding) + 4px breathing room
+          <div className="space-y-0.5 max-h-[112px] overflow-y-auto rounded border border-border/60 p-1">
             {packs.map((p) => {
               const active = selectedPacks.includes(p.id)
               return (
-                <div key={p.id} className={`group flex items-center justify-between gap-1 rounded p-1.5 transition-colors ${active ? 'bg-primary/10' : 'hover:bg-muted/30'}`}>
+                <div key={p.id} className={`group flex items-center gap-1 rounded px-1.5 py-1 transition-colors ${active ? 'bg-primary/10' : 'hover:bg-muted/30'}`}>
                   <button type="button" onClick={() => togglePack(p.id)} className="flex-1 min-w-0 text-left">
-                    <p className="text-[11px] font-medium truncate">{p.title}</p>
-                    <p className="text-[9px] text-muted-foreground truncate">{p.description}</p>
+                    <p className="text-[11px] font-medium truncate font-mono">{p.id}.json</p>
                   </button>
-                  <Badge variant="outline" className="text-[9px] h-4 px-1">{p.prompt_count}</Badge>
-                  <button type="button" onClick={() => showPreview(p)} className="text-[9px] text-muted-foreground hover:text-foreground px-1">preview</button>
+                  <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0">{p.prompt_count}</Badge>
+                  <button type="button" onClick={() => showPreview(p)} className="text-[9px] text-muted-foreground hover:text-foreground px-1 shrink-0">preview</button>
                 </div>
               )
             })}
@@ -396,16 +407,30 @@ function DatasetCreateBlock({
         </div>
       </div>
 
-      {/* Custom prompts */}
+      {/* Custom prompts — collapsed by default */}
       <div className="space-y-1">
-        <Label htmlFor={`${blockId}-custom`} className="text-[11px]">Custom prompts (one per line, optional)</Label>
-        <textarea
-          id={`${blockId}-custom`}
-          value={customPrompt}
-          onChange={(e) => setCustomPrompt(e.target.value)}
-          placeholder="Add ad-hoc prompts here..."
-          className="w-full min-h-[60px] text-[11px] rounded border border-border/60 bg-background p-2 font-mono"
-        />
+        <button
+          type="button"
+          onClick={() => setCustomPromptsOpen((v) => !v)}
+          className="flex w-full items-center justify-between text-[11px] hover:text-foreground/80"
+        >
+          <span className="flex items-center gap-1">
+            <span className="text-[10px]">{customPromptsOpen ? '▾' : '▸'}</span>
+            <span className="font-medium">Custom prompts</span>
+            {customPromptCount > 0 && (
+              <span className="text-[10px] text-muted-foreground">— {customPromptCount} line{customPromptCount === 1 ? '' : 's'}</span>
+            )}
+          </span>
+        </button>
+        {customPromptsOpen && (
+          <textarea
+            id={`${blockId}-custom`}
+            value={customPrompt}
+            onChange={(e) => setCustomPrompt(e.target.value)}
+            placeholder="Add ad-hoc prompts here, one per line..."
+            className="w-full min-h-[60px] text-[11px] rounded border border-border/60 bg-background p-2 font-mono"
+          />
+        )}
       </div>
 
       {/* Reference images */}
@@ -525,8 +550,6 @@ export const blockDef: BlockDef = {
     'image_count',
     'packs',
     'override_key',
-    'concurrency',
-    'seed',
     'custom_prompt',
     'use_upstream_prompts',
   ],

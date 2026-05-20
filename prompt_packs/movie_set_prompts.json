@@ -1,0 +1,22 @@
+{
+  "id": "movie_set_prompts",
+  "title": "movie_set_prompts",
+  "description": "",
+  "category": "scene",
+  "mode": "random",
+  "tags": [],
+  "prompts": [
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is wearing dark, tattered resistance clothing and holding a sci-fi prop weapon, crouching behind cover next to Keanu Reeves as Neo in the bullet-ridden government lobby set of The Matrix.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is dressed in 1912 steerage attire—a rough wool jacket, collarless shirt, and a tweed flat cap—leaning against the ship's railing next to Leonardo DiCaprio as Jack Dawson, looking out at the ocean on the deck set of Titanic.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is wearing a casual, retro 90s bowling shirt, sitting in a booth at the Hawthorne Grill diner and mid-conversation with John Travolta and Samuel L. Jackson, who are in their black suits, in a scene for Pulp Fiction.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is dressed in a rough, dust-covered Roman tunic and leather armor, holding a shield and standing shoulder-to-shoulder with Russell Crowe as Maximus on the sandy Colosseum arena floor set of Gladiator.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is wearing a rugged khaki denim shirt, cargo pants, and hiking boots, looking apprehensively into the dense foliage next to Sam Neill as Dr. Alan Grant on the jungle set of Jurassic Park.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is dressed as a GCPD police officer in uniform, looking tense while standing guard in the holding cell area near Heath Ledger, who is in full Joker makeup and costume behind bars, on the set of The Dark Knight.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is wearing dusty 1930s work clothes, a canvas shirt and leather vest, holding a shovel and looking at a map next to Harrison Ford as Indiana Jones at an excavation site set for Raiders of the Lost Ark.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is wearing a 1970s army surplus jacket and bell-bottom jeans, sitting on the bus stop bench and listening intently to Tom Hanks as Forrest Gump tell his story on the set of Forrest Gump.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is wearing a green naval flight suit with patches, holding a flight helmet under his arm and walking with swagger alongside Tom Cruise as Maverick on the aircraft carrier tarmac set of Top Gun.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is shirtless, wearing grimy work pants with sweat and fake bruises on his face, standing in the crowded, chanting circle next to Brad Pitt as Tyler Durden in the basement set of Fight Club.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is wearing a 1950s style letterman jacket and denim jeans, looking awestruck at the DeLorean time machine parked next to Michael J. Fox in his 1955 outfit on the Hill Valley town square set of Back to the Future.",
+    "A smartphone image shot on an iPhone 15 pro, all of the features of the person from the reference image MUST be maintained in the final image. He is wearing a vintage 1940s pinstripe suit, looking nervous and respectfully kissing the hand of Marlon Brando as Don Vito Corleone in the dimly lit study set of The Godfather."
+  ]
+}

@@ -83,6 +83,38 @@ function DatasetCaptionBlock({ blockId, inputs, setOutput, registerExecute, setS
     return Array.isArray(upstreamDataset.images) ? upstreamDataset.images.length : 0
   }, [upstreamDataset])
 
+  // Edit-time emit: surface the currently-selected dataset to downstream blocks
+  // (e.g. LoRA Train) so they auto-match without the user re-picking it. If
+  // upstream provided a dataset, just forward it; otherwise build a dataset
+  // value from the chosen on-disk folder.
+  useEffect(() => {
+    if (upstreamDataset) {
+      setOutput('dataset', upstreamDataset)
+      return
+    }
+    if (!datasetFolder) {
+      setOutput('dataset', undefined)
+      return
+    }
+    const entry = datasets.find((d) => d.id === datasetFolder)
+    // Synthesize at least one image URL — lora_train's backend resolves the
+    // folder by parsing the first /outputs/datasets/<folder>/... path.
+    const sampleImages = entry?.thumb_urls && entry.thumb_urls.length > 0
+      ? entry.thumb_urls
+      : [`/outputs/datasets/${datasetFolder}/__placeholder__`]
+    setOutput('dataset', {
+      kind: 'dataset',
+      id: datasetFolder,
+      name: datasetFolder,
+      images: sampleImages,
+      manifest: {
+        provider: 'on-disk',
+        count: entry?.image_count ?? sampleImages.length,
+        caption_count: entry?.caption_count ?? 0,
+      },
+    })
+  }, [upstreamDataset, datasetFolder, datasets, setOutput])
+
   useEffect(() => {
     fetch('/api/blocks/dataset_caption/health').then(r => r.json()).then(setHealth).catch(() => {})
     fetch('/api/blocks/dataset_caption/datasets').then(r => r.json()).then(d => {

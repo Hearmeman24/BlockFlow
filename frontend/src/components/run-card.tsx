@@ -76,9 +76,9 @@ function classifyUrl(url: string): 'video' | 'audio' | 'image' | 'file' {
   return 'file'
 }
 
-/** Find the primary artifact from block results (scan in reverse: video > image > prompt > any). */
+/** Find the primary artifact from block results (scan in reverse: dataset > video > image > prompt > any). */
 function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unknown; label: string; blockIndex: number } | null {
-  const priority = ['video', 'image', 'prompt']
+  const priority = ['dataset', 'video', 'image', 'prompt']
   for (const kind of priority) {
     for (let i = results.length - 1; i >= 0; i--) {
       for (const [, out] of Object.entries(results[i].outputs)) {
@@ -374,6 +374,30 @@ function ArtifactPreview({ kind, value, galleryIndex, onGalleryIndexChange }: { 
           </pre>
         </details>
       )
+    case 'dataset': {
+      const ds = (value && typeof value === 'object') ? (value as { name?: string; id?: string; images?: unknown; manifest?: Record<string, unknown> }) : null
+      const images = Array.isArray(ds?.images) ? ds!.images.filter((v): v is string => typeof v === 'string') : []
+      const thumbs = images.slice(0, 4)
+      const dsName = ds?.name || ds?.id || 'Dataset'
+      const provider = (ds?.manifest as { provider?: string } | undefined)?.provider
+      if (thumbs.length === 0) return <JsonArtifact value={value} />
+      return (
+        <div className="space-y-2">
+          <div className="relative grid grid-cols-2 gap-0.5 rounded overflow-hidden border border-border/40">
+            {thumbs.map((u, i) => (
+              <img key={i} src={u} alt={`${dsName} ${i + 1}`} className="aspect-square w-full object-cover bg-muted/30" />
+            ))}
+            <span className="absolute top-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-white font-medium">
+              {images.length} imgs
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-medium truncate">{dsName}</span>
+            {provider && <Badge variant="secondary" className="text-[9px] shrink-0">{provider}</Badge>}
+          </div>
+        </div>
+      )
+    }
     case 'image':
       if (Array.isArray(value)) {
         const entries = value.filter((v): v is string => typeof v === 'string')

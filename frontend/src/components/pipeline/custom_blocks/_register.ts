@@ -3,6 +3,7 @@
 import { registerBlockDef } from '@/lib/pipeline/registry'
 import { blockDef as civitaiShareBlockDef } from './generated/civitai_share'
 import { blockDef as comfyGenBlockDef } from './generated/comfy_gen'
+import { blockDef as datasetCreateBlockDef } from './generated/dataset_create'
 import { blockDef as generationBlockDef } from './generated/generation'
 import { blockDef as hitlBlockDef } from './generated/hitl'
 import { blockDef as i2vPromptWriterBlockDef } from './generated/i2v_prompt_writer'
@@ -22,6 +23,7 @@ import { blockDef as wan22ImageToVideoBlockDef } from './generated/wan_22_image_
 
 registerBlockDef(civitaiShareBlockDef)
 registerBlockDef(comfyGenBlockDef)
+registerBlockDef(datasetCreateBlockDef)
 registerBlockDef(generationBlockDef)
 registerBlockDef(hitlBlockDef)
 registerBlockDef(i2vPromptWriterBlockDef)

@@ -14,11 +14,14 @@ import {
 
 const UPLOAD_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload'
 const SAVE_LOCAL_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/save-local'
+const IMGBB_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload-imgbb'
 
-type UploadMode = 'local' | 'tmpfiles'
+type UploadMode = 'local' | 'tmpfiles' | 'imgbb'
 
 async function uploadImageFile(file: File, mode: UploadMode) {
-  const endpoint = mode === 'local' ? SAVE_LOCAL_ENDPOINT : UPLOAD_ENDPOINT
+  const endpoint = mode === 'local' ? SAVE_LOCAL_ENDPOINT
+    : mode === 'imgbb' ? IMGBB_ENDPOINT
+    : UPLOAD_ENDPOINT
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: {
@@ -205,33 +208,27 @@ function UploadImageBlock({
 
       {/* Upload mode toggle */}
       <div className="flex items-center gap-1 rounded-md border border-border/60 p-0.5">
-        <button
-          type="button"
-          className={`flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-            uploadMode === 'local'
-              ? 'bg-primary text-primary-foreground'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
-          onClick={() => handleModeChange('local')}
-        >
-          Local
-        </button>
-        <button
-          type="button"
-          className={`flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-            uploadMode === 'tmpfiles'
-              ? 'bg-primary text-primary-foreground'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
-          onClick={() => handleModeChange('tmpfiles')}
-        >
-          Tmpfiles
-        </button>
+        {(['local', 'tmpfiles', 'imgbb'] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            className={`flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
+              uploadMode === m
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+            onClick={() => handleModeChange(m)}
+          >
+            {m === 'local' ? 'Local' : m === 'tmpfiles' ? 'Tmpfiles' : 'ImgBB'}
+          </button>
+        ))}
       </div>
       <p className="text-[10px] text-muted-foreground -mt-1">
         {uploadMode === 'local'
           ? 'Saves to /outputs — use for ComfyUI Gen or CivitAI Share.'
-          : 'Uploads to tmpfiles.org — use for remote RunPod endpoints.'}
+          : uploadMode === 'tmpfiles'
+            ? 'Uploads to tmpfiles.org — use for remote RunPod endpoints.'
+            : 'Uploads to ImgBB (needs IMGBB_API_KEY in .env) — most reliable for remote endpoints.'}
       </p>
 
       {files.length === 0 ? (

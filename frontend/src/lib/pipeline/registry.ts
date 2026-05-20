@@ -12,6 +12,7 @@ export const PORT_VIDEO: PortKind = 'video'
 export const PORT_LORAS: PortKind = 'loras'
 export const PORT_IMAGE: PortKind = 'image'
 export const PORT_METADATA: PortKind = 'metadata'
+export const PORT_DATASET: PortKind = 'dataset'
 
 const PORT_KIND_ALIASES: Record<string, PortKind> = {
   [PORT_PROMPT]: PORT_TEXT,

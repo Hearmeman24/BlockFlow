@@ -14,11 +14,12 @@ const MEDIA_KINDS: { value: MediaKindFilter | 'all'; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'video', label: 'Video' },
   { value: 'image', label: 'Image' },
+  { value: 'dataset', label: 'Dataset' },
   { value: 'other', label: 'Other' },
 ]
 
 function isMediaKind(v: string | null): v is MediaKindFilter {
-  return v === 'video' || v === 'image' || v === 'other'
+  return v === 'video' || v === 'image' || v === 'dataset' || v === 'other'
 }
 
 export function RunHistory() {

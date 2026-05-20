@@ -20,7 +20,7 @@ export async function saveRun(run: RunEntry) {
   return res.json()
 }
 
-export type MediaKindFilter = 'video' | 'image' | 'other'
+export type MediaKindFilter = 'video' | 'image' | 'dataset' | 'other'
 
 export async function fetchRuns(
   limit = 50,

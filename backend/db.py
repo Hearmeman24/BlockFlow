@@ -80,16 +80,16 @@ def save_run(run: dict[str, Any]) -> None:
         conn.close()
 
 
-_PRIMARY_KIND_PRIORITY = ("video", "image", "prompt")
+_PRIMARY_KIND_PRIORITY = ("dataset", "video", "image", "prompt")
 
 
 def _primary_media_kind(block_results: list[dict[str, Any]]) -> str:
-    """Mirror frontend findPrimaryArtifact, then bucket into video/image/other."""
+    """Mirror frontend findPrimaryArtifact, then bucket into video/image/dataset/other."""
     for kind in _PRIMARY_KIND_PRIORITY:
         for br in reversed(block_results):
             for out in (br.get("outputs") or {}).values():
                 if out.get("kind") == kind:
-                    return kind if kind in ("video", "image") else "other"
+                    return kind if kind in ("video", "image", "dataset") else "other"
     return "other"
 
 

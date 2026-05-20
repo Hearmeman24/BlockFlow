@@ -135,23 +135,6 @@ export function NavBar() {
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <FilePlus2 className="w-3.5 h-3.5 mr-2" />
-                Open In New Tab
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                {availableFlows.filter((f) => !f.name.startsWith('_workspace_')).length === 0 && (
-                  <DropdownMenuItem disabled>No saved flows</DropdownMenuItem>
-                )}
-                {availableFlows.filter((f) => !f.name.startsWith('_workspace_')).map((flow) => (
-                  <DropdownMenuItem key={`new-tab-${flow.name}`} onClick={() => void handleOpenInNewTab(flow.name)}>
-                    {flow.name}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-xs">Workspace</DropdownMenuLabel>
             <DropdownMenuItem onClick={() => {
               const name = prompt('Workspace name:', 'My Workspace')

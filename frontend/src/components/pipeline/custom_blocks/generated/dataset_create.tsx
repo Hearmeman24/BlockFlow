@@ -14,6 +14,7 @@ import { useSessionState } from '@/lib/use-session-state'
 import {
   PORT_DATASET,
   PORT_IMAGE,
+  PORT_TEXT,
   type BlockDef,
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
@@ -94,6 +95,7 @@ function DatasetCreateBlock({
   const [concurrency, setConcurrency] = useSessionState<number>(`block_${blockId}_concurrency`, 10)
   const [seed, setSeed] = useSessionState<string>(`block_${blockId}_seed`, '')
   const [customPrompt, setCustomPrompt] = useSessionState<string>(`block_${blockId}_custom_prompt`, '')
+  const [useUpstreamPrompts, setUseUpstreamPrompts] = useSessionState<boolean>(`block_${blockId}_use_upstream_prompts`, false)
 
   const [packs, setPacks] = useState<PromptPack[]>([])
   const [health, setHealth] = useState<HealthInfo | null>(null)
@@ -105,6 +107,8 @@ function DatasetCreateBlock({
   const cancelRequestedRef = useRef(false)
 
   const referenceUrls = toReferenceUrls(inputs.image)
+  const upstreamText = typeof inputs.text === 'string' ? inputs.text : ''
+  const upstreamPromptCount = upstreamText.split('\n').filter((l) => l.trim().length > 0).length
 
   // Fetch health + packs on mount
   useEffect(() => {
@@ -156,8 +160,14 @@ function DatasetCreateBlock({
       if (refs.length > MAX_REFERENCES) {
         throw new Error(`Too many reference images (${refs.length}). Max ${MAX_REFERENCES}.`)
       }
-      if (selectedPacks.length === 0 && !customPrompt.trim()) {
-        throw new Error('Select at least one prompt pack or enter custom prompts.')
+      // Pull upstream prompts when enabled and an upstream text input is present
+      const upstreamRaw = typeof freshInputs.text === 'string' ? freshInputs.text : ''
+      const upstreamList = useUpstreamPrompts
+        ? upstreamRaw.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)
+        : []
+
+      if (selectedPacks.length === 0 && !customPrompt.trim() && upstreamList.length === 0) {
+        throw new Error('Select a prompt pack, enter custom prompts, or enable "Use upstream prompts" with a connected Prompt Writer.')
       }
 
       const apiKey = overrideKey ? apiKeyOverride.trim() : ''
@@ -165,10 +175,10 @@ function DatasetCreateBlock({
         throw new Error('RunPod API key not detected in .env — enable Override and paste a key.')
       }
 
-      const customPrompts = customPrompt
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0)
+      const customPrompts = [
+        ...customPrompt.split('\n').map((l) => l.trim()).filter((l) => l.length > 0),
+        ...upstreamList,
+      ]
 
       setStatusMessage(`Submitting dataset job (${imageCount} images)...`)
       cancelRequestedRef.current = false
@@ -217,6 +227,13 @@ function DatasetCreateBlock({
           setProgress(snap)
           const done = snap.completed + snap.failed
           setStatusMessage(`${snap.completed}/${snap.total} done${snap.failed ? ` · ${snap.failed} failed` : ''}`)
+          // Stream partial images to the downstream image_viewer as they arrive.
+          const streamed = (snap.partial_images || [])
+            .filter((p): p is NonNullable<typeof p> => !!p && typeof p.url === 'string')
+            .map((p) => p.url)
+          if (streamed.length > 0) {
+            setOutput('images', streamed)
+          }
           if (snap.status === 'COMPLETED' || snap.status === 'PARTIAL' || snap.status === 'FAILED' || snap.status === 'CANCELLED') {
             if (snap.status === 'FAILED') {
               throw new Error(snap.error || 'Dataset job failed')
@@ -338,6 +355,37 @@ function DatasetCreateBlock({
         )}
       </div>
 
+      {/* Upstream prompts (from Prompt Writer block) */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-[11px]">Upstream prompts (Prompt Writer input)</Label>
+          <button
+            type="button"
+            onClick={() => setUseUpstreamPrompts((v) => !v)}
+            className={`text-[10px] px-2 py-0.5 rounded transition-colors ${
+              useUpstreamPrompts
+                ? 'bg-primary text-primary-foreground'
+                : 'border border-border/60 text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {useUpstreamPrompts ? 'ON' : 'OFF'}
+          </button>
+        </div>
+        <div className={`rounded border px-2 py-1.5 transition-colors ${useUpstreamPrompts ? 'border-primary/40 bg-primary/5' : 'border-border/60'}`}>
+          {upstreamPromptCount > 0 ? (
+            <p className="text-[10px] text-muted-foreground">
+              {useUpstreamPrompts
+                ? `Using ${upstreamPromptCount} prompt${upstreamPromptCount === 1 ? '' : 's'} from upstream (one per line).`
+                : `${upstreamPromptCount} upstream prompt${upstreamPromptCount === 1 ? '' : 's'} available — enable toggle to use.`}
+            </p>
+          ) : (
+            <p className="text-[10px] text-muted-foreground italic">
+              Connect a Prompt Writer block&apos;s text output to use its prompts here.
+            </p>
+          )}
+        </div>
+      </div>
+
       {/* Custom prompts */}
       <div className="space-y-1">
         <Label htmlFor={`${blockId}-custom`} className="text-[11px]">Custom prompts (one per line, optional)</Label>
@@ -454,6 +502,7 @@ export const blockDef: BlockDef = {
   canStart: false,
   inputs: [
     { name: 'image', kind: PORT_IMAGE, required: true },
+    { name: 'text', kind: PORT_TEXT, required: false },
   ],
   outputs: [
     { name: 'dataset', kind: PORT_DATASET },
@@ -469,6 +518,7 @@ export const blockDef: BlockDef = {
     'concurrency',
     'seed',
     'custom_prompt',
+    'use_upstream_prompts',
   ],
   component: DatasetCreateBlock,
 }

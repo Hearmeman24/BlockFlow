@@ -1,0 +1,398 @@
+'use client'
+
+import { useEffect, useState, useRef, useMemo } from 'react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useSessionState } from '@/lib/use-session-state'
+import {
+  PORT_DATASET,
+  PORT_LORAS,
+  PORT_TEXT,
+  type BlockDef,
+  type BlockComponentProps,
+} from '@/lib/pipeline/registry'
+
+type ModelType = 'wan2.2' | 'qwen_image' | 'z_image'
+
+interface ModelDefaults {
+  epochs: number
+  rank: number
+  lr: number
+  save_every_n_epochs: number
+}
+
+interface HealthInfo {
+  ok: boolean
+  runpod_key_present: boolean
+  aws_creds_present: boolean
+  s3_bucket: string
+  lora_endpoint_id: string
+  supported_models: ModelType[]
+  model_defaults: Record<string, ModelDefaults>
+}
+
+interface DatasetListEntry {
+  id: string
+  name: string
+  image_count: number
+  caption_count: number
+  thumb_url: string | null
+}
+
+type LoraResult = { filename: string; url: string; noise_variant: string }
+
+interface JobSnap {
+  job_id: string
+  model_type: string
+  trigger_word: string
+  dataset_name: string
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'ORPHANED'
+  logs: string[]
+  results: LoraResult[]
+  epoch_done: number | null
+  epoch_total: number | null
+  step_done: number | null
+  step_total: number | null
+  started_at: number
+  ended_at: number | null
+  error: string
+  remote_job_id: string
+  remote_status?: string
+  last_progress?: string
+}
+
+const MODEL_LABEL: Record<ModelType, string> = {
+  'wan2.2': 'Wan 2.2',
+  qwen_image: 'Qwen Image',
+  z_image: 'Z-Image',
+}
+
+function isDatasetValue(value: unknown): value is { kind: 'dataset'; id?: string; name?: string; images?: unknown; manifest?: Record<string, unknown> } {
+  return !!value && typeof value === 'object' && (value as { kind?: string }).kind === 'dataset'
+}
+
+function fmtDuration(sec: number): string {
+  if (sec < 60) return `${Math.round(sec)}s`
+  const m = Math.floor(sec / 60)
+  const s = Math.round(sec % 60)
+  if (m < 60) return `${m}m ${s}s`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
+}
+
+function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatusMessage }: BlockComponentProps) {
+  const prefix = `block_${blockId}_`
+  const [model, setModel] = useSessionState<ModelType>(`${prefix}model`, 'qwen_image')
+  const [triggerWord, setTriggerWord] = useSessionState<string>(`${prefix}trigger_word`, '')
+  const [epochs, setEpochs] = useSessionState<string>(`${prefix}epochs`, '')
+  const [rank, setRank] = useSessionState<string>(`${prefix}rank`, '')
+  const [lr, setLr] = useSessionState<string>(`${prefix}lr`, '')
+  const [saveEvery, setSaveEvery] = useSessionState<string>(`${prefix}save_every`, '')
+  const [numRepeats, setNumRepeats] = useSessionState<string>(`${prefix}num_repeats`, '')
+  const [datasetFolder, setDatasetFolder] = useSessionState<string>(`${prefix}dataset_folder`, '')
+  const [autoCaption, setAutoCaption] = useSessionState<boolean>(`${prefix}auto_caption`, true)
+  const [lastJobId, setLastJobId] = useSessionState<string>(`${prefix}last_job_id`, '')
+
+  const [health, setHealth] = useState<HealthInfo | null>(null)
+  const [datasets, setDatasets] = useState<DatasetListEntry[]>([])
+  const [progress, setProgress] = useState<JobSnap | null>(null)
+  const [showLogs, setShowLogs] = useState(false)
+  const reconnectFiredRef = useRef(false)
+
+  const upstreamDataset = isDatasetValue(inputs.dataset) ? inputs.dataset : null
+  const upstreamImages = useMemo(() => {
+    if (!upstreamDataset) return [] as string[]
+    const imgs = upstreamDataset.images
+    return Array.isArray(imgs) ? imgs.filter((s: unknown): s is string => typeof s === 'string') : []
+  }, [upstreamDataset])
+
+  useEffect(() => {
+    fetch('/api/blocks/lora_train/health').then((r) => r.json()).then(setHealth).catch(() => {})
+    fetch('/api/blocks/lora_train/datasets').then((r) => r.json()).then((d) => {
+      if (d.ok) setDatasets(d.datasets || [])
+    }).catch(() => {})
+  }, [])
+
+  const defaults = health?.model_defaults?.[model]
+
+  // Auto-reconnect to a previously-running job on mount
+  useEffect(() => {
+    if (reconnectFiredRef.current || !lastJobId) return
+    reconnectFiredRef.current = true
+    fetch(`/api/blocks/lora_train/status/${lastJobId}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.ok && d.job) {
+          setProgress(d.job as JobSnap)
+          if ((d.job.status as string) === 'RUNNING') {
+            void pollUntilDone(d.job.job_id)
+          } else if ((d.job.status as string) === 'COMPLETED') {
+            setOutput('loras', d.job.results)
+            setOutput('logs', (d.job.logs || []).join('\n'))
+          }
+        }
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastJobId])
+
+  const pollUntilDone = async (jobId: string, signal?: AbortSignal) => {
+    while (true) {
+      if (signal?.aborted) {
+        try { await fetch(`/api/blocks/lora_train/cancel/${jobId}`, { method: 'POST' }) } catch {}
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      await new Promise((r) => setTimeout(r, 5000))
+      let snap: JobSnap | null = null
+      try {
+        const res = await fetch(`/api/blocks/lora_train/status/${jobId}`)
+        const d = await res.json()
+        if (d.ok && d.job) snap = d.job as JobSnap
+      } catch {
+        // transient — keep polling
+        continue
+      }
+      if (!snap) continue
+      setProgress(snap)
+      const pct = snap.epoch_total && snap.epoch_done != null
+        ? `${snap.epoch_done}/${snap.epoch_total} epochs`
+        : (snap.last_progress || snap.remote_status || 'running')
+      setStatusMessage(`${snap.status} · ${pct}`)
+      if (snap.status === 'COMPLETED') {
+        setOutput('loras', snap.results)
+        setOutput('logs', (snap.logs || []).join('\n'))
+        return snap
+      }
+      if (snap.status === 'FAILED') throw new Error(snap.error || 'Training failed')
+      if (snap.status === 'CANCELLED') throw new DOMException('Aborted', 'AbortError')
+      if (snap.status === 'ORPHANED') throw new Error('Backend restarted mid-run; re-submit')
+    }
+  }
+
+  useEffect(() => {
+    registerExecute(async (_freshInputs, signal) => {
+      if (!triggerWord.trim()) throw new Error('Trigger word is required')
+      if (!health?.runpod_key_present) throw new Error('RUNPOD_API_KEY missing in .env')
+      if (!health?.aws_creds_present) throw new Error('AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY missing — required for dataset S3 upload')
+
+      const usedDataset = isDatasetValue(_freshInputs.dataset) ? _freshInputs.dataset : null
+
+      const overrides: Record<string, string | number> = {}
+      const addNum = (k: string, v: string) => {
+        const n = Number(v); if (Number.isFinite(n) && v.trim()) overrides[k] = n
+      }
+      addNum('epochs', epochs); addNum('rank', rank); addNum('lr', lr)
+      addNum('save_every_n_epochs', saveEvery); addNum('num_repeats', numRepeats)
+
+      setStatusMessage(`Submitting ${MODEL_LABEL[model]} training...`)
+      const startRes = await fetch('/api/blocks/lora_train/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model_type: model,
+          trigger_word: triggerWord.trim(),
+          overrides,
+          dataset: usedDataset || undefined,
+          dataset_folder: usedDataset ? undefined : datasetFolder || undefined,
+          auto_caption: autoCaption,
+        }),
+      })
+      const startData = await startRes.json()
+      if (!startData.ok) throw new Error(startData.error || 'Failed to start training')
+      const jobId = startData.job_id as string
+      setLastJobId(jobId)
+      await pollUntilDone(jobId, signal)
+    })
+  })
+
+  const elapsed = progress && progress.started_at
+    ? (progress.ended_at || Date.now() / 1000) - progress.started_at
+    : 0
+  const epochsDone = progress?.epoch_done ?? 0
+  const epochsTotal = progress?.epoch_total ?? (defaults?.epochs ?? 80)
+  const epochPct = epochsTotal ? Math.min(100, Math.round((epochsDone / epochsTotal) * 100)) : 0
+  const etaSec = epochsDone > 0 && epochsTotal && elapsed > 0
+    ? Math.max(0, (elapsed / epochsDone) * (epochsTotal - epochsDone))
+    : null
+
+  return (
+    <div className="space-y-3">
+      {/* Model */}
+      <div className="space-y-1">
+        <Label className="text-xs">Model</Label>
+        <Select value={model} onValueChange={(v) => setModel(v as ModelType)}>
+          <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {(['wan2.2', 'qwen_image', 'z_image'] as const).map((m) => (
+              <SelectItem key={m} value={m} className="text-xs">{MODEL_LABEL[m]}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Trigger word */}
+      <div className="space-y-1">
+        <Label htmlFor={`${blockId}-tw`} className="text-xs">Trigger word</Label>
+        <Input id={`${blockId}-tw`} value={triggerWord}
+          onChange={(e) => setTriggerWord(e.target.value)}
+          placeholder="e.g. Daniella01" className="h-8 text-xs font-mono" />
+      </div>
+
+      {/* Dataset */}
+      <div className="space-y-1">
+        <Label className="text-xs">Dataset</Label>
+        {upstreamDataset ? (
+          <div className="rounded border border-emerald-500/30 bg-emerald-500/5 px-2 py-1.5">
+            <p className="text-[11px] truncate">
+              <span className="font-medium">{upstreamDataset.name || upstreamDataset.id || 'Upstream dataset'}</span>
+              <span className="text-muted-foreground"> · {upstreamImages.length} image{upstreamImages.length === 1 ? '' : 's'}</span>
+            </p>
+          </div>
+        ) : (
+          <>
+            <Select value={datasetFolder || ''} onValueChange={setDatasetFolder}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Pick an on-disk dataset..." /></SelectTrigger>
+              <SelectContent>
+                {datasets.length === 0 && <SelectItem value="__none__" disabled className="text-xs">No datasets in output/datasets/</SelectItem>}
+                {datasets.map((d) => (
+                  <SelectItem key={d.id} value={d.id} className="text-xs">
+                    {d.name} ({d.image_count} img{d.caption_count ? `, ${d.caption_count} cap` : ''})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[10px] text-muted-foreground">Or connect a Dataset Create block upstream.</p>
+          </>
+        )}
+      </div>
+
+      {/* Auto-caption toggle */}
+      <div className="flex items-center justify-between">
+        <Label className="text-[11px]">Auto-caption with trigger word</Label>
+        <button type="button"
+          onClick={() => setAutoCaption((v) => !v)}
+          className={`text-[10px] px-2 py-0.5 rounded transition-colors ${autoCaption ? 'bg-primary text-primary-foreground' : 'border border-border/60 text-muted-foreground hover:text-foreground'}`}
+        >{autoCaption ? 'ON' : 'OFF'}</button>
+      </div>
+
+      {/* Hyperparams */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <Label className="text-[11px]">Epochs</Label>
+          <Input value={epochs} onChange={(e) => setEpochs(e.target.value.replace(/[^0-9]/g, ''))}
+            placeholder={String(defaults?.epochs ?? '')} className="h-7 text-xs" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-[11px]">Rank</Label>
+          <Input value={rank} onChange={(e) => setRank(e.target.value.replace(/[^0-9]/g, ''))}
+            placeholder={String(defaults?.rank ?? '')} className="h-7 text-xs" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-[11px]">Learning rate</Label>
+          <Input value={lr} onChange={(e) => setLr(e.target.value)}
+            placeholder={defaults ? defaults.lr.toExponential() : ''} className="h-7 text-xs font-mono" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-[11px]">Save every N epochs</Label>
+          <Input value={saveEvery} onChange={(e) => setSaveEvery(e.target.value.replace(/[^0-9]/g, ''))}
+            placeholder={String(defaults?.save_every_n_epochs ?? '')} className="h-7 text-xs" />
+        </div>
+        <div className="space-y-1 col-span-2">
+          <Label className="text-[11px]">Dataset repeats (optional)</Label>
+          <Input value={numRepeats} onChange={(e) => setNumRepeats(e.target.value.replace(/[^0-9]/g, ''))}
+            placeholder="auto" className="h-7 text-xs" />
+        </div>
+      </div>
+
+      {/* Env health */}
+      {health && !health.runpod_key_present && <p className="text-[10px] text-red-400">RUNPOD_API_KEY missing in .env</p>}
+      {health && !health.aws_creds_present && <p className="text-[10px] text-red-400">AWS S3 creds missing — required for dataset upload</p>}
+
+      {/* Live status */}
+      {progress && (
+        <div className="space-y-1 rounded border border-border/60 p-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-muted-foreground font-mono">{progress.status}</span>
+            <span className="text-[10px] text-muted-foreground">
+              {fmtDuration(elapsed)}
+              {etaSec != null && progress.status === 'RUNNING' ? ` · ETA ${fmtDuration(etaSec)}` : ''}
+            </span>
+          </div>
+          {epochsTotal != null && (
+            <>
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="text-muted-foreground">{epochsDone}/{epochsTotal} epochs ({epochPct}%)</span>
+                {progress.step_done != null && progress.step_total != null && (
+                  <span className="text-muted-foreground">step {progress.step_done}/{progress.step_total}</span>
+                )}
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded bg-muted/40">
+                <div className="h-full bg-primary transition-all" style={{ width: `${epochPct}%` }} />
+              </div>
+            </>
+          )}
+          {progress.last_progress && (
+            <p className="text-[10px] text-muted-foreground truncate">{progress.last_progress}</p>
+          )}
+          <div className="flex items-center justify-between">
+            <button type="button"
+              onClick={() => setShowLogs((v) => !v)}
+              className="text-[10px] text-muted-foreground hover:text-foreground"
+            >{showLogs ? 'Hide logs' : `Show logs (${progress.logs?.length || 0})`}</button>
+            {progress.results && progress.results.length > 0 && (
+              <span className="text-[10px] text-emerald-400">{progress.results.length} LoRA file{progress.results.length === 1 ? '' : 's'}</span>
+            )}
+          </div>
+          {showLogs && (
+            <pre className="max-h-[180px] overflow-y-auto text-[10px] bg-black/40 rounded p-1.5 font-mono whitespace-pre-wrap">
+              {(progress.logs || []).join('\n')}
+            </pre>
+          )}
+          {progress.results && progress.results.length > 0 && (
+            <div className="space-y-1 pt-1 border-t border-border/40">
+              {progress.results.map((r, i) => (
+                <a key={i} href={r.url} target="_blank" rel="noreferrer"
+                  className="block text-[10px] text-blue-400 hover:text-blue-300 truncate">
+                  ↓ {r.filename}{r.noise_variant ? ` (${r.noise_variant})` : ''}
+                </a>
+              ))}
+            </div>
+          )}
+          {progress.error && (
+            <p className="text-[10px] text-red-400 break-words">{progress.error}</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export const blockDef: BlockDef = {
+  type: 'loraTrain',
+  label: 'LoRA Train (Wan 2.2 / Qwen / Z-Image)',
+  description: 'Train a LoRA on a dataset via RunPod serverless. Long-running (15min–2h).',
+  size: 'huge',
+  canStart: false,
+  inputs: [
+    { name: 'dataset', kind: PORT_DATASET, required: false },
+  ],
+  outputs: [
+    { name: 'loras', kind: PORT_LORAS },
+    { name: 'logs', kind: PORT_TEXT },
+  ],
+  configKeys: [
+    'model',
+    'trigger_word',
+    'epochs',
+    'rank',
+    'lr',
+    'save_every',
+    'num_repeats',
+    'dataset_folder',
+    'auto_caption',
+    'last_job_id',
+  ],
+  component: LoRATrainBlock,
+}

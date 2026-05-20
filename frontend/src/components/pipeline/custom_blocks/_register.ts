@@ -11,6 +11,7 @@ import { blockDef as imageInspectorBlockDef } from './generated/image_inspector'
 import { blockDef as imageUpscaleBlockDef } from './generated/image_upscale'
 import { blockDef as imageViewerBlockDef } from './generated/image_viewer'
 import { blockDef as loraSelectorBlockDef } from './generated/lora_selector'
+import { blockDef as loraTrainBlockDef } from './generated/lora_train'
 import { blockDef as promptFromTxtBlockDef } from './generated/prompt_from_txt'
 import { blockDef as promptWriterBlockDef } from './generated/prompt_writer'
 import { blockDef as uploadImageToTmpfilesBlockDef } from './generated/upload_image_to_tmpfiles'
@@ -31,6 +32,7 @@ registerBlockDef(imageInspectorBlockDef)
 registerBlockDef(imageUpscaleBlockDef)
 registerBlockDef(imageViewerBlockDef)
 registerBlockDef(loraSelectorBlockDef)
+registerBlockDef(loraTrainBlockDef)
 registerBlockDef(promptFromTxtBlockDef)
 registerBlockDef(promptWriterBlockDef)
 registerBlockDef(uploadImageToTmpfilesBlockDef)

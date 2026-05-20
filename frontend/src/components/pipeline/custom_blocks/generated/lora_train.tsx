@@ -103,6 +103,23 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
   const [showLogs, setShowLogs] = useState(false)
   const reconnectFiredRef = useRef(false)
 
+  // ComfyGen upload state
+  const [comfygenEndpoint, setComfygenEndpoint] = useSessionState<string>(`${prefix}comfygen_endpoint`, '')
+  const [comfygenDest, setComfygenDest] = useSessionState<string>(`${prefix}comfygen_dest`, 'loras')
+  const [showComfyGenSettings, setShowComfyGenSettings] = useState(false)
+  const [comfygenDefault, setComfygenDefault] = useState<string>('')
+  const [upload, setUpload] = useState<{
+    status: string
+    last_status?: string
+    last_message?: string
+    endpoint_id?: string
+    remote_job_id?: string
+    error?: string
+    files?: number
+    completed_files?: unknown[]
+  } | null>(null)
+  const [uploading, setUploading] = useState(false)
+
   const upstreamDataset = isDatasetValue(inputs.dataset) ? inputs.dataset : null
   const upstreamImages = useMemo(() => {
     if (!upstreamDataset) return [] as string[]
@@ -115,7 +132,60 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
     fetch('/api/blocks/lora_train/datasets').then((r) => r.json()).then((d) => {
       if (d.ok) setDatasets(d.datasets || [])
     }).catch(() => {})
+    fetch('/api/blocks/lora_train/comfygen-config').then((r) => r.json()).then((d) => {
+      if (d.ok) setComfygenDefault(String(d.default_endpoint_id || ''))
+    }).catch(() => {})
   }, [])
+
+  const uploadToComfyGen = async () => {
+    if (!progress || !progress.job_id || progress.status !== 'COMPLETED') return
+    setUploading(true)
+    setUpload({ status: 'submitting' })
+    try {
+      const res = await fetch(`/api/blocks/lora_train/upload-to-comfygen/${progress.job_id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          endpoint_id: comfygenEndpoint.trim() || undefined,
+          dest: comfygenDest.trim() || 'loras',
+        }),
+      })
+      const d = await res.json()
+      if (!d.ok) {
+        setUpload({ status: 'error', error: d.error || 'submit failed' })
+        return
+      }
+      setUpload({
+        status: 'running',
+        endpoint_id: d.endpoint_id,
+        remote_job_id: d.remote_job_id,
+        files: d.files,
+      })
+      // Poll
+      while (true) {
+        await new Promise((r) => setTimeout(r, 5000))
+        const sRes = await fetch(`/api/blocks/lora_train/upload-status/${progress.job_id}`)
+        const sd = await sRes.json()
+        if (!sd.ok) continue
+        const u = sd.upload
+        setUpload((prev) => ({
+          status: u.status || prev?.status || 'running',
+          last_status: u.last_status,
+          last_message: u.last_message,
+          endpoint_id: u.endpoint_id,
+          remote_job_id: u.remote_job_id,
+          error: u.error,
+          files: u.downloads?.length,
+          completed_files: u.completed_files,
+        }))
+        if (u.status === 'COMPLETED' || u.status === 'FAILED' || u.status === 'CANCELLED') break
+      }
+    } catch (e) {
+      setUpload({ status: 'error', error: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setUploading(false)
+    }
+  }
 
   const defaults = health?.model_defaults?.[model]
 
@@ -353,7 +423,73 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
             </pre>
           )}
           {progress.results && progress.results.length > 0 && (
-            <div className="space-y-1 pt-1 border-t border-border/40">
+            <div className="space-y-2 pt-1 border-t border-border/40">
+              {/* ComfyGen upload section */}
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 flex-1 text-[11px]"
+                    onClick={uploadToComfyGen}
+                    disabled={uploading || progress.status !== 'COMPLETED' || (!comfygenEndpoint.trim() && !comfygenDefault)}
+                  >
+                    {uploading ? 'Uploading…' : `Upload ${progress.results.length} LoRA${progress.results.length === 1 ? '' : 's'} to ComfyGen`}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setShowComfyGenSettings((v) => !v)}
+                    title="ComfyGen upload settings"
+                    className="h-7 w-7 flex items-center justify-center rounded border border-border/60 text-muted-foreground hover:text-foreground"
+                  >
+                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <circle cx="12" cy="12" r="3" />
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                    </svg>
+                  </button>
+                </div>
+                {showComfyGenSettings && (
+                  <div className="space-y-1.5 rounded border border-border/60 bg-muted/20 p-2">
+                    <div className="space-y-1">
+                      <Label className="text-[10px]">ComfyGen endpoint id</Label>
+                      <Input
+                        value={comfygenEndpoint}
+                        onChange={(e) => setComfygenEndpoint(e.target.value)}
+                        placeholder={comfygenDefault ? `${comfygenDefault} (from .env)` : 'RUNPOD_ENDPOINT_ID missing'}
+                        className="h-7 text-xs font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-[10px]">Destination folder on volume</Label>
+                      <Input
+                        value={comfygenDest}
+                        onChange={(e) => setComfygenDest(e.target.value)}
+                        placeholder="loras"
+                        className="h-7 text-xs font-mono"
+                      />
+                    </div>
+                    {!comfygenEndpoint.trim() && comfygenDefault && (
+                      <p className="text-[10px] text-muted-foreground">Will use the default from .env unless overridden above.</p>
+                    )}
+                  </div>
+                )}
+                {upload && (
+                  <div className="rounded border border-border/60 bg-muted/10 px-2 py-1.5 space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className={`font-mono ${upload.status === 'COMPLETED' ? 'text-emerald-400' : upload.status === 'FAILED' || upload.status === 'error' ? 'text-red-400' : 'text-muted-foreground'}`}>
+                        {upload.status === 'COMPLETED' ? '✓ COMPLETED' : upload.last_status || upload.status}
+                      </span>
+                      {upload.endpoint_id && (
+                        <span className="font-mono text-muted-foreground truncate">→ {upload.endpoint_id}</span>
+                      )}
+                    </div>
+                    {upload.last_message && <p className="text-[10px] text-muted-foreground truncate">{upload.last_message}</p>}
+                    {upload.error && <p className="text-[10px] text-red-400 break-words">{upload.error}</p>}
+                  </div>
+                )}
+              </div>
+
+              {/* LoRA download links */}
               {progress.results.map((r, i) => (
                 <a key={i} href={r.url} target="_blank" rel="noreferrer"
                   className="block text-[10px] text-blue-400 hover:text-blue-300 truncate">
@@ -395,6 +531,8 @@ export const blockDef: BlockDef = {
     'dataset_folder',
     'auto_caption',
     'last_job_id',
+    'comfygen_endpoint',
+    'comfygen_dest',
   ],
   component: LoRATrainBlock,
 }

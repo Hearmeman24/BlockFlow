@@ -700,6 +700,160 @@ def list_jobs() -> JSONResponse:
     return JSONResponse({"ok": True, "jobs": snap})
 
 
+# ---------------------------------------------------------------------------
+# ComfyGen upload — push a completed LoRA to a ComfyGen serverless endpoint
+# so it becomes available on that endpoint's network volume.
+# ---------------------------------------------------------------------------
+
+
+def _comfygen_default_endpoint() -> str:
+    """The endpoint id the comfy_gen block defaults to (RUNPOD_ENDPOINT_ID)."""
+    return (os.getenv("RUNPOD_ENDPOINT_ID", "") or config.RUNPOD_ENDPOINT_ID or "").strip()
+
+
+@router.get("/comfygen-config")
+def comfygen_config() -> JSONResponse:
+    return JSONResponse({
+        "ok": True,
+        "default_endpoint_id": _comfygen_default_endpoint(),
+        "runpod_key_present": bool(config.RUNPOD_API_KEY),
+    })
+
+
+@router.post("/upload-to-comfygen/{job_id}")
+async def upload_to_comfygen(job_id: str, request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    endpoint_id = (str(body.get("endpoint_id") or "").strip()) or _comfygen_default_endpoint()
+    dest = str(body.get("dest") or "loras").strip() or "loras"
+
+    if not endpoint_id:
+        return JSONResponse({"ok": False, "error": "endpoint_id required (param or RUNPOD_ENDPOINT_ID env)"}, status_code=400)
+    if not config.RUNPOD_API_KEY:
+        return JSONResponse({"ok": False, "error": "RUNPOD_API_KEY not set"}, status_code=400)
+
+    with JOBS_LOCK:
+        rec = JOBS.get(job_id)
+    if not rec:
+        return JSONResponse({"ok": False, "error": "training job not found"}, status_code=404)
+    if rec.get("status") != "COMPLETED":
+        return JSONResponse({"ok": False, "error": f"training job status is {rec.get('status')}, must be COMPLETED"}, status_code=400)
+
+    results = rec.get("results") or []
+    files_total = sum(1 for r in results if r.get("filename"))
+    downloads = [
+        {"source": "url", "url": r.get("url"), "dest": dest, "filename": r.get("filename")}
+        for r in results
+        if r.get("url") and r.get("filename")
+    ]
+    if not downloads:
+        if files_total > 0:
+            return JSONResponse({
+                "ok": False,
+                "error": (
+                    f"Trainer produced {files_total} file(s) but no S3 URLs "
+                    "(presigned_urls was empty). The RunPod LoRA endpoint worker is "
+                    "missing AWS S3 credentials in its environment — set "
+                    "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET and "
+                    "S3_REGION on the RunPod endpoint so the trainer can upload "
+                    "outputs. Without that the LoRA only exists on the trainer "
+                    "worker's local volume and ComfyGen can't fetch it."
+                ),
+            }, status_code=400)
+        return JSONResponse({"ok": False, "error": "no LoRA files available to upload"}, status_code=400)
+
+    url = f"{config.RUNPOD_API_BASE.rstrip('/')}/{endpoint_id}/run"
+    payload = {"input": {"command": "download", "downloads": downloads}}
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {config.RUNPOD_API_KEY}",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode(errors="replace")[:600]
+        return JSONResponse({"ok": False, "error": f"ComfyGen endpoint HTTP {e.code}: {body_text}"}, status_code=502)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"failed to reach ComfyGen endpoint: {e}"}, status_code=502)
+
+    remote_id = str(data.get("id") or data.get("job_id") or "").strip()
+    if not remote_id:
+        return JSONResponse({"ok": False, "error": f"ComfyGen returned no job id: {data}"}, status_code=502)
+
+    upload_rec = {
+        "endpoint_id": endpoint_id,
+        "dest": dest,
+        "remote_job_id": remote_id,
+        "downloads": downloads,
+        "submitted_at": time.time(),
+        "status": "RUNNING",
+        "last_status": "IN_QUEUE",
+    }
+    _set(job_id, comfygen_upload=upload_rec)
+    _append_log(job_id, f"Submitted ComfyGen upload to endpoint={endpoint_id} ({len(downloads)} file(s)): {remote_id}")
+    return JSONResponse({"ok": True, "remote_job_id": remote_id, "endpoint_id": endpoint_id, "files": len(downloads)})
+
+
+@router.get("/upload-status/{job_id}")
+def upload_status(job_id: str) -> JSONResponse:
+    with JOBS_LOCK:
+        rec = JOBS.get(job_id)
+    if not rec:
+        return JSONResponse({"ok": False, "error": "training job not found"}, status_code=404)
+    upload = rec.get("comfygen_upload")
+    if not upload:
+        return JSONResponse({"ok": False, "error": "no ComfyGen upload submitted for this job"}, status_code=404)
+
+    endpoint_id = upload["endpoint_id"]
+    remote_id = upload["remote_job_id"]
+    # Don't re-poll a terminal status.
+    if upload.get("status") in ("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"):
+        return JSONResponse({"ok": True, "upload": upload})
+
+    url = f"{config.RUNPOD_API_BASE.rstrip('/')}/{endpoint_id}/status/{remote_id}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {config.RUNPOD_API_KEY}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        upload["poll_error"] = str(e)
+        return JSONResponse({"ok": True, "upload": upload})
+
+    status_str = str(data.get("status") or "UNKNOWN").upper()
+    upload["last_status"] = status_str
+    out = data.get("output")
+    if isinstance(out, dict):
+        upload["last_message"] = (
+            out.get("message") or out.get("status") or out.get("progress") or ""
+        )
+        # When the ComfyGen worker reports per-file results, surface them.
+        files_out = out.get("files") or out.get("downloaded") or []
+        if isinstance(files_out, list) and files_out:
+            upload["completed_files"] = files_out
+    elif isinstance(out, str):
+        upload["last_message"] = out
+    if status_str in ("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"):
+        upload["status"] = status_str
+        upload["ended_at"] = time.time()
+        if status_str == "FAILED":
+            err = ""
+            if isinstance(out, dict):
+                err = str(out.get("error") or out.get("message") or "")
+            elif isinstance(out, str):
+                err = out
+            upload["error"] = str(data.get("error") or err or status_str)
+    _set(job_id, comfygen_upload=upload)
+    return JSONResponse({"ok": True, "upload": upload})
+
+
 @router.get("/registry")
 def registry() -> JSONResponse:
     """Local registry of completed training runs."""

@@ -512,7 +512,7 @@ export const blockDef: BlockDef = {
   label: 'LoRA Train (Wan 2.2 / Qwen / Z-Image)',
   description: 'Train a LoRA on a dataset via RunPod serverless. Long-running (15min–2h).',
   size: 'huge',
-  canStart: false,
+  canStart: true,
   inputs: [
     { name: 'dataset', kind: PORT_DATASET, required: false },
   ],

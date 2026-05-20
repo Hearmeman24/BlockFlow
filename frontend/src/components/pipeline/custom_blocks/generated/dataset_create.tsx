@@ -540,7 +540,7 @@ export const blockDef: BlockDef = {
   label: 'Dataset Create (Nano Banana 2)',
   description: 'Generate an image dataset on RunPod\'s Nano Banana 2 Edit endpoint, in parallel.',
   size: 'huge',
-  canStart: false,
+  canStart: true,
   inputs: [
     { name: 'image', kind: PORT_IMAGE, required: true },
     { name: 'text', kind: PORT_TEXT, required: false, hidden: true },

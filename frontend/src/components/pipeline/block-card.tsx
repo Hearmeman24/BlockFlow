@@ -104,14 +104,17 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
     }
   }
 
-  // Build input source info for each port
-  const inputSourceInfo = def.inputs.map((port) => {
-    const producers = getUpstreamProducers(block.id, canonicalizePortKind(port.kind))
-    const isRequired = requiredInputNames.has(port.name)
-    const selectedSource = block.sources?.[port.name]
-    const isFieldBound = Boolean(blockDef?.bindings?.some((binding) => binding.input === port.name))
-    return { port, producers, isRequired, selectedSource, isFieldBound }
-  })
+  // Build input source info for each port (skip ports flagged `hidden` — they
+  // still route data automatically but don't render a header selector).
+  const inputSourceInfo = def.inputs
+    .filter((port) => !port.hidden)
+    .map((port) => {
+      const producers = getUpstreamProducers(block.id, canonicalizePortKind(port.kind))
+      const isRequired = requiredInputNames.has(port.name)
+      const selectedSource = block.sources?.[port.name]
+      const isFieldBound = Boolean(blockDef?.bindings?.some((binding) => binding.input === port.name))
+      return { port, producers, isRequired, selectedSource, isFieldBound }
+    })
 
   // Hide all source selectors when the block has no required inputs (pass-through pattern like HITL)
   const allInputsOptional = requiredInputNames.size === 0 && def.inputs.length > 0

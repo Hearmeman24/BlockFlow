@@ -18,7 +18,93 @@ const IMGBB_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload-imgbb'
 
 type UploadMode = 'local' | 'tmpfiles' | 'imgbb'
 
+// Visually-lossless ceiling for upload. AI generation pipelines never consume
+// more than this; anything beyond is wasted bandwidth and trips proxy body limits.
+const MAX_EDGE = 2048
+const SIZE_THRESHOLD_BYTES = 3 * 1024 * 1024 // 3 MB — below this we send as-is
+
+async function canvasToBlob(
+  canvas: HTMLCanvasElement | OffscreenCanvas,
+  type: string,
+  quality: number | undefined,
+): Promise<Blob> {
+  if (canvas instanceof OffscreenCanvas) {
+    return canvas.convertToBlob({ type, quality })
+  }
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error('canvas.toBlob returned null'))),
+      type,
+      quality,
+    )
+  })
+}
+
+/**
+ * Resize/re-encode oversized images before upload. Preserves PNG (lossless) for
+ * images with alpha; everything else goes to JPEG q=0.95 (visually lossless).
+ * Returns the original file unchanged when it's already small enough.
+ */
+async function prepareImageForUpload(file: File): Promise<File> {
+  if (file.size <= SIZE_THRESHOLD_BYTES) return file
+
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    return file
+  }
+
+  const { width, height } = bitmap
+  const longest = Math.max(width, height)
+  const scale = longest > MAX_EDGE ? MAX_EDGE / longest : 1
+  const targetW = Math.max(1, Math.round(width * scale))
+  const targetH = Math.max(1, Math.round(height * scale))
+
+  const isPng = file.type === 'image/png'
+  const outputType = isPng ? 'image/png' : 'image/jpeg'
+  const quality = isPng ? undefined : 0.95
+
+  let canvas: HTMLCanvasElement | OffscreenCanvas
+  if (typeof OffscreenCanvas !== 'undefined') {
+    canvas = new OffscreenCanvas(targetW, targetH)
+  } else {
+    const c = document.createElement('canvas')
+    c.width = targetW
+    c.height = targetH
+    canvas = c
+  }
+  const ctx = canvas.getContext('2d') as
+    | CanvasRenderingContext2D
+    | OffscreenCanvasRenderingContext2D
+    | null
+  if (!ctx) {
+    bitmap.close?.()
+    return file
+  }
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
+  ctx.drawImage(bitmap, 0, 0, targetW, targetH)
+  bitmap.close?.()
+
+  let blob: Blob
+  try {
+    blob = await canvasToBlob(canvas, outputType, quality)
+  } catch {
+    return file
+  }
+  if (blob.size >= file.size) return file
+
+  const stem = file.name.replace(/\.[^.]+$/, '') || 'image'
+  const ext = isPng ? 'png' : 'jpg'
+  return new File([blob], `${stem}.${ext}`, {
+    type: outputType,
+    lastModified: file.lastModified,
+  })
+}
+
 async function uploadImageFile(file: File, mode: UploadMode) {
+  const prepared = await prepareImageForUpload(file)
   const endpoint = mode === 'local' ? SAVE_LOCAL_ENDPOINT
     : mode === 'imgbb' ? IMGBB_ENDPOINT
     : UPLOAD_ENDPOINT
@@ -26,12 +112,18 @@ async function uploadImageFile(file: File, mode: UploadMode) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/octet-stream',
-      'X-Filename': file.name,
-      'X-Content-Type': file.type || 'application/octet-stream',
+      'X-Filename': prepared.name,
+      'X-Content-Type': prepared.type || 'application/octet-stream',
     },
-    body: await file.arrayBuffer(),
+    body: await prepared.arrayBuffer(),
   })
-  return res.json()
+  const text = await res.text()
+  try {
+    return JSON.parse(text)
+  } catch {
+    const excerpt = text.slice(0, 160).trim() || '(empty response body)'
+    throw new Error(`Upload failed (HTTP ${res.status}): ${excerpt}`)
+  }
 }
 
 async function fingerprintFile(file: File): Promise<string> {

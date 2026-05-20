@@ -56,6 +56,9 @@ interface JobSnap {
   epoch_total: number | null
   step_done: number | null
   step_total: number | null
+  percent?: number | null
+  loss?: number | null
+  stage?: string | null
   started_at: number
   ended_at: number | null
   error: string
@@ -292,10 +295,18 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
     : 0
   const epochsDone = progress?.epoch_done ?? 0
   const epochsTotal = progress?.epoch_total ?? (defaults?.epochs ?? 80)
-  const epochPct = epochsTotal ? Math.min(100, Math.round((epochsDone / epochsTotal) * 100)) : 0
-  const etaSec = epochsDone > 0 && epochsTotal && elapsed > 0
-    ? Math.max(0, (elapsed / epochsDone) * (epochsTotal - epochsDone))
-    : null
+  // Prefer the trainer's structured `percent` (across steps within an epoch
+  // — finer-grained than whole-epoch %). Fall back to epoch fraction.
+  const reportedPct = typeof progress?.percent === 'number' ? progress.percent : null
+  const epochPct = reportedPct != null
+    ? Math.min(100, Math.max(0, Math.round(reportedPct)))
+    : (epochsTotal ? Math.min(100, Math.round((epochsDone / epochsTotal) * 100)) : 0)
+  // ETA derived from whichever progress signal is finer-grained
+  const etaSec = reportedPct != null && reportedPct > 0 && reportedPct < 100 && elapsed > 0
+    ? Math.max(0, (elapsed / reportedPct) * (100 - reportedPct))
+    : (epochsDone > 0 && epochsTotal && elapsed > 0
+      ? Math.max(0, (elapsed / epochsDone) * (epochsTotal - epochsDone))
+      : null)
 
   return (
     <div className="space-y-3">
@@ -425,18 +436,27 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
           {epochsTotal != null && (
             <>
               <div className="flex items-center justify-between text-[10px]">
-                <span className="text-muted-foreground">{epochsDone}/{epochsTotal} epochs ({epochPct}%)</span>
-                {progress.step_done != null && progress.step_total != null && (
-                  <span className="text-muted-foreground">step {progress.step_done}/{progress.step_total}</span>
-                )}
+                <span className="text-muted-foreground">
+                  {epochsDone}/{epochsTotal} epochs ({epochPct}%)
+                </span>
+                <span className="text-muted-foreground space-x-2">
+                  {progress.step_done != null && progress.step_total != null && (
+                    <span>step {progress.step_done}/{progress.step_total}</span>
+                  )}
+                  {typeof progress.loss === 'number' && (
+                    <span className="font-mono">loss {progress.loss.toFixed(3)}</span>
+                  )}
+                </span>
               </div>
               <div className="h-1.5 w-full overflow-hidden rounded bg-muted/40">
                 <div className="h-full bg-primary transition-all" style={{ width: `${epochPct}%` }} />
               </div>
             </>
           )}
-          {progress.last_progress && (
-            <p className="text-[10px] text-muted-foreground truncate">{progress.last_progress}</p>
+          {(progress.stage || progress.last_progress) && (
+            <p className="text-[10px] text-muted-foreground truncate">
+              {progress.stage ? `${progress.stage}: ` : ''}{progress.last_progress || ''}
+            </p>
           )}
           <div className="flex items-center justify-between">
             <button type="button"

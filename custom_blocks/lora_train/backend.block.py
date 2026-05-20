@@ -476,6 +476,34 @@ def _run_training(job_id: str, api_key: str, dataset_dir: Path, trigger_word: st
             output = data.get("output")
             msg = _extract_progress(output) or status_str
 
+            # The reference trainer emits a structured progress dict —
+            # {epoch, total_epochs, step, total_steps, percent, stage, loss}.
+            # Prefer those fields over regex-parsing the message string.
+            fields: dict[str, Any] = {"last_progress": msg, "remote_status": status_str}
+            if isinstance(output, dict):
+                def _as_int(v: Any) -> int | None:
+                    try: return int(v)
+                    except (TypeError, ValueError): return None
+                def _as_float(v: Any) -> float | None:
+                    try: return float(v)
+                    except (TypeError, ValueError): return None
+                v = _as_int(output.get("epoch"));          v is not None and fields.update(epoch_done=v)
+                v = _as_int(output.get("total_epochs"));   v is not None and fields.update(epoch_total=v)
+                v = _as_int(output.get("step"));           v is not None and fields.update(step_done=v)
+                v = _as_int(output.get("total_steps"));    v is not None and fields.update(step_total=v)
+                v = _as_float(output.get("percent"));      v is not None and fields.update(percent=v)
+                v = _as_float(output.get("loss"));         v is not None and fields.update(loss=v)
+                stage = output.get("stage")
+                if isinstance(stage, str): fields["stage"] = stage
+            # Fall back to regex on the textual message if the structured
+            # fields weren't provided (e.g. an older trainer build).
+            if "epoch_done" not in fields or "epoch_total" not in fields:
+                e_done, e_total, s_done, s_total = _parse_epoch_step(msg)
+                if e_done is not None and "epoch_done" not in fields: fields["epoch_done"] = e_done
+                if e_total is not None and "epoch_total" not in fields: fields["epoch_total"] = e_total
+                if s_done is not None and "step_done" not in fields: fields["step_done"] = s_done
+                if s_total is not None and "step_total" not in fields: fields["step_total"] = s_total
+
             with JOBS_LOCK:
                 rec = JOBS.get(job_id)
                 if rec is None:
@@ -483,13 +511,7 @@ def _run_training(job_id: str, api_key: str, dataset_dir: Path, trigger_word: st
                 last_progress = rec.get("last_progress")
             if msg != last_progress:
                 _append_log(job_id, f"[{status_str}] {msg}")
-                e_done, e_total, s_done, s_total = _parse_epoch_step(msg)
-                fields: dict[str, Any] = {"last_progress": msg, "remote_status": status_str}
-                if e_done is not None: fields["epoch_done"] = e_done
-                if e_total is not None: fields["epoch_total"] = e_total
-                if s_done is not None: fields["step_done"] = s_done
-                if s_total is not None: fields["step_total"] = s_total
-                _set(job_id, **fields)
+            _set(job_id, **fields)
 
             if status_str == "COMPLETED":
                 results = _extract_results(output)

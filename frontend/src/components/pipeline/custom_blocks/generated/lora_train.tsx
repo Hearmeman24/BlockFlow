@@ -127,6 +127,15 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
     const imgs = upstreamDataset.images
     return Array.isArray(imgs) ? imgs.filter((s: unknown): s is string => typeof s === 'string') : []
   }, [upstreamDataset])
+  // The synthesized dataset value from Dataset Caption (on-disk mode) only
+  // carries the first few thumbnail URLs in `images` to keep the payload small.
+  // Prefer manifest.count for the displayed totals when available.
+  const upstreamImageCount = useMemo(() => {
+    if (!upstreamDataset) return 0
+    const c = (upstreamDataset.manifest as { count?: unknown } | undefined)?.count
+    if (typeof c === 'number' && c > 0) return c
+    return upstreamImages.length
+  }, [upstreamDataset, upstreamImages])
 
   useEffect(() => {
     fetch('/api/blocks/lora_train/health').then((r) => r.json()).then(setHealth).catch(() => {})
@@ -320,7 +329,7 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
           <div className="rounded border border-emerald-500/30 bg-emerald-500/5 px-2 py-1.5">
             <p className="text-[11px] truncate">
               <span className="font-medium">{upstreamDataset.name || upstreamDataset.id || 'Upstream dataset'}</span>
-              <span className="text-muted-foreground"> · {upstreamImages.length} image{upstreamImages.length === 1 ? '' : 's'}</span>
+              <span className="text-muted-foreground"> · {upstreamImageCount} image{upstreamImageCount === 1 ? '' : 's'}</span>
             </p>
           </div>
         ) : (

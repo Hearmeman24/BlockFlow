@@ -9,7 +9,6 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse

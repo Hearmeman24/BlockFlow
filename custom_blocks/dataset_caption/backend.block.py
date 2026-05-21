@@ -6,18 +6,13 @@ Skip images that already have captions unless `overwrite=True`.
 """
 from __future__ import annotations
 
-import asyncio
 import base64
-import json
 import logging
 import mimetypes
 import re
-import time
 import threading
-import urllib.error
-import urllib.request
+import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 

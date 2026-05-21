@@ -37,7 +37,7 @@ def _build_tag_prompt(model: str = "", loras: list[dict] | None = None) -> str:
     if model:
         context_parts.append(f"Model: {model}")
     if loras:
-        lora_names = [l.get("name", "") for l in loras if l.get("name")]
+        lora_names = [lora.get("name", "") for lora in loras if lora.get("name")]
         if lora_names:
             context_parts.append(f"LoRAs: {', '.join(lora_names)}")
     if context_parts:

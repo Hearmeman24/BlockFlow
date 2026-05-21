@@ -80,9 +80,49 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
   } = usePipeline()
   const { mode: blockLayoutMode } = useBlockLayout()
 
+  // Hooks must run on every render in the same order, before any conditional
+  // return. The `def`-dependent logic that used to live before these hooks
+  // got pushed below the `if (!def) return null` guard at the bottom.
+  const handleSetOutput = useCallback(
+    (portName: string, value: unknown) => {
+      setBlockOutput(block.id, portName, value)
+    },
+    [block.id, setBlockOutput],
+  )
+
+  const handleRegisterExecute = useCallback(
+    (fn: Parameters<BlockComponentProps['registerExecute']>[0]) => {
+      registerBlockExecute(block.id, fn)
+    },
+    [block.id, registerBlockExecute],
+  )
+
+  const handleSetStatusMessage = useCallback(
+    (msg: string | undefined) => {
+      setBlockStatusMessage(block.id, msg)
+    },
+    [block.id, setBlockStatusMessage],
+  )
+
+  const handleSetExecutionStatus = useCallback(
+    (nextStatus: 'idle' | 'running' | 'completed' | 'error' | 'skipped', error?: string) => {
+      setBlockStatus(block.id, nextStatus, error)
+    },
+    [block.id, setBlockStatus],
+  )
+
+  const handleSetOutputHint = useCallback(
+    (activePortName: string) => {
+      setOutputHint(block.id, activePortName)
+    },
+    [block.id, setOutputHint],
+  )
+
+  const [headerActions, setHeaderActions] = useState<ReactNode>(null)
+
   const def = getNodeType(block.type)
-  if (!def) return null
   const blockDef = getBlockDef(block.type)
+  if (!def) return null
 
   const isDisabled = !!block.disabled
   const state = blockStates.get(block.id)
@@ -124,43 +164,6 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
 
   const isReducedLayout = blockLayoutMode === 'reduced'
   const isExpandedLayout = blockLayoutMode === 'expanded'
-
-  const handleSetOutput = useCallback(
-    (portName: string, value: unknown) => {
-      setBlockOutput(block.id, portName, value)
-    },
-    [block.id, setBlockOutput],
-  )
-
-  const handleRegisterExecute = useCallback(
-    (fn: Parameters<BlockComponentProps['registerExecute']>[0]) => {
-      registerBlockExecute(block.id, fn)
-    },
-    [block.id, registerBlockExecute],
-  )
-
-  const handleSetStatusMessage = useCallback(
-    (msg: string | undefined) => {
-      setBlockStatusMessage(block.id, msg)
-    },
-    [block.id, setBlockStatusMessage],
-  )
-
-  const handleSetExecutionStatus = useCallback(
-    (nextStatus: 'idle' | 'running' | 'completed' | 'error' | 'skipped', error?: string) => {
-      setBlockStatus(block.id, nextStatus, error)
-    },
-    [block.id, setBlockStatus],
-  )
-
-  const handleSetOutputHint = useCallback(
-    (activePortName: string) => {
-      setOutputHint(block.id, activePortName)
-    },
-    [block.id, setOutputHint],
-  )
-
-  const [headerActions, setHeaderActions] = useState<ReactNode>(null)
 
   const cardClasses = isDisabled
     ? `flex flex-col shrink-0 overflow-hidden border-2 border-dashed ${sizeClass.width} ${sizeClass.minHeight} opacity-50 ${borderColor} panningDisabled wheelDisabled`

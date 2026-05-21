@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import io
 import json
-import math
 import logging
+import math
 import re
-import time
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -28,7 +28,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config
+from backend import config, settings_store
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -55,9 +55,6 @@ DATASETS_DIR = config.LOCAL_OUTPUT_DIR / "datasets"
 # fallbacks, no hardcoded defaults. Users configure via Settings → Credentials
 # + Endpoints; this block reads at request time so updates apply immediately
 # without a restart.
-
-from backend import settings_store
-
 
 _REQUIRED_CREDENTIALS: tuple[str, ...] = (
     "runpod_lora_endpoint_id",
@@ -465,7 +462,7 @@ def _run_training(job_id: str, api_key: str, dataset_dir: Path, trigger_word: st
         if n_img == 0:
             raise RuntimeError("Dataset has no images")
 
-        _append_log(job_id, f"Uploading {tmp_zip.stat().st_size // 1024} KB to s3://{S3_BUCKET}/training-datasets/")
+        _append_log(job_id, f"Uploading {tmp_zip.stat().st_size // 1024} KB to s3://{_get_s3_creds()['bucket']}/training-datasets/")
         dataset_url = _upload_zip_to_s3(tmp_zip, dataset_name)
         _set(job_id, dataset_zip_url=dataset_url)
         _append_log(job_id, "Dataset uploaded; submitting RunPod job")
@@ -514,19 +511,31 @@ def _run_training(job_id: str, api_key: str, dataset_dir: Path, trigger_word: st
             fields: dict[str, Any] = {"last_progress": msg, "remote_status": status_str}
             if isinstance(output, dict):
                 def _as_int(v: Any) -> int | None:
-                    try: return int(v)
-                    except (TypeError, ValueError): return None
+                    try:
+                        return int(v)
+                    except (TypeError, ValueError):
+                        return None
+
                 def _as_float(v: Any) -> float | None:
-                    try: return float(v)
-                    except (TypeError, ValueError): return None
-                v = _as_int(output.get("epoch"));          v is not None and fields.update(epoch_done=v)
-                v = _as_int(output.get("total_epochs"));   v is not None and fields.update(epoch_total=v)
-                v = _as_int(output.get("step"));           v is not None and fields.update(step_done=v)
-                v = _as_int(output.get("total_steps"));    v is not None and fields.update(step_total=v)
-                v = _as_float(output.get("percent"));      v is not None and fields.update(percent=v)
-                v = _as_float(output.get("loss"));         v is not None and fields.update(loss=v)
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        return None
+
+                def _set_if(name: str, value: Any) -> None:
+                    if value is not None:
+                        fields[name] = value
+
+                _set_if("epoch_done", _as_int(output.get("epoch")))
+                _set_if("epoch_total", _as_int(output.get("total_epochs")))
+                _set_if("step_done", _as_int(output.get("step")))
+                _set_if("step_total", _as_int(output.get("total_steps")))
+                _set_if("percent", _as_float(output.get("percent")))
+                _set_if("loss", _as_float(output.get("loss")))
+
                 stage = output.get("stage")
-                if isinstance(stage, str): fields["stage"] = stage
+                if isinstance(stage, str):
+                    fields["stage"] = stage
                 # Accumulate (step, loss) series for the live sparkline.
                 loss_val = _as_float(output.get("loss"))
                 step_val = _as_int(output.get("step"))
@@ -544,10 +553,14 @@ def _run_training(job_id: str, api_key: str, dataset_dir: Path, trigger_word: st
             # fields weren't provided (e.g. an older trainer build).
             if "epoch_done" not in fields or "epoch_total" not in fields:
                 e_done, e_total, s_done, s_total = _parse_epoch_step(msg)
-                if e_done is not None and "epoch_done" not in fields: fields["epoch_done"] = e_done
-                if e_total is not None and "epoch_total" not in fields: fields["epoch_total"] = e_total
-                if s_done is not None and "step_done" not in fields: fields["step_done"] = s_done
-                if s_total is not None and "step_total" not in fields: fields["step_total"] = s_total
+                if e_done is not None and "epoch_done" not in fields:
+                    fields["epoch_done"] = e_done
+                if e_total is not None and "epoch_total" not in fields:
+                    fields["epoch_total"] = e_total
+                if s_done is not None and "step_done" not in fields:
+                    fields["step_done"] = s_done
+                if s_total is not None and "step_total" not in fields:
+                    fields["step_total"] = s_total
 
             with JOBS_LOCK:
                 rec = JOBS.get(job_id)
@@ -783,8 +796,12 @@ def list_jobs() -> JSONResponse:
 
 
 def _comfygen_default_endpoint() -> str:
-    """The endpoint id the comfy_gen block defaults to (RUNPOD_ENDPOINT_ID)."""
-    return (os.getenv("RUNPOD_ENDPOINT_ID", "") or config.RUNPOD_ENDPOINT_ID or "").strip()
+    """The endpoint id the comfy_gen block defaults to. Sourced from Settings;
+    config.RUNPOD_ENDPOINT_ID is the env-driven legacy fallback (still used by
+    blocks not yet migrated to Settings)."""
+    return (
+        settings_store.get_endpoint("comfygen") or {}
+    ).get("endpoint_id", "") or (config.RUNPOD_ENDPOINT_ID or "").strip()
 
 
 @router.get("/comfygen-config")

@@ -31,10 +31,11 @@ jobs:
       - name: Type-check
         run: npx tsc --noEmit
 
-      # NOTE: pre-existing lint debt (17 errors, mainly setState-in-effect + a
-      # few conditional hook calls). A follow-up bead should fix these before
-      # this step becomes hard-fail. Keeping the job visible in CI so the debt
-      # is tracked.
+      # NOTE: 11 setState-in-effect errors remain (architectural debt — each
+      # requires a per-component refactor moving derived state out of effects).
+      # .13 fixed the conditional-hook bugs (real React rules-of-hooks
+      # violations) but parked the setState-in-effect cleanup for a follow-up.
+      # Keep continue-on-error so the warnings stay visible in CI.
       - name: Lint
         run: npm run lint
         continue-on-error: true
@@ -60,12 +61,10 @@ jobs:
         run: uv sync --extra dev
 
       # NOTE: pre-existing ruff debt (~45 errors: import ordering, multi-statement
-      # lines, unused imports). Most auto-fixable but conflating cleanup with .12
-      # work bloats the diff. Continue-on-error keeps the signal visible; sibling
-      # bead sgs-ui-wisp-las.13 tracks the cleanup.
+      # Ruff is now hard-fail (sgs-ui-wisp-las.13 cleaned up the pre-existing
+      # debt — 45 errors fixed; clean across backend/, custom_blocks/, tests/).
       - name: Lint (ruff)
         run: uv run ruff check .
-        continue-on-error: true
 
       - name: Test (pytest)
         run: uv run pytest tests/ -ra

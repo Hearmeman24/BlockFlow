@@ -1,18 +1,16 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from typing import Any
 
-log = logging.getLogger(__name__)
-
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
-import base64
+from backend import config, services, state, tmpfiles
 
-from backend import config, state, services, tmpfiles
-
+log = logging.getLogger(__name__)
 
 _N_PROMPTS_DIRECTIVE = (
     "\n\n"

@@ -156,7 +156,7 @@ def upscale_image(
         add_field("output_height", str(out_h))
         _log(f"Target: {out_w}x{out_h}")
     else:
-        _log(f"Target: autopilot (model decides)")
+        _log("Target: autopilot (model decides)")
 
     body_parts.append(f"--{boundary}--\r\n".encode())
     body = b"".join(body_parts)

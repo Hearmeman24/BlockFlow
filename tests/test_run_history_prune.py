@@ -10,7 +10,6 @@ to verify rows are actually removed (build green ≠ feature works).
 """
 from __future__ import annotations
 
-import json
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone

@@ -7,6 +7,7 @@ import random
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
@@ -16,7 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, media_meta, state, services
+from backend import config, media_meta, services, state
 
 router = APIRouter()
 
@@ -75,8 +76,6 @@ def get_cache() -> JSONResponse:
     })
 
 
-import threading
-
 _refresh_state: dict[str, Any] = {"running": False, "status": "", "error": "", "done": False}
 _refresh_lock = threading.Lock()
 
@@ -111,7 +110,7 @@ def _run_refresh(cmd: list[str]) -> None:
         _cache["samplers"] = data.get("samplers", [])
         _cache["schedulers"] = data.get("schedulers", [])
         loras = data.get("loras", [])
-        _cache["loras"] = [l["filename"] for l in loras if isinstance(l, dict) and "filename" in l]
+        _cache["loras"] = [item["filename"] for item in loras if isinstance(item, dict) and "filename" in item]
         _cache["fetched_at"] = time.time()
         _save_cache_to_disk()
         _refresh_state["status"] = f"Done — {len(_cache['samplers'])} samplers, {len(_cache['schedulers'])} schedulers, {len(_cache['loras'])} loras"

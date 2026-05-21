@@ -4,12 +4,12 @@ import json
 import logging
 from typing import Any
 
-log = logging.getLogger(__name__)
-
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, state, services
+from backend import config, services, state
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 

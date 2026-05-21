@@ -255,12 +255,14 @@ QWEN_FULL_PRESET = {
             "source": "huggingface",
             "url": "https://example.com/unet.safetensors",
             "dest": "diffusion_models/unet.safetensors",
+            "sha256": "a" * 64,
             "size_gb": 40.9,
         },
         {
             "source": "huggingface",
             "url": "https://example.com/clip.safetensors",
             "dest": "text_encoders/clip.safetensors",
+            "sha256": "b" * 64,
             "size_gb": 9.4,
         },
     ],
@@ -361,6 +363,56 @@ def test_install_starts_subprocess_with_batch_download(client, install_ready, mo
     assert "--batch" in args
     assert "--endpoint-id" in args
     assert "ep_test" in args
+
+
+def test_install_propagates_sha256_into_batch_spec(client, install_ready, mocker):
+    """Regression: ComfyGen's download_handler dedups by sha256 — but only
+    when the batch entry includes one. preset_routes was dropping sha256
+    from build_batch_spec before this test landed, so workers always
+    re-downloaded.
+    """
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(side_effect=[
+                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "https://example/preset.json"}])),
+                            _mock_response(QWEN_FULL_PRESET),
+                        ]))
+
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.stdout = '{"ok": true}'
+    fake_proc.stderr = ""
+
+    # Capture the --batch tempfile path + its contents at the time of the call
+    batch_payload: list[dict] = []
+    def _capture(args, *a, **kw):
+        # Find --batch <path> in the argv
+        if "--batch" in args:
+            batch_path = args[args.index("--batch") + 1]
+            with open(batch_path) as f:
+                batch_payload.extend(json.load(f))
+        return fake_proc
+
+    mocker.patch.object(preset_routes.subprocess, "run", side_effect=_capture)
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+    assert r.status_code == 202
+
+    # Wait for the background thread to read the temp file
+    import time as _t
+    for _ in range(50):
+        if preset_routes._install_state["state"] in ("completed", "error"):
+            break
+        _t.sleep(0.02)
+
+    # Verify the batch spec actually has sha256 on each entry
+    assert len(batch_payload) == len(QWEN_FULL_PRESET["models"]), (
+        f"expected {len(QWEN_FULL_PRESET['models'])} batch entries, got {len(batch_payload)}"
+    )
+    for entry, model in zip(batch_payload, QWEN_FULL_PRESET["models"]):
+        assert "sha256" in entry, f"entry missing sha256: {entry}"
+        assert entry["sha256"] == model["sha256"], (
+            f"sha256 mismatch: batch={entry['sha256']} preset={model['sha256']}"
+        )
 
 
 def test_install_persists_to_settings_on_success(client, install_ready, mocker):

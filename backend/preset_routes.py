@@ -429,12 +429,18 @@ def install_preset(body: InstallBody) -> JSONResponse:
                 subfolder, filename = dest.split("/", 1)
             else:
                 subfolder, filename = "checkpoints", dest
-            batch_spec.append({
+            entry = {
                 "source": m.get("source", "url") if m.get("source") in ("civitai", "url") else "url",
                 "url": m["url"],
                 "dest": subfolder,
                 "filename": filename,
-            })
+            }
+            # Forward the preset's expected sha256 so the worker's
+            # download_handler can do content-addressable dedup (skip aria2c
+            # when a file at the target path already hashes to this value).
+            if m.get("sha256"):
+                entry["sha256"] = m["sha256"]
+            batch_spec.append(entry)
 
         # Fetch workflow JSON (inline or URL) so it's cached locally for the
         # ComfyGen block dropdown to apply later.

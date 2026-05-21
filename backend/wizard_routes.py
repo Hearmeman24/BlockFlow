@@ -34,8 +34,13 @@ TIERS: dict[str, dict[str, Any]] = {
     },
     "recommended": {
         "name": "Recommended",
+        # Multiple RTX PRO 6000 Blackwell variants widen the scheduling pool
+        # (matches the user's working ComfyGen endpoint config). A100 SXM as
+        # a fallback for capacity headroom.
         "gpu_ids": [
             "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+            "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
             "NVIDIA A100-SXM4-80GB",
         ],
         "datacenter": "EUR-IS-1",

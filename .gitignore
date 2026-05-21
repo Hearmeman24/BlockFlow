@@ -19,6 +19,11 @@ flows/*.flow.json
 private_blocks/
 # Codegen output for private blocks (regenerated on every `npm run predev`)
 frontend/src/components/pipeline/custom_blocks/generated_private/
+# _register.ts is auto-generated AND its import set depends on whether
+# private_blocks/ exists on the current machine. Committing it caused fresh
+# checkouts to fail with "Module not found: ./generated_private/<slug>" when
+# codegen hadn't populated those files yet.
+frontend/src/components/pipeline/custom_blocks/_register.ts
 
 # Dev artifacts (root-level scratch docs, not the public docs/architecture.md)
 /architecture.md

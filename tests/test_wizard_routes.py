@@ -352,3 +352,147 @@ def test_health_returns_502_when_runpod_unreachable(client, all_creds_configured
     r = client.get("/api/wizard/comfygen/health/ep_abc")
     assert r.status_code == 502
     assert "network" in r.json()["detail"].lower()
+
+
+# === teardown (sgs-ui-wisp-las.1 Stage 5.5) =================================
+
+@pytest.fixture
+def comfygen_endpoint_configured():
+    """Pretend the user previously provisioned a ComfyGen endpoint via the
+    wizard — populate Settings as if Stage B's provision route had run."""
+    settings_store.set_credential("runpod_api_key", "rpa_valid")
+    settings_store.set_endpoint(
+        "comfygen",
+        endpoint_id="ep_abc",
+        template_id="tmpl_abc",
+        template_name="blockflow-comfygen-abc-template-abc",
+        volume_id="vol_abc",
+        gpu_tier="budget",
+        volume_size_gb=200,
+        max_workers=3,
+    )
+
+
+def test_teardown_calls_runpod_api_in_correct_order(client, comfygen_endpoint_configured, mocker):
+    """Drain workers → delete endpoint → delete template (by NAME) → delete volume."""
+    drain = mocker.patch.object(wizard_routes.runpod_api, "update_endpoint_workers")
+    del_ep = mocker.patch.object(wizard_routes.runpod_api, "delete_endpoint")
+    del_tmpl = mocker.patch.object(wizard_routes.runpod_api, "delete_template")
+    del_vol = mocker.patch.object(wizard_routes.runpod_api, "delete_network_volume")
+
+    r = client.post("/api/wizard/comfygen/teardown")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    # Each step ran exactly once with the right ID/name
+    drain.assert_called_once_with("rpa_valid", "ep_abc", workers_min=0, workers_max=0)
+    del_ep.assert_called_once_with("rpa_valid", "ep_abc")
+    del_tmpl.assert_called_once_with("rpa_valid", template_name="blockflow-comfygen-abc-template-abc")
+    del_vol.assert_called_once_with("rpa_valid", "vol_abc")
+    # Response shape: report what was deleted so the UI can render confirmation
+    assert body["deleted"]["endpoint_id"] == "ep_abc"
+    assert body["deleted"]["template_name"] == "blockflow-comfygen-abc-template-abc"
+    assert body["deleted"]["volume_id"] == "vol_abc"
+
+
+def test_teardown_removes_settings_record_on_success(client, comfygen_endpoint_configured, mocker):
+    mocker.patch.object(wizard_routes.runpod_api, "update_endpoint_workers")
+    mocker.patch.object(wizard_routes.runpod_api, "delete_endpoint")
+    mocker.patch.object(wizard_routes.runpod_api, "delete_template")
+    mocker.patch.object(wizard_routes.runpod_api, "delete_network_volume")
+
+    assert settings_store.get_endpoint("comfygen") is not None
+    client.post("/api/wizard/comfygen/teardown")
+    assert settings_store.get_endpoint("comfygen") is None
+
+
+def test_teardown_404_when_no_endpoint_configured(client):
+    settings_store.set_credential("runpod_api_key", "rpa_valid")
+    # No endpoint in Settings
+    r = client.post("/api/wizard/comfygen/teardown")
+    assert r.status_code == 404
+    assert "no comfygen endpoint" in r.json()["detail"].lower()
+
+
+def test_teardown_400_when_runpod_key_missing(client):
+    settings_store.set_endpoint(
+        "comfygen",
+        endpoint_id="ep_x",
+        template_name="t",
+        volume_id="v",
+    )
+    r = client.post("/api/wizard/comfygen/teardown")
+    assert r.status_code == 400
+    assert "runpod_api_key" in r.json()["detail"]
+
+
+def test_teardown_continues_when_endpoint_already_gone(client, comfygen_endpoint_configured, mocker):
+    """If the endpoint was already deleted out of band (RunPod console, prior
+    failed teardown), the teardown route shouldn't abort — it should still
+    try template + volume cleanup so Settings can be reset to clean state."""
+    mocker.patch.object(wizard_routes.runpod_api, "update_endpoint_workers",
+                        side_effect=wizard_routes.runpod_api.RunPodAPIError("HTTP 404: endpoint not found"))
+    mocker.patch.object(wizard_routes.runpod_api, "delete_endpoint",
+                        side_effect=wizard_routes.runpod_api.RunPodAPIError("HTTP 404"))
+    del_tmpl = mocker.patch.object(wizard_routes.runpod_api, "delete_template")
+    del_vol = mocker.patch.object(wizard_routes.runpod_api, "delete_network_volume")
+
+    r = client.post("/api/wizard/comfygen/teardown")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    # Template + volume cleanup still ran
+    del_tmpl.assert_called_once()
+    del_vol.assert_called_once()
+    # Caller learns about the soft failures via a 'warnings' field
+    assert "warnings" in body
+    assert any("endpoint" in w.lower() for w in body["warnings"])
+    # Settings was cleaned up anyway
+    assert settings_store.get_endpoint("comfygen") is None
+
+
+def test_teardown_keeps_settings_when_RunPod_hard_fails(client, comfygen_endpoint_configured, mocker):
+    """If ALL three deletes fail (RunPod outage, auth revoked), don't wipe
+    Settings — the user needs to see what failed and retry."""
+    mocker.patch.object(wizard_routes.runpod_api, "update_endpoint_workers",
+                        side_effect=wizard_routes.runpod_api.RunPodAPIError("HTTP 500"))
+    mocker.patch.object(wizard_routes.runpod_api, "delete_endpoint",
+                        side_effect=wizard_routes.runpod_api.RunPodAPIError("HTTP 500"))
+    mocker.patch.object(wizard_routes.runpod_api, "delete_template",
+                        side_effect=wizard_routes.runpod_api.RunPodAPIError("HTTP 500"))
+    mocker.patch.object(wizard_routes.runpod_api, "delete_network_volume",
+                        side_effect=wizard_routes.runpod_api.RunPodAPIError("HTTP 500"))
+
+    r = client.post("/api/wizard/comfygen/teardown")
+
+    assert r.status_code == 502
+    # Settings record still there for retry
+    assert settings_store.get_endpoint("comfygen") is not None
+
+
+def test_teardown_handles_missing_template_name_gracefully(client, mocker):
+    """Pre-.6 endpoints might lack template_name (was added in B.5 fix).
+    Teardown should still delete endpoint + volume and report a warning."""
+    settings_store.set_credential("runpod_api_key", "rpa_valid")
+    settings_store.set_endpoint(
+        "comfygen",
+        endpoint_id="ep_legacy",
+        template_id="tmpl_legacy",
+        template_name=None,  # explicitly missing
+        volume_id="vol_legacy",
+    )
+    mocker.patch.object(wizard_routes.runpod_api, "update_endpoint_workers")
+    del_ep = mocker.patch.object(wizard_routes.runpod_api, "delete_endpoint")
+    del_tmpl = mocker.patch.object(wizard_routes.runpod_api, "delete_template")
+    del_vol = mocker.patch.object(wizard_routes.runpod_api, "delete_network_volume")
+
+    r = client.post("/api/wizard/comfygen/teardown")
+
+    assert r.status_code == 200
+    del_ep.assert_called_once()
+    del_vol.assert_called_once()
+    # Template skipped because we have no name to delete with
+    del_tmpl.assert_not_called()
+    assert any("template_name" in w for w in r.json()["warnings"])

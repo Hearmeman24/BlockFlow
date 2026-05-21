@@ -299,8 +299,11 @@ describe('generateRegistrySource (regression with new block shape)', () => {
     ]
     const source = generateRegistrySource(blocks)
 
+    // Public block imports from generated/; private block imports from
+    // generated_private/ (sgs-ui-wisp-las.9 — keeps private-source-derived
+    // outputs out of the public OSS forbidden-token gate).
     expect(source).toContain("import { blockDef as aBlockBlockDef } from './generated/a_block'")
-    expect(source).toContain("import { blockDef as bBlockBlockDef } from './generated/b_block'")
+    expect(source).toContain("import { blockDef as bBlockBlockDef } from './generated_private/b_block'")
     expect(source).toContain('registerBlockDef(aBlockBlockDef)')
     expect(source).toContain('registerBlockDef(bBlockBlockDef)')
 
@@ -310,13 +313,16 @@ describe('generateRegistrySource (regression with new block shape)', () => {
     expect(aIdx).toBeLessThan(bIdx)
   })
 
-  test('the generated `_register.ts` does not leak the source dir in the consumer-facing output', () => {
+  test('the generated `_register.ts` does not leak the source root in registerBlockDef calls', () => {
     // The consumer (`@/lib/pipeline/registry`) only sees a registerBlockDef() call —
     // it cannot tell whether the block came from custom_blocks/ or private_blocks/.
+    // The import path mentions 'generated_private' (which is fine — that's a
+    // codegen output dir name, not the source-of-truth root), but the source
+    // dirs themselves never appear.
     const source = generateRegistrySource([
-      { slug: 'private_block', source: 'private_blocks', sourcePath: '/x/private_block/frontend.block.tsx' },
+      { slug: 'priv', source: 'private_blocks', sourcePath: '/x/priv/frontend.block.tsx' },
     ])
-    expect(source).not.toContain('private_blocks')
-    expect(source).not.toContain('custom_blocks')
+    expect(source).not.toContain('private_blocks/')
+    expect(source).not.toContain('custom_blocks/')
   })
 })

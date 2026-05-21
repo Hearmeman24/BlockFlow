@@ -269,6 +269,95 @@ def health(endpoint_id: str) -> JSONResponse:
     return JSONResponse(result)
 
 
+@router.post("/api/wizard/comfygen/teardown")
+def teardown() -> JSONResponse:
+    """Tear down the user's ComfyGen endpoint + template + volume.
+
+    Sequence (matches the .2 grilling research):
+        1. drain workers (workers_min=0, workers_max=0)
+        2. DELETE endpoint
+        3. deleteTemplate by NAME (GraphQL)
+        4. DELETE network volume
+
+    Each step is best-effort: if an upstream resource is already gone
+    (e.g. user deleted via the RunPod console), we log a warning and
+    continue. If ALL upstream calls fail (RunPod outage), Settings is
+    kept so the user can see what failed and retry.
+    """
+    api_key = settings_store.get_credential("runpod_api_key")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="runpod_api_key not configured in Settings")
+
+    ep = settings_store.get_endpoint("comfygen")
+    if ep is None:
+        raise HTTPException(status_code=404, detail="no ComfyGen endpoint configured to tear down")
+
+    endpoint_id = ep["endpoint_id"]
+    template_name = ep.get("template_name")
+    volume_id = ep.get("volume_id")
+
+    warnings: list[str] = []
+    successes: list[str] = []
+
+    # 1. Drain workers (idle them out)
+    try:
+        runpod_api.update_endpoint_workers(api_key, endpoint_id, workers_min=0, workers_max=0)
+        successes.append("drain")
+    except runpod_api.RunPodAPIError as exc:
+        warnings.append(f"endpoint drain failed (already gone?): {exc}")
+
+    # 2. Delete endpoint
+    try:
+        runpod_api.delete_endpoint(api_key, endpoint_id)
+        successes.append("endpoint")
+    except runpod_api.RunPodAPIError as exc:
+        warnings.append(f"endpoint delete failed: {exc}")
+
+    # 3. Delete template (requires NAME not ID)
+    if template_name:
+        try:
+            runpod_api.delete_template(api_key, template_name=template_name)
+            successes.append("template")
+        except runpod_api.RunPodAPIError as exc:
+            warnings.append(f"template delete failed: {exc}")
+    else:
+        warnings.append(
+            "no template_name in Settings (likely a legacy endpoint provisioned before "
+            "sgs-ui-wisp-las.2 Stage B.5) — skipping template cleanup. Delete it manually "
+            "via the RunPod console if it's orphaned."
+        )
+
+    # 4. Delete volume
+    if volume_id:
+        try:
+            runpod_api.delete_network_volume(api_key, volume_id)
+            successes.append("volume")
+        except runpod_api.RunPodAPIError as exc:
+            warnings.append(f"volume delete failed: {exc}")
+
+    # If NOTHING upstream worked, keep Settings so the user can retry.
+    if not successes:
+        raise HTTPException(
+            status_code=502,
+            detail=f"all RunPod cleanup steps failed: {warnings}",
+        )
+
+    # At least one resource was cleaned up — drop the Settings record so the
+    # UI returns to "not configured" + the user can re-run the wizard.
+    settings_store.delete_endpoint("comfygen")
+
+    return JSONResponse({
+        "ok": True,
+        "deleted": {
+            "endpoint_id": endpoint_id,
+            "template_name": template_name,
+            "volume_id": volume_id,
+        },
+        "successes": successes,
+        "warnings": warnings,
+    })
+
+
 # === rollback helpers =======================================================
 
 def _safe_delete_volume(api_key: str, volume_id: str) -> None:

@@ -25,6 +25,7 @@ import {
   wizardHealth,
   wizardPreflight,
   wizardProvision,
+  wizardTeardown,
   wizardTiers,
 } from './client'
 
@@ -500,5 +501,55 @@ describe('wizardHealth', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(wizardHealth('ep_x')).rejects.toThrow(/upstream/)
+  })
+})
+
+describe('wizardTeardown', () => {
+  test('POSTs + returns the teardown result', async () => {
+    const fetchMock = mockFetch([
+      {
+        body: JSON.stringify({
+          ok: true,
+          deleted: { endpoint_id: 'ep_x', template_name: 't', volume_id: 'v' },
+          successes: ['drain', 'endpoint', 'template', 'volume'],
+          warnings: [],
+        }),
+      },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await wizardTeardown()
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/wizard/comfygen/teardown',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(result.ok).toBe(true)
+    expect(result.successes).toEqual(['drain', 'endpoint', 'template', 'volume'])
+  })
+
+  test('throws on 404 when no endpoint configured', async () => {
+    const fetchMock = mockFetch([
+      { status: 404, body: JSON.stringify({ detail: 'no ComfyGen endpoint configured to tear down' }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(wizardTeardown()).rejects.toThrow(/no ComfyGen endpoint/)
+  })
+
+  test('returns warnings on partial RunPod failure (200)', async () => {
+    const fetchMock = mockFetch([
+      {
+        body: JSON.stringify({
+          ok: true,
+          deleted: { endpoint_id: 'ep_x', template_name: null, volume_id: 'v' },
+          successes: ['endpoint', 'volume'],
+          warnings: ['no template_name in Settings'],
+        }),
+      },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await wizardTeardown()
+    expect(result.warnings).toContain('no template_name in Settings')
   })
 })

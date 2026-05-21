@@ -10,6 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "pretest": "node scripts/gen-custom-block-registry.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },

@@ -161,3 +161,45 @@ def test_live_wizard_provision_then_teardown(app):
                         print(f"[live] WARN: volume cleanup failed: {exc}")
                         break
                     time.sleep(3)
+
+
+def test_live_wizard_teardown_route_cleans_up_everything(app):
+    """sgs-ui-wisp-las.1 Stage 5.5: tearing down via /api/wizard/comfygen/teardown
+    deletes all 3 RunPod resources + the Settings record, end-to-end.
+
+    Cost: ~$0 (no workers ever spin up; metadata-only operations)."""
+    client = TestClient(app)
+
+    # Provision a fresh endpoint to tear down
+    r = client.post(
+        "/api/wizard/comfygen/provision",
+        json={"tier": "budget", "volume_size_gb": 10, "max_workers": 1},
+    )
+    assert r.status_code == 200, r.text
+    provisioned = r.json()
+    print(f"[live] provisioned to tear down: ep={provisioned['endpoint_id']} "
+          f"template={provisioned['template_name']} vol={provisioned['volume_id']}")
+
+    # Tear it down via the new route
+    print("[live] calling POST /api/wizard/comfygen/teardown...")
+    tr = client.post("/api/wizard/comfygen/teardown")
+    assert tr.status_code == 200, tr.text
+    body = tr.json()
+
+    assert body["ok"] is True
+    assert body["deleted"]["endpoint_id"] == provisioned["endpoint_id"]
+    assert body["deleted"]["template_name"] == provisioned["template_name"]
+    assert body["deleted"]["volume_id"] == provisioned["volume_id"]
+    # All 4 cleanup steps succeeded (no soft-failure warnings)
+    assert "drain" in body["successes"]
+    assert "endpoint" in body["successes"]
+    assert "template" in body["successes"]
+    assert "volume" in body["successes"]
+    print(f"[live] teardown successes: {body['successes']}, warnings: {body['warnings']}")
+
+    # Settings record removed → row reverts to "not configured"
+    assert settings_store.get_endpoint("comfygen") is None
+
+    # Re-running teardown 404s (nothing left to tear down)
+    rr = client.post("/api/wizard/comfygen/teardown")
+    assert rr.status_code == 404

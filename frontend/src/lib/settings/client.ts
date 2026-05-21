@@ -247,3 +247,20 @@ export async function wizardHealth(endpoint_id: string): Promise<EndpointHealth>
   await _throwIfNonOk(res)
   return (await res.json()) as EndpointHealth
 }
+
+export type WizardTeardownResult = {
+  ok: boolean
+  deleted: {
+    endpoint_id: string
+    template_name: string | null
+    volume_id: string | null
+  }
+  successes: string[]   // e.g. ['drain', 'endpoint', 'template', 'volume']
+  warnings: string[]    // non-fatal soft-failures the user should see
+}
+
+export async function wizardTeardown(): Promise<WizardTeardownResult> {
+  const res = await fetch('/api/wizard/comfygen/teardown', { method: 'POST' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as WizardTeardownResult
+}

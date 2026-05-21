@@ -1,7 +1,8 @@
 """LoRA Training block — RunPod AIO trainer (Wan 2.2 / Qwen / Z-Image).
 
-Ports the dataset-zip -> S3 upload -> RunPod serverless submit + poll flow from
-hearmemanai_lora_training_app_v2 into a self-contained sgs-ui block.
+Dataset-zip → S3 upload → RunPod serverless submit + poll flow.
+Credentials sourced from Settings (sgs-ui-wisp-las.1 / .6) — no env-var
+fallbacks. Users configure via Settings → Credentials.
 
 Jobs run in a background thread on the FastAPI process; their state is also
 mirrored to disk so the UI can navigate away during the 30+ min training run
@@ -50,24 +51,46 @@ LORA_REGISTRY_PATH = config.LOCAL_OUTPUT_DIR / "lora_registry.json"
 
 DATASETS_DIR = config.LOCAL_OUTPUT_DIR / "datasets"
 
-# Resolve aux env vars (S3 + RunPod LoRA endpoint) lazily so config.py doesn't
-# have to know about every block sidecar.
-import os
+# Credentials are sourced from Settings (sgs-ui-wisp-las.1) — no env-var
+# fallbacks, no hardcoded defaults. Users configure via Settings → Credentials
+# + Endpoints; this block reads at request time so updates apply immediately
+# without a restart.
 
-def _env(*keys: str, default: str = "") -> str:
-    for k in keys:
-        v = os.getenv(k)
-        if v:
-            return v
-    return default
+from backend import settings_store
 
 
-RUNPOD_LORA_ENDPOINT_ID = _env("RUNPOD_LORA_ENDPOINT_ID", default="7cimkii50xunxw")
-AWS_ACCESS_KEY_ID = _env("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = _env("AWS_SECRET_ACCESS_KEY")
-# Reference uses AWS_REGION; sgs-ui's existing .env uses S3_REGION. Accept both.
-AWS_REGION = _env("AWS_REGION", "S3_REGION", default="us-east-1")
-S3_BUCKET = _env("S3_BUCKET_NAME", "S3_BUCKET", default="hearmeman-loras")
+_REQUIRED_CREDENTIALS: tuple[str, ...] = (
+    "runpod_lora_endpoint_id",
+    "r2_access_key_id",
+    "r2_secret_access_key",
+    "r2_bucket",
+)
+
+
+def _missing_credentials() -> list[str]:
+    """Return the list of required-but-unset credential names."""
+    return [name for name in _REQUIRED_CREDENTIALS if not settings_store.get_credential(name)]
+
+
+def _get_runpod_lora_endpoint_id() -> str:
+    """Trainer endpoint ID. Stored as a credential rather than in the endpoints
+    table because (a) it's user-supplied for the trainer, and (b) attaching an
+    existing trainer endpoint doesn't go through a wizard flow yet (.2 only
+    covers ComfyGen at v1)."""
+    return settings_store.get_credential("runpod_lora_endpoint_id") or ""
+
+
+def _get_s3_creds() -> dict[str, str]:
+    """All S3/R2 fields for boto3.client(). region defaults to 'auto' (R2);
+    AWS S3 users supply their region via r2_region. endpoint_url is optional
+    (empty = default AWS S3 endpoint)."""
+    return {
+        "access_key_id": settings_store.get_credential("r2_access_key_id") or "",
+        "secret_access_key": settings_store.get_credential("r2_secret_access_key") or "",
+        "bucket": settings_store.get_credential("r2_bucket") or "",
+        "region": settings_store.get_credential("r2_region") or "auto",
+        "endpoint_url": settings_store.get_credential("r2_endpoint_url") or "",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -203,21 +226,30 @@ def _create_dataset_zip(
 
 
 def _upload_zip_to_s3(zip_path: Path, dataset_name: str) -> str:
-    if not (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY):
-        raise RuntimeError("AWS credentials missing — set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in .env")
+    creds = _get_s3_creds()
+    if not (creds["access_key_id"] and creds["secret_access_key"] and creds["bucket"]):
+        raise RuntimeError(
+            "S3 credentials missing — configure r2_access_key_id, r2_secret_access_key, "
+            "and r2_bucket in Settings → Credentials"
+        )
     import boto3
-    client = boto3.client(
-        "s3",
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_REGION,
-    )
+    client_kwargs = {
+        "aws_access_key_id": creds["access_key_id"],
+        "aws_secret_access_key": creds["secret_access_key"],
+        "region_name": creds["region"],
+    }
+    if creds["endpoint_url"]:
+        # Empty endpoint URL → boto3 falls back to default AWS S3 endpoint.
+        # Non-empty → S3-compatible (R2, MinIO, etc.).
+        client_kwargs["endpoint_url"] = creds["endpoint_url"]
+    client = boto3.client("s3", **client_kwargs)
+    bucket = creds["bucket"]
     key = f"training-datasets/{re.sub(r'[^a-zA-Z0-9_-]', '-', dataset_name)}_{uuid.uuid4().hex[:8]}.zip"
     body = zip_path.read_bytes()
-    client.put_object(Bucket=S3_BUCKET, Key=key, Body=body, ContentType="application/zip")
+    client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/zip")
     url = client.generate_presigned_url(
         "get_object",
-        Params={"Bucket": S3_BUCKET, "Key": key},
+        Params={"Bucket": bucket, "Key": key},
         ExpiresIn=7 * 24 * 60 * 60,  # 7 days
     )
     return url
@@ -229,7 +261,7 @@ def _upload_zip_to_s3(zip_path: Path, dataset_name: str) -> str:
 
 
 def _runpod_submit(api_key: str, payload: dict[str, Any]) -> str:
-    url = f"{config.RUNPOD_API_BASE.rstrip('/')}/{RUNPOD_LORA_ENDPOINT_ID}/run"
+    url = f"{config.RUNPOD_API_BASE.rstrip('/')}/{_get_runpod_lora_endpoint_id()}/run"
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -249,14 +281,14 @@ def _runpod_submit(api_key: str, payload: dict[str, Any]) -> str:
 
 
 def _runpod_status(api_key: str, runpod_job_id: str) -> dict[str, Any]:
-    url = f"{config.RUNPOD_API_BASE.rstrip('/')}/{RUNPOD_LORA_ENDPOINT_ID}/status/{runpod_job_id}"
+    url = f"{config.RUNPOD_API_BASE.rstrip('/')}/{_get_runpod_lora_endpoint_id()}/status/{runpod_job_id}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SEC) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _runpod_cancel(api_key: str, runpod_job_id: str) -> None:
-    url = f"{config.RUNPOD_API_BASE.rstrip('/')}/{RUNPOD_LORA_ENDPOINT_ID}/cancel/{runpod_job_id}"
+    url = f"{config.RUNPOD_API_BASE.rstrip('/')}/{_get_runpod_lora_endpoint_id()}/cancel/{runpod_job_id}"
     req = urllib.request.Request(url, method="POST", headers={"Authorization": f"Bearer {api_key}"})
     try:
         with urllib.request.urlopen(req, timeout=30) as _:
@@ -606,12 +638,14 @@ def _resolve_dataset_dir(spec: dict[str, Any] | None, folder_id: str | None) -> 
 
 @router.get("/health")
 def health() -> JSONResponse:
+    creds = _get_s3_creds()
     return JSONResponse({
         "ok": True,
-        "runpod_key_present": bool(config.RUNPOD_API_KEY),
-        "aws_creds_present": bool(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY),
-        "s3_bucket": S3_BUCKET,
-        "lora_endpoint_id": RUNPOD_LORA_ENDPOINT_ID,
+        "runpod_key_present": bool(settings_store.get_credential("runpod_api_key")),
+        "aws_creds_present": bool(creds["access_key_id"] and creds["secret_access_key"]),
+        "s3_bucket": creds["bucket"],
+        "lora_endpoint_id": _get_runpod_lora_endpoint_id(),
+        "missing_credentials": _missing_credentials(),
         "supported_models": list(SUPPORTED_MODELS),
         "model_defaults": MODEL_DEFAULTS,
     })
@@ -653,10 +687,15 @@ async def run(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": f"model_type must be one of {list(SUPPORTED_MODELS)}"}, status_code=400)
     if not trigger_word:
         return JSONResponse({"ok": False, "error": "trigger_word is required"}, status_code=400)
-    if not config.RUNPOD_API_KEY:
-        return JSONResponse({"ok": False, "error": "RUNPOD_API_KEY not set"}, status_code=400)
-    if not (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY):
-        return JSONResponse({"ok": False, "error": "AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY required for S3 upload"}, status_code=400)
+    missing = _missing_credentials()
+    runpod_key = settings_store.get_credential("runpod_api_key")
+    if not runpod_key:
+        missing = ["runpod_api_key", *missing]
+    if missing:
+        return JSONResponse(
+            {"ok": False, "error": f"missing required credentials in Settings: {missing}"},
+            status_code=400,
+        )
 
     try:
         dataset_dir, dataset_name = _resolve_dataset_dir(dataset_spec, dataset_folder)
@@ -696,7 +735,7 @@ async def run(request: Request) -> JSONResponse:
 
     t = threading.Thread(
         target=_run_training,
-        args=(job_id, config.RUNPOD_API_KEY, dataset_dir, trigger_word, model_type, cfg, dataset_name, auto_caption),
+        args=(job_id, runpod_key, dataset_dir, trigger_word, model_type, cfg, dataset_name, auto_caption),
         daemon=True,
     )
     t.start()
@@ -753,7 +792,7 @@ def comfygen_config() -> JSONResponse:
     return JSONResponse({
         "ok": True,
         "default_endpoint_id": _comfygen_default_endpoint(),
-        "runpod_key_present": bool(config.RUNPOD_API_KEY),
+        "runpod_key_present": bool(settings_store.get_credential("runpod_api_key")),
     })
 
 
@@ -767,9 +806,10 @@ async def upload_to_comfygen(job_id: str, request: Request) -> JSONResponse:
     dest = str(body.get("dest") or "loras").strip() or "loras"
 
     if not endpoint_id:
-        return JSONResponse({"ok": False, "error": "endpoint_id required (param or RUNPOD_ENDPOINT_ID env)"}, status_code=400)
-    if not config.RUNPOD_API_KEY:
-        return JSONResponse({"ok": False, "error": "RUNPOD_API_KEY not set"}, status_code=400)
+        return JSONResponse({"ok": False, "error": "endpoint_id required (param or ComfyGen endpoint configured in Settings)"}, status_code=400)
+    runpod_key = settings_store.get_credential("runpod_api_key")
+    if not runpod_key:
+        return JSONResponse({"ok": False, "error": "runpod_api_key not configured in Settings → Credentials"}, status_code=400)
 
     with JOBS_LOCK:
         rec = JOBS.get(job_id)
@@ -792,11 +832,10 @@ async def upload_to_comfygen(job_id: str, request: Request) -> JSONResponse:
                 "error": (
                     f"Trainer produced {files_total} file(s) but no S3 URLs "
                     "(presigned_urls was empty). The RunPod LoRA endpoint worker is "
-                    "missing AWS S3 credentials in its environment — set "
-                    "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, S3_BUCKET and "
-                    "S3_REGION on the RunPod endpoint so the trainer can upload "
-                    "outputs. Without that the LoRA only exists on the trainer "
-                    "worker's local volume and ComfyGen can't fetch it."
+                    "missing S3 credentials in its environment — configure your "
+                    "R2/S3 credentials in Settings → Credentials, then tear down "
+                    "and re-create the trainer endpoint so the new template "
+                    "embeds the working credentials."
                 ),
             }, status_code=400)
         return JSONResponse({"ok": False, "error": "no LoRA files available to upload"}, status_code=400)
@@ -809,7 +848,7 @@ async def upload_to_comfygen(job_id: str, request: Request) -> JSONResponse:
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {config.RUNPOD_API_KEY}",
+            "Authorization": f"Bearer {runpod_key}",
         },
     )
     try:
@@ -855,8 +894,9 @@ def upload_status(job_id: str) -> JSONResponse:
     if upload.get("status") in ("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"):
         return JSONResponse({"ok": True, "upload": upload})
 
+    poll_key = settings_store.get_credential("runpod_api_key") or ""
     url = f"{config.RUNPOD_API_BASE.rstrip('/')}/{endpoint_id}/status/{remote_id}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {config.RUNPOD_API_KEY}"})
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {poll_key}"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))

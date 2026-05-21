@@ -16,7 +16,13 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config
+from backend import config, settings_store
+
+
+def _get_runpod_api_key() -> str:
+    """RunPod API key sourced from Settings (sgs-ui-wisp-las.1). Empty string
+    when unset; callers decide whether to 400 or accept a body override."""
+    return settings_store.get_credential("runpod_api_key") or ""
 
 router = APIRouter()
 
@@ -476,7 +482,7 @@ def health() -> JSONResponse:
     packs = _list_packs(include_prompts=False)
     return JSONResponse({
         "ok": True,
-        "runpod_key_present": bool(config.RUNPOD_API_KEY),
+        "runpod_key_present": bool(_get_runpod_api_key()),
         "prompt_pack_count": len(packs),
         "endpoint": NANO_BANANA_ENDPOINT,
     })
@@ -520,7 +526,7 @@ async def run(request: Request) -> JSONResponse:
     image_count = int(body.get("image_count") or 10)
     pack_ids = body.get("pack_ids") or []
     references = body.get("reference_image_urls") or []
-    api_key = str(body.get("runpod_api_key") or config.RUNPOD_API_KEY or "").strip()
+    api_key = str(body.get("runpod_api_key") or _get_runpod_api_key() or "").strip()
     concurrency = int(body.get("concurrency") or DEFAULT_CONCURRENCY)
     seed = body.get("seed")
     custom_prompts = body.get("custom_prompts") or []

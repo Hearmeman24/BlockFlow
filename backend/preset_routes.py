@@ -296,8 +296,28 @@ def _run_install_subprocess(
             timeout=3600 + 60,
         )
 
+        # Always dump the FULL subprocess output to a sibling log file so the
+        # operator can diagnose failures that exceed our in-memory truncation.
+        try:
+            log_path = config.ROOT_DIR / "preset_install.log"
+            with log_path.open("a") as f:
+                f.write(f"\n\n=== {_now_iso()} preset={preset_id} returncode={proc.returncode} ===\n")
+                f.write("--- STDERR ---\n")
+                f.write(proc.stderr or "(empty)\n")
+                f.write("\n--- STDOUT ---\n")
+                f.write(proc.stdout or "(empty)\n")
+        except OSError:
+            pass
+
         if proc.returncode != 0:
-            error = (proc.stderr or proc.stdout or "comfy-gen download failed").strip()[:2000]
+            # Capture the TAIL of stderr — head is dominated by per-poll
+            # progress lines; the actual failure cause lands at the end.
+            err_text = (proc.stderr or proc.stdout or "comfy-gen download failed").strip()
+            error = (
+                "...(truncated head)... " + err_text[-3000:]
+                if len(err_text) > 3000
+                else err_text
+            )
             _install_state.update({
                 "state": "error",
                 "completed_at": _now_iso(),

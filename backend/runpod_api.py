@@ -241,7 +241,7 @@ def create_endpoint(
     workers_min: int = 0,
     workers_max: int = 3,
     idle_timeout: int = 5,
-    execution_timeout_ms: int = 600000,
+    execution_timeout_ms: int = 3600000,  # 1h — needed for preset installs
 ) -> dict[str, Any]:
     body = {
         "name": name,

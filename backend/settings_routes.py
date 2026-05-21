@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from backend import settings_store
+from backend import settings_store, settings_validators
 
 router = APIRouter()
 
@@ -117,3 +117,20 @@ def get_app_pref(name: str, default: str | None = Query(default=None)) -> JSONRe
 def put_app_pref(name: str, body: AppPrefBody) -> JSONResponse:
     settings_store.set_app_pref(name, body.value)
     return JSONResponse({"name": name, "saved": True})
+
+
+# === validation =============================================================
+
+@router.post("/api/settings/validate/{service}")
+def validate_service(service: str) -> JSONResponse:
+    validator = settings_validators.VALIDATORS.get(service)
+    if validator is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no validator available for service: {service}",
+        )
+    try:
+        result = validator()
+    except settings_validators.CredentialNotConfigured as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(result)

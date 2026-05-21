@@ -118,6 +118,21 @@ def _rest_delete(api_key: str, path: str) -> dict[str, Any]:
     return resp.json() if resp.text else {}
 
 
+def _rest_get(api_key: str, path: str) -> dict[str, Any]:
+    try:
+        resp = _cffi_requests.get(
+            f"{REST_BASE}{path}",
+            headers=_headers(api_key),
+            timeout=REQUEST_TIMEOUT,
+        )
+    except Exception as exc:
+        raise RunPodAPIError(f"network error: {exc}") from exc
+
+    if resp.status_code >= 400:
+        raise RunPodAPIError(f"REST HTTP {resp.status_code} GET {path}: {resp.text[:800]}")
+    return resp.json() if resp.text else {}
+
+
 # === API key + introspection ================================================
 
 def validate_api_key(api_key: str) -> bool:
@@ -152,6 +167,16 @@ def create_network_volume(
 
 def delete_network_volume(api_key: str, volume_id: str) -> None:
     _rest_delete(api_key, f"/networkvolumes/{volume_id}")
+
+
+def get_network_volume(api_key: str, volume_id: str) -> dict[str, Any]:
+    """Return the network volume's metadata: id, name, dataCenterId, size (GB).
+
+    Used by the preset installer's disk-space pre-check (sgs-ui-wisp-las.3).
+    RunPod's API only exposes total volume size, not used space — the
+    installer combines this with sum(installed_preset.disk_size_gb) from
+    Settings to estimate free capacity."""
+    return _rest_get(api_key, f"/networkvolumes/{volume_id}")
 
 
 # === templates ==============================================================

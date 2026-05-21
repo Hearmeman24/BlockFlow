@@ -316,3 +316,74 @@ export async function getInstalledPreset(presetId: string): Promise<InstalledPre
   await _throwIfNonOk(res)
   return (await res.json()) as InstalledPresetDetail
 }
+
+// === Stage B: install / uninstall ===========================================
+
+export type PresetModel = {
+  source: 'huggingface' | 'civitai' | 'github-release' | 'https' | string
+  url: string
+  dest: string
+  sha256?: string
+  size_gb: number
+}
+
+export type PresetDetail = {
+  id: string
+  name: string
+  description?: string
+  comfygen_min_version: string
+  tags?: string[]
+  workflow: { url?: string; sha256?: string; json?: Record<string, unknown> }
+  models: PresetModel[]
+  disk_size_estimate_gb: number
+  tested_against?: Record<string, unknown>
+}
+
+export type DiskBudget = {
+  total_gb: number | null
+  used_estimate_gb: number
+  free_estimate_gb: number | null
+}
+
+export type InstallProgress = {
+  state: 'idle' | 'queued' | 'running' | 'completed' | 'error'
+  preset_id: string | null
+  started_at: string | null
+  completed_at: string | null
+  files_total: number
+  error: string | null
+}
+
+export async function getPresetDetail(presetId: string): Promise<PresetDetail> {
+  const res = await fetch(`/api/presets/manifest/${encodeURIComponent(presetId)}`, { method: 'GET' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as PresetDetail
+}
+
+export async function getDiskBudget(): Promise<DiskBudget> {
+  const res = await fetch('/api/presets/disk-budget', { method: 'GET' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as DiskBudget
+}
+
+export async function installPreset(presetId: string): Promise<{ preset_id: string; state: string; files_total: number; started_at: string }> {
+  const res = await fetch('/api/presets/install', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ preset_id: presetId }),
+  })
+  await _throwIfNonOk(res)
+  return res.json()
+}
+
+export async function getInstallProgress(): Promise<InstallProgress> {
+  const res = await fetch('/api/presets/install/progress', { method: 'GET' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as InstallProgress
+}
+
+export async function uninstallPreset(presetId: string): Promise<{ ok: boolean; preset_id: string }> {
+  const res = await fetch(`/api/presets/uninstall/${encodeURIComponent(presetId)}`, { method: 'POST' })
+  await _throwIfNonOk(res)
+  return res.json()
+}

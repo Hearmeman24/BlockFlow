@@ -23,6 +23,11 @@ import {
 import { useSessionState } from '@/lib/use-session-state'
 import type { Job } from '@/lib/types'
 import {
+  getInstalledPreset,
+  listInstalledPresets,
+  type InstalledPresetSummary,
+} from '@/lib/settings/client'
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -495,6 +500,12 @@ function ComfyGenBlock({
   const [loadNodes, setLoadNodes] = useSessionState<LoadNode[]>(`block_${blockId}_load_nodes`, [])
   const [nodeMappings, setNodeMappings] = useSessionState<NodeMapping[]>(`block_${blockId}_mappings`, [])
   const [workflowName, setWorkflowName] = useSessionState(`block_${blockId}_workflow_name`, '')
+  // Stage C+ — preset dropdown (sgs-ui-wisp-las.3). Lets the user load a
+  // workflow + tracked-models bundle from the local Settings.
+  const [installedPresets, setInstalledPresets] = useState<InstalledPresetSummary[]>([])
+  const [selectedPresetId, setSelectedPresetId] = useSessionState(`block_${blockId}_selected_preset`, '')
+  const [presetApplying, setPresetApplying] = useState(false)
+  const [presetApplyError, setPresetApplyError] = useState('')
   const [ksamplers, setKsamplers] = useSessionState<KSamplerInfo[]>(`block_${blockId}_ksamplers`, [])
   const [ksamplerOverrides, setKsamplerOverrides] = useSessionState<Record<string, KSamplerOverride>>(`block_${blockId}_ksampler_overrides`, {})
   const [textOverrides, setTextOverrides] = useSessionState<TextOverrideInfo[]>(`block_${blockId}_text_overrides`, [])
@@ -988,6 +999,33 @@ function ComfyGenBlock({
     const detectedType = await parseWorkflow(text)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
+    }
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName])
+
+  // Refresh the installed-preset list on mount + whenever the user mounts
+  // (cheap GET; the data is from local Settings).
+  useEffect(() => {
+    listInstalledPresets().then(setInstalledPresets).catch(() => setInstalledPresets([]))
+  }, [])
+
+  const handleApplyPreset = useCallback(async (presetId: string) => {
+    if (!presetId) return
+    setPresetApplyError('')
+    setPresetApplying(true)
+    try {
+      const detail = await getInstalledPreset(presetId)
+      const json = JSON.stringify(detail.workflow_json, null, 2)
+      resetRuntimeFromBlock(blockId, { preserveOutputHint: true })
+      setWorkflowJson(json)
+      setWorkflowName(`preset: ${presetId}`)
+      const detectedType = await parseWorkflow(json)
+      if (detectedType === 'image' || detectedType === 'video') {
+        setOutput(detectedType, makePendingOutput(detectedType))
+      }
+    } catch (err) {
+      setPresetApplyError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPresetApplying(false)
     }
   }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName])
 
@@ -1600,9 +1638,37 @@ function ComfyGenBlock({
         />
       </div>
 
-      {/* Workflow upload */}
+      {/* Workflow upload + preset picker */}
       <div className="space-y-1">
         <Label className="text-xs">Workflow</Label>
+        {installedPresets.length > 0 && (
+          <div className="flex items-center gap-2">
+            <Select
+              value={selectedPresetId}
+              onValueChange={(v) => {
+                setSelectedPresetId(v)
+                handleApplyPreset(v)
+              }}
+            >
+              <SelectTrigger className="h-8 text-xs flex-1">
+                <SelectValue placeholder="Load from preset…" />
+              </SelectTrigger>
+              <SelectContent>
+                {installedPresets.map((p) => (
+                  <SelectItem key={p.preset_id} value={p.preset_id} className="text-xs">
+                    {p.preset_id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {presetApplying && (
+              <span className="text-[10px] text-muted-foreground">applying…</span>
+            )}
+          </div>
+        )}
+        {presetApplyError && (
+          <p className="text-[10px] text-red-400">{presetApplyError}</p>
+        )}
         <input
           ref={workflowFileRef}
           type="file"

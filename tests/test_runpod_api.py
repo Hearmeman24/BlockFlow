@@ -124,6 +124,30 @@ def test_create_network_volume_raises_on_400(monkeypatch):
         runpod_api.create_network_volume("rpa_x", name="x", size_gb=1, datacenter_id="X")
 
 
+def test_get_network_volume_returns_metadata(monkeypatch):
+    """sgs-ui-wisp-las.3 Stage B uses this for the install pre-check.
+    RunPod returns total size in GB but no used-space field; the caller
+    derives used from Settings."""
+    body = {"id": "vol_abc", "name": "ComfyGen Vol", "dataCenterId": "EU-RO-1", "size": 200}
+    get = MagicMock(return_value=_resp(200, body))
+    monkeypatch.setattr(runpod_api._cffi_requests, "get", get)
+
+    result = runpod_api.get_network_volume("rpa_x", "vol_abc")
+
+    assert result == body
+    call = get.call_args
+    assert call.args[0] == f"{runpod_api.REST_BASE}/networkvolumes/vol_abc"
+    assert call.kwargs["headers"]["Authorization"] == "Bearer rpa_x"
+
+
+def test_get_network_volume_raises_on_404(monkeypatch):
+    get = MagicMock(return_value=_resp(404, "not found"))
+    monkeypatch.setattr(runpod_api._cffi_requests, "get", get)
+
+    with pytest.raises(runpod_api.RunPodAPIError, match="404"):
+        runpod_api.get_network_volume("rpa_x", "vol_missing")
+
+
 # === create_template ========================================================
 
 def test_create_template_calls_save_template_mutation(monkeypatch):

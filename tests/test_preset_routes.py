@@ -237,3 +237,340 @@ def test_get_installed_detail_returns_workflow_json(client):
 def test_get_installed_detail_404_when_missing(client):
     r = client.get("/api/presets/installed/never-installed")
     assert r.status_code == 404
+
+
+# === Stage B: preset detail fetch ==========================================
+
+QWEN_FULL_PRESET = {
+    "id": "qwen-image-lighting",
+    "name": "Qwen Image 2512 — Lightning 4-step",
+    "comfygen_min_version": "0.2.0",
+    "tags": ["t2i"],
+    "workflow": {
+        "url": "https://example/workflow.json",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    },
+    "models": [
+        {
+            "source": "huggingface",
+            "url": "https://example.com/unet.safetensors",
+            "dest": "diffusion_models/unet.safetensors",
+            "size_gb": 40.9,
+        },
+        {
+            "source": "huggingface",
+            "url": "https://example.com/clip.safetensors",
+            "dest": "text_encoders/clip.safetensors",
+            "size_gb": 9.4,
+        },
+    ],
+    "disk_size_estimate_gb": 55,
+}
+
+
+def test_get_preset_detail_fetches_from_registry(client, mocker):
+    fetch_mock = MagicMock(return_value=_mock_response(QWEN_FULL_PRESET))
+    mocker.patch.object(preset_routes._cffi_requests, "get", fetch_mock)
+    # Populate manifest cache so the route knows the preset_url
+    preset_routes._cache["manifest"] = _manifest([{**_qwen_preset_entry(), "preset_url": "https://example/preset.json"}])
+    preset_routes._cache["fetched_at"] = time.time()
+
+    r = client.get("/api/presets/manifest/qwen-image-lighting")
+
+    assert r.status_code == 200
+    assert r.json()["id"] == "qwen-image-lighting"
+    assert len(r.json()["models"]) == 2
+    fetch_mock.assert_called_once_with("https://example/preset.json", timeout=preset_routes._HTTP_TIMEOUT_SEC)
+
+
+def test_get_preset_detail_404_when_not_in_manifest(client, mocker):
+    """If the preset_id isn't in the manifest, no preset_url to fetch from."""
+    preset_routes._cache["manifest"] = _manifest([])
+    preset_routes._cache["fetched_at"] = time.time()
+
+    r = client.get("/api/presets/manifest/never-existed")
+    assert r.status_code == 404
+
+
+def test_get_preset_detail_refreshes_manifest_when_cache_empty(client, mocker):
+    """If the in-memory manifest cache is empty, refetch it before resolving
+    the preset detail."""
+    manifest = _manifest([{**_qwen_preset_entry(), "preset_url": "https://example/preset.json"}])
+    fetch_mock = MagicMock(side_effect=[
+        _mock_response(manifest),     # first call: manifest refresh
+        _mock_response(QWEN_FULL_PRESET),  # second: preset detail
+    ])
+    mocker.patch.object(preset_routes._cffi_requests, "get", fetch_mock)
+
+    r = client.get("/api/presets/manifest/qwen-image-lighting")
+
+    assert r.status_code == 200
+    assert fetch_mock.call_count == 2
+
+
+# === Stage B: install ======================================================
+
+def _all_creds_and_endpoint():
+    """Helper to populate everything install needs."""
+    settings_store.set_credential("runpod_api_key", "rpa_test")
+    settings_store.set_endpoint("comfygen", endpoint_id="ep_test", template_name="tn", volume_id="vol")
+
+
+@pytest.fixture
+def install_ready(app):
+    _all_creds_and_endpoint()
+    # Reset install state between tests
+    preset_routes._reset_install_state()
+
+
+def test_install_starts_subprocess_with_batch_download(client, install_ready, mocker):
+    """Install kicks off comfy-gen download --batch in a background thread.
+    Returns 202 with the job id immediately."""
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(side_effect=[
+                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "https://example/preset.json"}])),
+                            _mock_response(QWEN_FULL_PRESET),
+                        ]))
+
+    # Mock the subprocess so the install doesn't actually shell out
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.stdout = '{"ok": true, "downloaded_files": 2}'
+    fake_proc.stderr = ""
+    run_mock = mocker.patch.object(preset_routes.subprocess, "run", return_value=fake_proc)
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+
+    assert r.status_code == 202
+    body = r.json()
+    assert body["preset_id"] == "qwen-image-lighting"
+    assert body["state"] in ("queued", "running")
+
+    # Wait for the background thread to finish (the mocked subprocess returns instantly)
+    import time as _t
+    for _ in range(50):
+        if preset_routes._install_state["state"] in ("completed", "error"):
+            break
+        _t.sleep(0.02)
+
+    # Subprocess was called with comfy-gen download --batch + endpoint id
+    run_mock.assert_called_once()
+    args = run_mock.call_args.args[0]
+    assert args[0] == "comfy-gen"
+    assert args[1] == "download"
+    assert "--batch" in args
+    assert "--endpoint-id" in args
+    assert "ep_test" in args
+
+
+def test_install_persists_to_settings_on_success(client, install_ready, mocker):
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(side_effect=[
+                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "https://example/preset.json"}])),
+                            _mock_response(QWEN_FULL_PRESET),
+                        ]))
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.stdout = '{"ok": true}'
+    fake_proc.stderr = ""
+    mocker.patch.object(preset_routes.subprocess, "run", return_value=fake_proc)
+
+    client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+
+    # Wait for completion
+    import time as _t
+    for _ in range(100):
+        if preset_routes._install_state["state"] == "completed":
+            break
+        _t.sleep(0.02)
+
+    ep = settings_store.get_installed_preset("qwen-image-lighting")
+    assert ep is not None
+    assert ep["version"] == "0.2.0"
+    assert ep["disk_size_gb"] == 55
+    # workflow_json is persisted as a JSON string (parseable dict). In this
+    # test the workflow URL fetch isn't separately mocked so the dict can be
+    # empty; what matters is that the column was populated.
+    import json as _json
+    assert isinstance(_json.loads(ep["workflow_json"]), dict)
+
+
+def test_install_409_when_already_running(client, install_ready, mocker):
+    """Block concurrent installs — return 409 with the current preset id."""
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(return_value=_mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}]))))
+
+    # Pretend an install is already in flight
+    preset_routes._install_state.update({
+        "state": "running",
+        "preset_id": "in-progress-preset",
+    })
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+    assert r.status_code == 409
+    assert "in-progress-preset" in r.json()["detail"]
+
+
+def test_install_404_when_preset_not_in_manifest(client, install_ready, mocker):
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(return_value=_mock_response(_manifest([]))))
+
+    r = client.post("/api/presets/install", json={"preset_id": "ghost"})
+    assert r.status_code == 404
+
+
+def test_install_400_when_no_endpoint_configured(client, mocker):
+    """Can't install without a ComfyGen endpoint to download onto."""
+    settings_store.set_credential("runpod_api_key", "rpa_test")
+    # No endpoint set
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(return_value=_mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}]))))
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+    assert r.status_code == 400
+    assert "ComfyGen endpoint" in r.json()["detail"] or "comfygen" in r.json()["detail"].lower()
+
+
+def test_install_records_error_on_subprocess_failure(client, install_ready, mocker):
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(side_effect=[
+                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
+                            _mock_response(QWEN_FULL_PRESET),
+                        ]))
+    fake_proc = MagicMock()
+    fake_proc.returncode = 1
+    fake_proc.stdout = "{}"
+    fake_proc.stderr = "Download failed: network timeout"
+    mocker.patch.object(preset_routes.subprocess, "run", return_value=fake_proc)
+
+    client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+
+    import time as _t
+    for _ in range(100):
+        if preset_routes._install_state["state"] == "error":
+            break
+        _t.sleep(0.02)
+
+    assert preset_routes._install_state["state"] == "error"
+    assert "Download failed" in preset_routes._install_state["error"]
+    # Settings NOT populated on failure
+    assert settings_store.get_installed_preset("qwen-image-lighting") is None
+
+
+def test_install_progress_returns_current_state(client):
+    """The progress route is a simple snapshot of the module-level state."""
+    preset_routes._install_state.update({
+        "state": "running",
+        "preset_id": "qwen-image-lighting",
+        "started_at": "2026-05-21T15:00:00",
+        "files_total": 4,
+    })
+
+    r = client.get("/api/presets/install/progress")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "running"
+    assert body["preset_id"] == "qwen-image-lighting"
+    assert body["files_total"] == 4
+
+
+# === Stage B: uninstall ====================================================
+
+def test_uninstall_drops_settings_row(client):
+    settings_store.record_installed_preset(
+        preset_id="qwen-image-lighting",
+        version="0.2.0",
+        workflow_json='{}',
+        disk_size_gb=65,
+    )
+    assert settings_store.get_installed_preset("qwen-image-lighting") is not None
+
+    r = client.post("/api/presets/uninstall/qwen-image-lighting")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert settings_store.get_installed_preset("qwen-image-lighting") is None
+
+
+def test_uninstall_404_when_not_installed(client):
+    r = client.post("/api/presets/uninstall/never-was")
+    assert r.status_code == 404
+
+
+# === Stage B: disk-budget pre-check ========================================
+
+def test_disk_budget_returns_total_from_runpod_minus_settings_used(client, install_ready, mocker):
+    mocker.patch.object(preset_routes.runpod_api, "get_network_volume",
+                        return_value={"id": "vol_test", "size": 200})
+    # Pretend two presets already installed
+    settings_store.record_installed_preset(
+        preset_id="a", version="0.1.0", workflow_json="{}", disk_size_gb=50,
+    )
+    settings_store.record_installed_preset(
+        preset_id="b", version="0.1.0", workflow_json="{}", disk_size_gb=30,
+    )
+
+    r = client.get("/api/presets/disk-budget")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total_gb"] == 200
+    assert body["used_estimate_gb"] == 80
+    assert body["free_estimate_gb"] == 120
+
+
+def test_disk_budget_returns_total_None_when_runpod_unreachable(client, install_ready, mocker):
+    """RunPod transient failure shouldn't blow up the budget endpoint —
+    return total/free as None so the UI can show 'unknown'."""
+    mocker.patch.object(preset_routes.runpod_api, "get_network_volume",
+                        side_effect=preset_routes.runpod_api.RunPodAPIError("HTTP 502"))
+
+    r = client.get("/api/presets/disk-budget")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total_gb"] is None
+    assert body["free_estimate_gb"] is None
+    # used_estimate_gb still works (Settings-only)
+    assert body["used_estimate_gb"] == 0
+
+
+def test_install_400_when_preset_exceeds_disk_budget(client, install_ready, mocker):
+    """65GB preset + 50GB already used + 100GB volume → only 50GB free → reject."""
+    mocker.patch.object(preset_routes.runpod_api, "get_network_volume",
+                        return_value={"id": "vol_test", "size": 100})
+    settings_store.record_installed_preset(
+        preset_id="existing", version="0.1.0", workflow_json="{}", disk_size_gb=50,
+    )
+
+    big_preset = {**QWEN_FULL_PRESET, "disk_size_estimate_gb": 65}
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(side_effect=[
+                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
+                            _mock_response(big_preset),
+                        ]))
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "insufficient disk" in detail.lower()
+    assert "65" in detail  # needed
+    assert "50" in detail  # free estimate (100 - 50)
+
+
+def test_install_proceeds_when_disk_budget_unknown(client, install_ready, mocker):
+    """If RunPod is unreachable for the volume query, fall through (don't
+    block on a check we can't perform)."""
+    mocker.patch.object(preset_routes.runpod_api, "get_network_volume",
+                        side_effect=preset_routes.runpod_api.RunPodAPIError("HTTP 502"))
+    mocker.patch.object(preset_routes._cffi_requests, "get",
+                        MagicMock(side_effect=[
+                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
+                            _mock_response(QWEN_FULL_PRESET),
+                        ]))
+    fake_proc = MagicMock()
+    fake_proc.returncode = 0
+    fake_proc.stdout = '{}'
+    fake_proc.stderr = ""
+    mocker.patch.object(preset_routes.subprocess, "run", return_value=fake_proc)
+
+    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
+    assert r.status_code == 202

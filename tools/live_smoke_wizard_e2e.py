@@ -125,11 +125,11 @@ def submit_workflow(endpoint_id: str) -> dict:
     )
     if proc.returncode != 0:
         log(f"  comfy-gen submit failed (exit {proc.returncode}):")
-        log(f"  ==== full stderr ====")
+        log("  ==== full stderr ====")
         log(proc.stderr)
-        log(f"  ==== full stdout ====")
+        log("  ==== full stdout ====")
         log(proc.stdout)
-        log(f"  ==== end of comfy-gen submit output ====")
+        log("  ==== end of comfy-gen submit output ====")
         raise RuntimeError(f"workflow submission failed: exit {proc.returncode}")
     try:
         return json.loads(proc.stdout)

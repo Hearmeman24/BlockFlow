@@ -168,13 +168,17 @@ def test_provision_persists_endpoint_to_settings(client, all_creds_configured, m
     mocker.patch.object(wizard_routes.runpod_api, "create_endpoint",
                         return_value={"id": "ep_x"})
 
-    client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    template_name = r.json()["template_name"]
 
     # State assertion: Settings store actually has the endpoint persisted
     ep = settings_store.get_endpoint("comfygen")
     assert ep is not None
     assert ep["endpoint_id"] == "ep_x"
     assert ep["template_id"] == "tmpl_x"
+    # Regression for Stage B's live-smoke finding: template_name MUST be
+    # persisted so tear-down can call deleteTemplate(name=...) later.
+    assert ep["template_name"] == template_name
     assert ep["volume_id"] == "vol_x"
     assert ep["gpu_tier"] == "budget"
 

@@ -133,6 +133,7 @@ def test_set_endpoint_round_trip_all_fields(store):
         endpoint_id="ep_abc123",
         volume_id="vol_xyz",
         template_id="tmpl_abc",
+        template_name="blockflow-comfygen-abc-template-abc",
         gpu_tier="recommended",
         volume_size_gb=200,
         max_workers=3,
@@ -144,6 +145,7 @@ def test_set_endpoint_round_trip_all_fields(store):
         "endpoint_id": "ep_abc123",
         "volume_id": "vol_xyz",
         "template_id": "tmpl_abc",
+        "template_name": "blockflow-comfygen-abc-template-abc",
         "gpu_tier": "recommended",
         "volume_size_gb": 200,
         "max_workers": 3,
@@ -158,9 +160,73 @@ def test_set_endpoint_with_only_required_fields(store):
     assert ep["endpoint_id"] == "ep_trainer123"
     assert ep["volume_id"] is None
     assert ep["template_id"] is None
+    assert ep["template_name"] is None
     assert ep["gpu_tier"] is None
     assert ep["volume_size_gb"] is None
     assert ep["max_workers"] is None
+
+
+def test_set_endpoint_persists_template_name_for_teardown(store):
+    """Regression for the bug found in Stage B's live e2e smoke: template_name
+    was missing from the schema, so a later tear-down couldn't delete the
+    template (which requires NAME, not ID)."""
+    store.set_endpoint(
+        "comfygen",
+        endpoint_id="ep_x",
+        template_id="tmpl_x",
+        template_name="blockflow-comfygen-x-template-x",
+    )
+    ep = store.get_endpoint("comfygen")
+    assert ep["template_name"] == "blockflow-comfygen-x-template-x"
+
+
+def test_set_endpoint_migrates_legacy_db_without_template_name(tmp_path, monkeypatch):
+    """If a DB was created before template_name existed, init_db should add
+    the column via ALTER TABLE (without dropping existing data)."""
+    db_path = tmp_path / "legacy.db"
+    monkeypatch.setattr(settings_store, "DB_PATH", db_path)
+
+    # Build a legacy schema by hand: no template_name column.
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE settings_endpoints (
+            type TEXT PRIMARY KEY,
+            endpoint_id TEXT NOT NULL,
+            volume_id TEXT,
+            template_id TEXT,
+            gpu_tier TEXT,
+            volume_size_gb INTEGER,
+            max_workers INTEGER,
+            provisioned_at TEXT,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        INSERT INTO settings_endpoints
+            (type, endpoint_id, volume_id, template_id, gpu_tier, volume_size_gb,
+             max_workers, provisioned_at, updated_at)
+        VALUES ('comfygen', 'ep_legacy', 'vol_legacy', 'tmpl_legacy', 'budget',
+                100, 2, NULL, '2026-01-01T00:00:00')
+    """)
+    conn.commit()
+    conn.close()
+
+    # init_db should ALTER TABLE to add template_name, preserving the row
+    settings_store.init_db()
+
+    ep = settings_store.get_endpoint("comfygen")
+    assert ep is not None
+    assert ep["endpoint_id"] == "ep_legacy"
+    assert ep["template_name"] is None  # column now exists, defaults to NULL
+
+    # And we can update + persist template_name
+    settings_store.set_endpoint(
+        "comfygen",
+        endpoint_id="ep_legacy",
+        template_name="back-filled-name",
+    )
+    assert settings_store.get_endpoint("comfygen")["template_name"] == "back-filled-name"
 
 
 def test_get_endpoint_unset_returns_none(store):

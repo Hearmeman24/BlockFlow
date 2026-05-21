@@ -193,12 +193,14 @@ def provision(body: ProvisionBody) -> JSONResponse:
 
     endpoint_id = endpoint["id"]
 
-    # Persist to Settings
+    # Persist to Settings. template_name is required so future tear-down can
+    # call deleteTemplate (which takes NAME not ID).
     settings_store.set_endpoint(
         "comfygen",
         endpoint_id=endpoint_id,
         volume_id=volume_id,
         template_id=template_id,
+        template_name=template_name,
         gpu_tier=body.tier,
         volume_size_gb=body.volume_size_gb,
         max_workers=body.max_workers,

@@ -75,8 +75,32 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
   }, [dsId])
 
   const handleDelete = async () => {
+    if (!confirm(
+      `Delete dataset "${dsName}" permanently?\n\nThis removes the run record AND the on-disk folder ` +
+      `(images, captions, manifest). It cannot be undone. Any pipeline that referenced this dataset will fail.`
+    )) return
     setDeleting(true)
-    try { await deleteRun(run.id); onDeleted?.() } finally { setDeleting(false) }
+    try {
+      // 1) Delete the folder first — if this fails, keep the run so the user
+      //    can retry; better than orphaning a run that points to nothing.
+      if (dsId) {
+        const res = await fetch(`/api/blocks/dataset_create/datasets/${encodeURIComponent(dsId)}`, {
+          method: 'DELETE',
+        })
+        const d = await res.json().catch(() => null)
+        if (!res.ok && res.status !== 404) {
+          alert(`Failed to delete dataset folder: ${d?.error || `HTTP ${res.status}`}`)
+          return
+        }
+      }
+      // 2) Delete the run record.
+      await deleteRun(run.id)
+      onDeleted?.()
+    } catch (e) {
+      alert(`Delete failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   const handleToggleFavorite = async () => {

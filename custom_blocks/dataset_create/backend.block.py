@@ -722,6 +722,30 @@ def _resolve_dataset_folder(folder_or_id: str) -> Path | None:
     return None
 
 
+@router.delete("/datasets/{folder_name}")
+def delete_dataset(folder_name: str) -> JSONResponse:
+    """Permanently delete a dataset folder (images + captions + manifest).
+
+    Resolves the folder tolerantly: direct name, _<id[:8]> suffix, or
+    manifest.id field. Returns the canonical folder name that was removed
+    so the caller can confirm.
+    """
+    import shutil
+    folder = _resolve_dataset_folder(folder_name)
+    if folder is None:
+        return JSONResponse({"ok": False, "error": "dataset not found"}, status_code=404)
+    # Belt-and-suspenders: refuse to delete anything outside DATASETS_DIR
+    try:
+        folder.resolve().relative_to(DATASETS_DIR.resolve())
+    except Exception:
+        return JSONResponse({"ok": False, "error": "refusing to delete outside datasets dir"}, status_code=400)
+    try:
+        shutil.rmtree(folder)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"rmtree failed: {exc}"}, status_code=500)
+    return JSONResponse({"ok": True, "folder": folder.name})
+
+
 @router.get("/datasets/{folder_name}/caption-status")
 def dataset_caption_status(folder_name: str) -> JSONResponse:
     """Report how many images in the dataset have a matching .txt caption file.

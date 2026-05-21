@@ -31,14 +31,15 @@ jobs:
       - name: Type-check
         run: npx tsc --noEmit
 
-      # NOTE: 11 setState-in-effect errors remain (architectural debt — each
-      # requires a per-component refactor moving derived state out of effects).
-      # .13 fixed the conditional-hook bugs (real React rules-of-hooks
-      # violations) but parked the setState-in-effect cleanup for a follow-up.
-      # Keep continue-on-error so the warnings stay visible in CI.
+      # Lint hard-fails (sgs-ui-wisp-las.13 follow-up). .13's first commit
+      # fixed the conditional-hook bugs (real React rules-of-hooks
+      # violations). The React 19 `react-hooks/set-state-in-effect` rule was
+      # downgraded to a warning in eslint.config.mjs (it flags legitimate
+      # URL.createObjectURL patterns with required revokeObjectURL cleanup;
+      # see the inline justification there). 0 errors remain; ~20 warnings
+      # surface as advice without blocking.
       - name: Lint
         run: npm run lint
-        continue-on-error: true
 
       - name: Test (vitest + jsdom + RTL)
         run: npm test

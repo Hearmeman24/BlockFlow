@@ -1,4 +1,14 @@
 #!/usr/bin/env node
+//
+// Block-registry codegen.
+//
+// Discovers blocks from two dirs:
+//   - `custom_blocks/` (always, public blocks)
+//   - `private_blocks/` (optional overlay; gitignored; for blocks that ship
+//      privately and never enter the public OSS build)
+//
+// Both dirs follow the same layout: `<slug>/frontend.block.tsx` (+ optional
+// `backend.block.py`). Slug collisions across the two dirs are an error.
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
@@ -8,13 +18,14 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const frontendDir = path.resolve(scriptDir, '..')
 const repoRoot = path.resolve(frontendDir, '..')
 const customBlocksDir = path.join(repoRoot, 'custom_blocks')
+const privateBlocksDir = path.join(repoRoot, 'private_blocks')
 const outFile = path.join(frontendDir, 'src', 'components', 'pipeline', 'custom_blocks', '_register.ts')
 const generatedDir = path.join(frontendDir, 'src', 'components', 'pipeline', 'custom_blocks', 'generated')
 
 const VALID_BINDING_MODES = new Set(['upstream_only', 'upstream_or_local', 'local_only'])
 const VALID_FORWARD_WHEN = new Set(['if_present', 'always'])
 
-function slugToVarName(slug) {
+export function slugToVarName(slug) {
   const parts = slug
     .replace(/[^a-zA-Z0-9]+/g, '_')
     .split('_')
@@ -30,26 +41,57 @@ function slugToVarName(slug) {
   return `${safeBase}BlockDef`
 }
 
-async function discoverBlocks() {
-  try {
-    const entries = await fs.readdir(customBlocksDir, { withFileTypes: true })
-    const blocks = []
+/**
+ * Discover blocks across one or more source dirs.
+ *
+ * @param {Array<{path: string, source: string}>} dirs
+ *   Each entry has a filesystem path and a human-facing `source` label
+ *   (e.g. 'custom_blocks', 'private_blocks'). Dirs that don't exist are
+ *   treated as empty.
+ * @returns {Promise<Array<{slug: string, source: string, sourcePath: string}>>}
+ *   Sorted alphabetically by slug.
+ * @throws if a slug appears in more than one dir.
+ */
+export async function discoverBlocks(dirs) {
+  const bySlug = new Map() // slug -> { slug, source, sourcePath }
+  const collisions = new Map() // slug -> [source, source]
+
+  for (const { path: dirPath, source } of dirs) {
+    let entries
+    try {
+      entries = await fs.readdir(dirPath, { withFileTypes: true })
+    } catch {
+      continue // dir doesn't exist → treat as empty
+    }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue
       const slug = entry.name
-      const frontendEntry = path.join(customBlocksDir, slug, 'frontend.block.tsx')
+      const sourcePath = path.join(dirPath, slug, 'frontend.block.tsx')
       try {
-        await fs.access(frontendEntry)
-        blocks.push(slug)
+        await fs.access(sourcePath)
       } catch {
-        // Ignore folders without frontend entry.
+        continue // no frontend entry → skip
+      }
+      if (bySlug.has(slug)) {
+        const prior = bySlug.get(slug)
+        collisions.set(slug, [prior.source, source])
+      } else {
+        bySlug.set(slug, { slug, source, sourcePath })
       }
     }
-    blocks.sort((a, b) => a.localeCompare(b))
-    return blocks
-  } catch {
-    return []
   }
+
+  if (collisions.size > 0) {
+    const lines = []
+    for (const [slug, [a, b]] of collisions) {
+      lines.push(`  - "${slug}" exists in both ${a}/ and ${b}/`)
+    }
+    throw new Error(
+      `Block slug collision between source dirs. Rename one of the colliding dirs to disambiguate.\n${lines.join('\n')}`,
+    )
+  }
+
+  return [...bySlug.values()].sort((a, b) => a.slug.localeCompare(b.slug))
 }
 
 function findArraySlice(source, propName) {
@@ -157,7 +199,7 @@ function parseNamedPorts(arraySlice) {
   return names
 }
 
-function validateBlockContract(slug, sourcePath, source) {
+export function validateBlockContract(slug, sourcePath, source) {
   const errors = []
 
   const inputsSlice = findArraySlice(source, 'inputs')
@@ -240,22 +282,30 @@ function validateBlockContract(slug, sourcePath, source) {
   }
 }
 
-function generateRegistrySource(blockSlugs) {
+/**
+ * Build the `_register.ts` source content.
+ *
+ * @param {Array<{slug: string, source: string, sourcePath: string}>} blocks
+ *   Output of `discoverBlocks`. The `source` field is intentionally NOT
+ *   emitted: consumers don't need to know whether a block came from
+ *   custom_blocks/ or private_blocks/.
+ */
+export function generateRegistrySource(blocks) {
   const lines = []
   lines.push('// AUTO-GENERATED. DO NOT EDIT.')
   lines.push('// Run `npm run gen:custom-blocks` to regenerate.')
   lines.push("import { registerBlockDef } from '@/lib/pipeline/registry'")
 
-  for (const slug of blockSlugs) {
+  for (const { slug } of blocks) {
     const varName = slugToVarName(slug)
     lines.push(`import { blockDef as ${varName} } from './generated/${slug}'`)
   }
 
   lines.push('')
-  if (blockSlugs.length === 0) {
+  if (blocks.length === 0) {
     lines.push('// No custom blocks discovered.')
   } else {
-    for (const slug of blockSlugs) {
+    for (const { slug } of blocks) {
       lines.push(`registerBlockDef(${slugToVarName(slug)})`)
     }
   }
@@ -276,9 +326,9 @@ async function writeIfChanged(filePath, nextContent) {
   return true
 }
 
-async function syncGeneratedBlockModules(blockSlugs) {
+async function syncGeneratedBlockModules(blocks) {
   await fs.mkdir(generatedDir, { recursive: true })
-  const expected = new Set(blockSlugs.map((slug) => `${slug}.tsx`))
+  const expected = new Set(blocks.map(({ slug }) => `${slug}.tsx`))
   const existing = await fs.readdir(generatedDir, { withFileTypes: true })
 
   for (const entry of existing) {
@@ -289,13 +339,12 @@ async function syncGeneratedBlockModules(blockSlugs) {
     }
   }
 
-  for (const slug of blockSlugs) {
-    const sourcePath = path.join(customBlocksDir, slug, 'frontend.block.tsx')
+  for (const { slug, source, sourcePath } of blocks) {
     const sourceBody = await fs.readFile(sourcePath, 'utf8')
     validateBlockContract(slug, sourcePath, sourceBody)
     const generatedBody = [
       '// AUTO-GENERATED. DO NOT EDIT.',
-      `// Source: custom_blocks/${slug}/frontend.block.tsx`,
+      `// Source: ${source}/${slug}/frontend.block.tsx`,
       sourceBody,
       '',
     ].join('\n')
@@ -304,9 +353,12 @@ async function syncGeneratedBlockModules(blockSlugs) {
 }
 
 async function main() {
-  const blockSlugs = await discoverBlocks()
-  await syncGeneratedBlockModules(blockSlugs)
-  const source = generateRegistrySource(blockSlugs)
+  const blocks = await discoverBlocks([
+    { path: customBlocksDir, source: 'custom_blocks' },
+    { path: privateBlocksDir, source: 'private_blocks' },
+  ])
+  await syncGeneratedBlockModules(blocks)
+  const source = generateRegistrySource(blocks)
   const changed = await writeIfChanged(outFile, source)
   if (changed) {
     console.log(`[gen-custom-block-registry] Updated ${path.relative(frontendDir, outFile)}`)
@@ -315,7 +367,19 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`[gen-custom-block-registry] ${error instanceof Error ? error.stack : String(error)}`)
-  process.exit(1)
-})
+// Only run main() when this file is the entry point — allows tests to import
+// the exported functions without triggering the CLI side-effects.
+const isEntryPoint = (() => {
+  try {
+    return fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? '')
+  } catch {
+    return false
+  }
+})()
+
+if (isEntryPoint) {
+  main().catch((error) => {
+    console.error(`[gen-custom-block-registry] ${error instanceof Error ? error.stack : String(error)}`)
+    process.exit(1)
+  })
+}

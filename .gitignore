@@ -15,6 +15,9 @@ prompt_writer_settings.json
 # Flow data (gitignored, personal pipelines)
 flows/*.flow.json
 
+# Private block overlay (local-only blocks that never enter the public OSS build)
+private_blocks/
+
 # Dev artifacts
 architecture.md
 frontend/architecture.md

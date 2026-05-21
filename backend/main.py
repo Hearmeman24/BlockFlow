@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+from pathlib import Path
+from typing import Iterable
 
-from fastapi import FastAPI
-from fastapi import APIRouter
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend import config, state, routes
+from backend import config, routes, state
 
 app = FastAPI(title="BlockFlow API")
 
@@ -23,26 +24,61 @@ app.add_middleware(
 app.include_router(routes.router)
 
 
-def _load_custom_block_sidecars() -> None:
-    """Discover and mount optional backend sidecars from custom_blocks/*/backend.block.py."""
-    blocks_root = config.ROOT_DIR / "custom_blocks"
-    if not blocks_root.exists():
-        print(f"[custom-blocks] directory not found: {blocks_root}")
-        return
+def _discover_sidecars(dirs: Iterable[tuple[Path, str]]) -> list[tuple[str, str, Path]]:
+    """Walk each (root, source_label) pair; collect candidate (slug, source, backend_entry).
 
-    block_dirs = sorted((path for path in blocks_root.iterdir() if path.is_dir()), key=lambda path: path.name)
-    if not block_dirs:
-        print("[custom-blocks] no blocks found")
-        return
+    Returns sidecars sorted by slug. Raises on cross-dir slug collision so the
+    loader can fail before any router is mounted (all-or-nothing semantics).
 
-    loaded: list[str] = []
-    for block_dir in block_dirs:
-        slug = block_dir.name
-        backend_entry = block_dir / "backend.block.py"
-        if not backend_entry.exists():
-            print(f"[custom-blocks] {slug}: frontend-only")
+    A dir that doesn't exist is treated as empty.
+    A block dir without `backend.block.py` is skipped (frontend-only block).
+    """
+    by_slug: dict[str, tuple[str, Path]] = {}  # slug -> (source, backend_entry)
+    collisions: list[tuple[str, str, str]] = []  # (slug, source_a, source_b)
+
+    for blocks_root, source in dirs:
+        if not blocks_root.exists():
             continue
+        for block_dir in sorted(blocks_root.iterdir(), key=lambda p: p.name):
+            if not block_dir.is_dir():
+                continue
+            slug = block_dir.name
+            backend_entry = block_dir / "backend.block.py"
+            if not backend_entry.exists():
+                continue
+            if slug in by_slug:
+                prior_source, _ = by_slug[slug]
+                collisions.append((slug, prior_source, source))
+            else:
+                by_slug[slug] = (source, backend_entry)
 
+    if collisions:
+        lines = [f"  - '{slug}' exists in both {a}/ and {b}/" for slug, a, b in collisions]
+        raise RuntimeError(
+            "[custom-blocks] slug collision across source dirs (rename to disambiguate):\n"
+            + "\n".join(lines)
+        )
+
+    return sorted(
+        ((slug, source, entry) for slug, (source, entry) in by_slug.items()),
+        key=lambda t: t[0],
+    )
+
+
+def load_block_sidecars(target_app: FastAPI, dirs: Iterable[tuple[Path, str]]) -> list[str]:
+    """Discover + mount backend sidecars from each (root, source_label) pair.
+
+    Mounts each sidecar's `router` at `/api/blocks/<slug>`. Returns the
+    loaded slugs (sorted). Raises RuntimeError on:
+      - slug collision across source dirs (raised before any mount)
+      - sidecar missing the `router` export
+      - sidecar `router` not an APIRouter
+      - sidecar import failure
+    """
+    sidecars = _discover_sidecars(dirs)
+    loaded: list[str] = []
+
+    for slug, source, backend_entry in sidecars:
         module_name = "custom_block_" + "".join(ch if ch.isalnum() else "_" for ch in slug) + "_backend"
         spec = importlib.util.spec_from_file_location(module_name, backend_entry)
         if spec is None or spec.loader is None:
@@ -61,17 +97,25 @@ def _load_custom_block_sidecars() -> None:
             raise RuntimeError(f"[custom-blocks] {slug}: `router` must be APIRouter, got {type(router)}")
 
         prefix = f"/api/blocks/{slug}"
-        app.include_router(router, prefix=prefix)
+        target_app.include_router(router, prefix=prefix)
         loaded.append(slug)
-        print(f"[custom-blocks] {slug}: loaded backend sidecar at {prefix}")
+        print(f"[custom-blocks] {slug}: loaded from {source}/ at {prefix}")
 
     if loaded:
         print(f"[custom-blocks] loaded backend sidecars: {', '.join(loaded)}")
     else:
         print("[custom-blocks] no backend sidecars loaded")
 
+    return loaded
 
-_load_custom_block_sidecars()
+
+load_block_sidecars(
+    app,
+    [
+        (config.ROOT_DIR / "custom_blocks", "custom_blocks"),
+        (config.ROOT_DIR / "private_blocks", "private_blocks"),
+    ],
+)
 app.mount("/outputs", StaticFiles(directory=str(config.LOCAL_OUTPUT_DIR)), name="outputs")
 
 state.init()

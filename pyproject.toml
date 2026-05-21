@@ -17,6 +17,7 @@ dev = [
     "pytest>=8",
     "pytest-mock>=3",
     "ruff>=0.6",
+    "httpx>=0.27",  # for fastapi.testclient
 ]
 
 [tool.pytest.ini_options]

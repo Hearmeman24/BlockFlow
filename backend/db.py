@@ -293,3 +293,30 @@ def count_jobs() -> int:
     row = conn.execute("SELECT COUNT(*) AS count FROM jobs").fetchone()
     conn.close()
     return int(row["count"]) if row else 0
+
+
+def prune_runs_older_than(retention_days: int) -> int:
+    """Delete non-favorited runs older than `retention_days` days.
+
+    Returns the number of rows deleted. A negative `retention_days` value
+    is treated as invalid input and is a no-op (defensive against config
+    bugs silently wiping user data).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    if retention_days < 0:
+        return 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    cutoff_iso = cutoff.isoformat()
+
+    with _lock:
+        conn = _get_conn()
+        cursor = conn.execute(
+            "DELETE FROM runs WHERE favorited = 0 AND created_at < ?",
+            (cutoff_iso,),
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+    return int(deleted)

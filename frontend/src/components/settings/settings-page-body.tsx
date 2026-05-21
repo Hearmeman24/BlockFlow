@@ -2,9 +2,14 @@
 
 import { useRouter, useSearchParams } from 'next/navigation'
 
+import { AppTab } from './app-tab'
 import { CredentialsTab } from './credentials-tab'
 import { EndpointsTab } from './endpoints-tab'
 import { SETTINGS_TABS, SettingsLayout, type SettingsTabId } from './layout'
+
+// BlockFlow version. Hardcoded for now; in production this could be read at
+// build time from pyproject.toml.
+const BLOCKFLOW_VERSION = '0.1.0'
 
 function isSettingsTab(value: string | null): value is SettingsTabId {
   return value === 'credentials' || value === 'endpoints' || value === 'storage' || value === 'app'
@@ -32,7 +37,7 @@ export function SettingsPageBody() {
           stage="Deferred until preset installer (sgs-ui-wisp-las.3) lands"
         />
       )}
-      {activeTab === 'app' && <Placeholder section="App" stage="Stage 6" />}
+      {activeTab === 'app' && <AppTab version={BLOCKFLOW_VERSION} />}
     </SettingsLayout>
   )
 }

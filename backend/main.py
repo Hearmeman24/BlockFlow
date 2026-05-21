@@ -8,7 +8,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend import config, routes, settings_routes, settings_store, state
+from backend import config, db, routes, settings_routes, settings_store, state
 
 app = FastAPI(title="BlockFlow API")
 
@@ -28,6 +28,35 @@ app.include_router(settings_routes.router)
 # Settings on import in later beads). Safe to call repeatedly — it's a no-op
 # once the tables are present.
 settings_store.init_db()
+
+
+def _prune_run_history_on_startup() -> None:
+    """Apply the user's retention setting to the run history table on launch.
+
+    Reads `run_history_retention_days` from app_prefs. Accepts:
+      - integer days as a string (e.g. "30", "90", "365")
+      - the literal "forever" → skip pruning
+    Unset → fall back to 90 days (the documented default in the UI).
+    Invalid values → log and skip.
+    """
+    # Ensure the runs table exists before we try to delete from it. db.init_db
+    # is idempotent and also runs later via state.init().
+    db.init_db()
+
+    raw = settings_store.get_app_pref("run_history_retention_days", default="90")
+    if raw == "forever":
+        return
+    try:
+        days = int(raw or "90")
+    except ValueError:
+        print(f"[run-history] invalid retention pref '{raw}'; skipping prune")
+        return
+    deleted = db.prune_runs_older_than(days)
+    if deleted:
+        print(f"[run-history] pruned {deleted} run(s) older than {days} days")
+
+
+_prune_run_history_on_startup()
 
 
 def _discover_sidecars(dirs: Iterable[tuple[Path, str]]) -> list[tuple[str, str, Path]]:

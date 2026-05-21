@@ -25,6 +25,7 @@ import {
 import { useSessionState } from '@/lib/use-session-state'
 import type { Job } from '@/lib/types'
 import {
+  getEndpoint,
   getInstalledPreset,
   listInstalledPresets,
   type InstalledPresetSummary,
@@ -489,12 +490,30 @@ function ComfyGenBlock({
 }: BlockComponentProps) {
   const { pipeline, addBlock, resetRuntimeFromBlock } = usePipeline()
 
-  const [endpointId, setEndpointIdRaw] = useState(() => {
+  // Endpoint ID resolution (sgs-ui-wisp-las.1 follow-up):
+  //   1. localStorage override (user typed something into the field) wins
+  //   2. Otherwise, fall back to the ComfyGen endpoint configured in Settings
+  //      via the wizard (Set up / Attach existing)
+  //   3. Otherwise, empty → block prompts the user to configure something
+  // `endpointId` (used by all the API calls below) is the resolved EFFECTIVE
+  // value. `endpointIdOverride` is what the input field binds to + persists
+  // to localStorage on edit.
+  const [endpointIdOverride, setEndpointIdOverride] = useState(() => {
     if (typeof window === 'undefined') return ''
     return localStorage.getItem(ENDPOINT_KEY) || ''
   })
+  const [settingsEndpointId, setSettingsEndpointId] = useState<string | null>(null)
+
+  useEffect(() => {
+    getEndpoint('comfygen')
+      .then((ep) => setSettingsEndpointId(ep?.endpoint_id ?? null))
+      .catch(() => setSettingsEndpointId(null))
+  }, [])
+
+  const endpointId = endpointIdOverride.trim() || settingsEndpointId || ''
+
   const persistEndpoint = useCallback((v: string) => {
-    setEndpointIdRaw(v)
+    setEndpointIdOverride(v)
     localStorage.setItem(ENDPOINT_KEY, v)
   }, [])
 
@@ -1629,15 +1648,25 @@ function ComfyGenBlock({
         </div>
       )}
 
-      {/* Endpoint ID */}
+      {/* Endpoint ID — Settings is the source of truth; this field is an
+          optional per-block override (persisted to localStorage). */}
       <div className="space-y-1">
         <Label className="text-xs">Endpoint ID</Label>
         <Input
-          value={endpointId}
+          value={endpointIdOverride}
           onChange={(e) => persistEndpoint(e.target.value)}
-          placeholder="RunPod endpoint ID (or from .env)"
+          placeholder={
+            settingsEndpointId
+              ? `Using ${settingsEndpointId} from Settings — type to override`
+              : 'RunPod endpoint ID (set one up in Settings → Endpoints)'
+          }
           className="h-8 text-xs"
         />
+        {settingsEndpointId && !endpointIdOverride.trim() && (
+          <p className="text-[10px] text-muted-foreground/80">
+            From Settings → Endpoints → ComfyGen.
+          </p>
+        )}
       </div>
 
       {/* Workflow upload + preset picker */}

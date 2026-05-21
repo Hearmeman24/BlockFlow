@@ -104,6 +104,15 @@ def _make_r2_client(*, endpoint_url: str, access_key_id: str, secret_access_key:
 
 
 def validate_r2() -> ValidationResult:
+    """Verify the R2/S3 credentials can reach the CONFIGURED bucket.
+
+    Deliberately does NOT call list_buckets() — Cloudflare R2 tokens are
+    typically scoped to a single bucket and lack account-wide ListBuckets
+    perms. list_buckets() returns AccessDenied even with valid creds for
+    the bucket they're actually scoped to. head_bucket on the configured
+    bucket is the correct test: works for bucket-scoped tokens AND
+    account-wide tokens, surfaces a clear error otherwise.
+    """
     creds = {field: settings_store.get_credential(field) for field in R2_FIELDS}
     missing = sorted(field for field, value in creds.items() if not value)
     if missing:
@@ -116,23 +125,25 @@ def validate_r2() -> ValidationResult:
         access_key_id=creds["r2_access_key_id"],
         secret_access_key=creds["r2_secret_access_key"],
     )
+    bucket = creds["r2_bucket"]
     try:
-        listing = client.list_buckets()
+        client.head_bucket(Bucket=bucket)
     except ValidationFailed as exc:
         return ValidationResult(ok=False, error=str(exc), info=None)
     except Exception as exc:
-        return ValidationResult(ok=False, error=f"{type(exc).__name__}: {exc}", info=None)
+        # boto3 ClientError already stringifies as "An error occurred (Code)..."
+        # which is readable. Keep the type prefix only for genuinely unfamiliar
+        # exceptions (DNS errors, certificate issues, etc.).
+        msg = str(exc)
+        if "AccessDenied" in msg or "NoSuchBucket" in msg or "Not Found" in msg or "404" in msg:
+            return ValidationResult(ok=False, error=msg, info=None)
+        return ValidationResult(ok=False, error=f"{type(exc).__name__}: {msg}", info=None)
 
-    expected_bucket = creds["r2_bucket"]
-    bucket_names = [b.get("Name") for b in listing.get("Buckets", [])]
-    if expected_bucket not in bucket_names:
-        return ValidationResult(
-            ok=False,
-            error=f"bucket '{expected_bucket}' not found in account (visible: {bucket_names})",
-            info=None,
-        )
-
-    return ValidationResult(ok=True, error=None, info={"buckets_visible": len(bucket_names)})
+    return ValidationResult(
+        ok=True,
+        error=None,
+        info={"bucket_reachable": bucket},
+    )
 
 
 # === OpenRouter =============================================================

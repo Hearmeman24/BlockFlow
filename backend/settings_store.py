@@ -31,6 +31,7 @@ _ENDPOINT_COLS: tuple[str, ...] = (
     "endpoint_id",
     "volume_id",
     "template_id",
+    "template_name",
     "gpu_tier",
     "volume_size_gb",
     "max_workers",
@@ -67,6 +68,7 @@ def init_db() -> None:
                     endpoint_id TEXT NOT NULL,
                     volume_id TEXT,
                     template_id TEXT,
+                    template_name TEXT,
                     gpu_tier TEXT,
                     volume_size_gb INTEGER,
                     max_workers INTEGER,
@@ -81,6 +83,11 @@ def init_db() -> None:
                 );
                 """
             )
+            # Migration: settings_endpoints originally didn't have template_name.
+            # Required by the wizard tear-down path; add if missing.
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(settings_endpoints)").fetchall()}
+            if "template_name" not in cols:
+                conn.execute("ALTER TABLE settings_endpoints ADD COLUMN template_name TEXT")
             conn.commit()
         finally:
             conn.close()
@@ -156,26 +163,33 @@ def set_endpoint(
     endpoint_id: str,
     volume_id: str | None = None,
     template_id: str | None = None,
+    template_name: str | None = None,
     gpu_tier: str | None = None,
     volume_size_gb: int | None = None,
     max_workers: int | None = None,
     provisioned_at: str | None = None,
 ) -> None:
     """Upsert an endpoint row. Optional fields default to NULL — fields not
-    supplied on update are reset to NULL (full-row replace semantics)."""
+    supplied on update are reset to NULL (full-row replace semantics).
+
+    `template_name` is REQUIRED for future tear-down (RunPod's deleteTemplate
+    mutation takes the NAME, not the ID). The wizard route persists it on
+    every successful provisioning.
+    """
     with _lock:
         conn = _get_conn()
         try:
             conn.execute(
                 """
                 INSERT INTO settings_endpoints
-                    (type, endpoint_id, volume_id, template_id, gpu_tier,
+                    (type, endpoint_id, volume_id, template_id, template_name, gpu_tier,
                      volume_size_gb, max_workers, provisioned_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(type) DO UPDATE SET
                     endpoint_id=excluded.endpoint_id,
                     volume_id=excluded.volume_id,
                     template_id=excluded.template_id,
+                    template_name=excluded.template_name,
                     gpu_tier=excluded.gpu_tier,
                     volume_size_gb=excluded.volume_size_gb,
                     max_workers=excluded.max_workers,
@@ -187,6 +201,7 @@ def set_endpoint(
                     endpoint_id,
                     volume_id,
                     template_id,
+                    template_name,
                     gpu_tier,
                     volume_size_gb,
                     max_workers,

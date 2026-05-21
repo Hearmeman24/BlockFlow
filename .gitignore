@@ -18,8 +18,8 @@ flows/*.flow.json
 # Private block overlay (local-only blocks that never enter the public OSS build)
 private_blocks/
 
-# Dev artifacts
-architecture.md
+# Dev artifacts (root-level scratch docs, not the public docs/architecture.md)
+/architecture.md
 frontend/architecture.md
 issues.md
 frontend/issues.md

@@ -685,23 +685,82 @@ def get_dataset(folder_name: str) -> JSONResponse:
     })
 
 
+def _resolve_dataset_folder(folder_or_id: str) -> Path | None:
+    """Resolve a dataset folder by direct name OR by run/job id.
+
+    Datasets on disk are named `<slug>_<job_id[:8]>` but the dataset artifact
+    emitted by /run carries the full job_id as `value.id`. So a caller passing
+    that id won't match the folder name verbatim — fall back to a suffix
+    match on the id's first 8 hex chars, then to scanning manifest.json
+    files for an exact id field.
+    """
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "", folder_or_id)
+    direct = DATASETS_DIR / safe
+    if direct.is_dir():
+        return direct
+    if not DATASETS_DIR.is_dir():
+        return None
+    # Suffix match: folder ends with `_<id[:8]>`
+    if len(safe) >= 8:
+        prefix8 = safe[:8].lower()
+        for p in DATASETS_DIR.iterdir():
+            if p.is_dir() and p.name.lower().endswith(f"_{prefix8}"):
+                return p
+    # Manifest id match
+    for p in DATASETS_DIR.iterdir():
+        if not p.is_dir():
+            continue
+        manifest = p / "manifest.json"
+        if not manifest.exists():
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(data, dict) and str(data.get("id") or "") == safe:
+            return p
+    return None
+
+
 @router.get("/datasets/{folder_name}/caption-status")
 def dataset_caption_status(folder_name: str) -> JSONResponse:
-    """Report how many images in the dataset have a matching .txt caption file."""
-    safe = re.sub(r"[^a-zA-Z0-9_.-]", "", folder_name)
-    folder = DATASETS_DIR / safe
-    if not folder.exists() or not folder.is_dir():
+    """Report how many images in the dataset have a matching .txt caption file.
+
+    Also returns an `entries` list of `{filename, url, caption}` so the UI
+    can show each image alongside its caption text.
+    """
+    folder = _resolve_dataset_folder(folder_name)
+    if folder is None:
         return JSONResponse({"ok": False, "error": "dataset not found"}, status_code=404)
-    image_stems = [
-        p.stem
-        for p in folder.iterdir()
+
+    images = sorted([
+        p for p in folder.iterdir()
         if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
-    ]
-    total = len(image_stems)
-    captioned = sum(1 for stem in image_stems if (folder / f"{stem}.txt").exists())
+    ])
+    entries: list[dict[str, Any]] = []
+    captioned = 0
+    for img in images:
+        cap_path = img.with_suffix(".txt")
+        caption = ""
+        if cap_path.exists():
+            try:
+                caption = cap_path.read_text(encoding="utf-8").strip()
+                if caption:
+                    captioned += 1
+            except Exception:
+                caption = ""
+        entries.append({
+            "filename": img.name,
+            "url": f"/outputs/datasets/{folder.name}/{img.name}",
+            "caption": caption,
+        })
+
+    total = len(images)
     return JSONResponse({
         "ok": True,
+        "folder": folder.name,
         "total": total,
         "captioned": captioned,
         "ready": total > 0 and captioned == total,
+        "entries": entries,
     })

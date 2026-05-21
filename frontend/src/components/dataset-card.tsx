@@ -16,11 +16,21 @@ interface DatasetValue {
   manifest?: Record<string, unknown>
 }
 
+interface CaptionEntry {
+  filename: string
+  url: string
+  caption: string
+}
+
 interface CaptionStatus {
   ok: boolean
+  folder?: string
   total: number
   captioned: number
   ready: boolean
+  entries?: CaptionEntry[]
+  /** Local-only flag: true when the status fetch errored. UI shows "Unknown". */
+  errored?: boolean
 }
 
 interface DatasetCardProps {
@@ -34,6 +44,7 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
   const [deleting, setDeleting] = useState(false)
   const [fav, setFav] = useState(run.favorited ?? false)
   const [status, setStatus] = useState<CaptionStatus | null>(null)
+  const [captionsOpen, setCaptionsOpen] = useState(false)
 
   const images = Array.isArray(value.images) ? value.images.filter((v): v is string => typeof v === 'string') : []
   const thumbs = images.slice(0, 4)
@@ -45,9 +56,21 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
     let cancelled = false
     if (!dsId) return
     fetch(`/api/blocks/dataset_create/datasets/${encodeURIComponent(dsId)}/caption-status`)
-      .then((r) => r.ok ? r.json() : null)
-      .then((d) => { if (!cancelled && d?.ok) setStatus(d) })
-      .catch(() => {})
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled) return
+        if (d?.ok) {
+          setStatus(d)
+        } else {
+          // Endpoint missing / dataset folder unresolvable — show Unknown
+          // rather than hanging on "Checking…" forever.
+          setStatus({ ok: false, total: 0, captioned: 0, ready: false, errored: true })
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        setStatus({ ok: false, total: 0, captioned: 0, ready: false, errored: true })
+      })
     return () => { cancelled = true }
   }, [dsId])
 
@@ -63,11 +86,16 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
 
   const readyBadge = status == null
     ? <Badge variant="outline" className="text-[10px] border-border/40 text-muted-foreground">Checking…</Badge>
-    : status.ready
-      ? <Badge className="text-[10px] bg-emerald-600 text-white border-0">Ready to use</Badge>
-      : <Badge className="text-[10px] bg-amber-600 text-white border-0">
-          Needs captioning{status.total > 0 ? ` (${status.captioned}/${status.total})` : ''}
-        </Badge>
+    : status.errored
+      ? <Badge variant="outline" className="text-[10px] border-border/40 text-muted-foreground">Status unknown</Badge>
+      : status.ready
+        ? <Badge className="text-[10px] bg-emerald-600 text-white border-0">Ready to use</Badge>
+        : <Badge className="text-[10px] bg-amber-600 text-white border-0">
+            Needs captioning{status.total > 0 ? ` (${status.captioned}/${status.total})` : ''}
+          </Badge>
+
+  const entries = status?.entries || []
+  const hasAnyCaptions = entries.some((e) => e.caption.trim().length > 0)
 
   return (
     <Card className="overflow-hidden">
@@ -101,6 +129,43 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
             {readyBadge}
           </div>
         </div>
+
+        {entries.length > 0 && (
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => setCaptionsOpen((v) => !v)}
+              className="flex w-full items-center justify-between text-[11px] hover:text-foreground/80"
+            >
+              <span className="flex items-center gap-1 text-muted-foreground">
+                <span className="text-[10px]">{captionsOpen ? '▾' : '▸'}</span>
+                {hasAnyCaptions
+                  ? `Captions (${status?.captioned ?? 0}/${entries.length})`
+                  : `No captions yet (${entries.length} images)`}
+              </span>
+            </button>
+            {captionsOpen && (
+              <div className="max-h-[260px] overflow-y-auto space-y-1 rounded border border-border/40 p-1.5 bg-muted/10">
+                {entries.map((e) => (
+                  <div key={e.filename} className="flex gap-2 items-start">
+                    <img
+                      src={e.url}
+                      alt={e.filename}
+                      className="h-10 w-10 rounded object-cover bg-muted/30 shrink-0"
+                      loading="lazy"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[9px] text-muted-foreground font-mono truncate">{e.filename}</p>
+                      <p className="text-[10px] leading-snug break-words">
+                        {e.caption || <span className="italic text-muted-foreground">(no caption)</span>}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="flex items-center gap-1.5 pt-1">
           <div className="flex-1" />

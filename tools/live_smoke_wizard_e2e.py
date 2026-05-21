@@ -43,20 +43,58 @@ def log(msg: str) -> None:
 
 
 def setup_app() -> tuple[TestClient, Path]:
-    """Build a FastAPI app with the wizard router + an isolated settings DB."""
+    """Build a FastAPI app with the wizard router + an isolated settings DB.
+
+    Sources S3/R2 credentials from `~/.comfy-gen/config.json` if present, so
+    the worker baked into the new endpoint can actually read/write the
+    user's existing bucket (otherwise the SDXL Turbo job fails when it tries
+    to upload outputs)."""
     db_path = Path("/tmp/blockflow_live_smoke.db")
     if db_path.exists():
         db_path.unlink()
 
     settings_store.DB_PATH = db_path
     settings_store.init_db()
-
-    # Real RunPod key; dummy R2 creds (not exercised by the SDXL Turbo path)
     settings_store.set_credential("runpod_api_key", API_KEY)
-    settings_store.set_credential("r2_endpoint_url", "https://example.r2.cloudflarestorage.com")
-    settings_store.set_credential("r2_access_key_id", "dummy-access-key")
-    settings_store.set_credential("r2_secret_access_key", "dummy-secret-key")
-    settings_store.set_credential("r2_bucket", "blockflow-live-smoke-bucket")
+
+    # Pull real S3 creds from ComfyGen's existing init config if available.
+    # This is smoke-specific behavior — production BlockFlow reads from its
+    # own Settings UI; we're just borrowing the user's already-configured
+    # creds so the worker has working credentials for the run.
+    cg_config = Path.home() / ".comfy-gen" / "config.json"
+    if cg_config.exists():
+        try:
+            cfg = json.loads(cg_config.read_text())
+        except Exception:
+            cfg = {}
+    else:
+        cfg = {}
+
+    s3_access = cfg.get("aws_access_key_id") or ""
+    s3_secret = cfg.get("aws_secret_access_key") or ""
+    s3_bucket = cfg.get("s3_bucket") or ""
+    s3_endpoint = cfg.get("s3_endpoint_url") or ""
+    s3_region = cfg.get("s3_region") or "auto"
+
+    if s3_access and s3_secret and s3_bucket:
+        log(f"[smoke] using ComfyGen's S3 creds (bucket={s3_bucket}, region={s3_region}, endpoint={s3_endpoint or '<AWS default>'})")
+    else:
+        log("[smoke] WARN: no ComfyGen S3 creds found; falling back to dummies (worker S3 ops will fail)")
+        s3_access = "dummy-access-key"
+        s3_secret = "dummy-secret-key"
+        s3_bucket = "blockflow-live-smoke-bucket"
+        s3_endpoint = "https://example.r2.cloudflarestorage.com"
+        s3_region = "auto"
+
+    settings_store.set_credential("r2_endpoint_url", s3_endpoint)
+    settings_store.set_credential("r2_access_key_id", s3_access)
+    settings_store.set_credential("r2_secret_access_key", s3_secret)
+    settings_store.set_credential("r2_bucket", s3_bucket)
+    settings_store.set_credential("r2_region", s3_region)
+
+    # Also forward CivitAI if configured — some workflows need it to fetch LoRAs
+    if cfg.get("civitai_token"):
+        settings_store.set_credential("civitai_api_key", cfg["civitai_token"])
 
     app = FastAPI()
     app.include_router(wizard_routes.router)
@@ -107,7 +145,11 @@ def submit_workflow(endpoint_id: str) -> dict:
     )
     if proc.returncode != 0:
         log(f"  comfy-gen submit failed (exit {proc.returncode}):")
-        log(f"  stderr (tail): {proc.stderr[-1500:]}")
+        log(f"  ==== full stderr ====")
+        log(proc.stderr)
+        log(f"  ==== full stdout ====")
+        log(proc.stdout)
+        log(f"  ==== end of comfy-gen submit output ====")
         raise RuntimeError(f"workflow submission failed: exit {proc.returncode}")
     try:
         return json.loads(proc.stdout)

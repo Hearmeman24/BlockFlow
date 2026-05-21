@@ -683,3 +683,25 @@ def get_dataset(folder_name: str) -> JSONResponse:
             "manifest": manifest,
         },
     })
+
+
+@router.get("/datasets/{folder_name}/caption-status")
+def dataset_caption_status(folder_name: str) -> JSONResponse:
+    """Report how many images in the dataset have a matching .txt caption file."""
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "", folder_name)
+    folder = DATASETS_DIR / safe
+    if not folder.exists() or not folder.is_dir():
+        return JSONResponse({"ok": False, "error": "dataset not found"}, status_code=404)
+    image_stems = [
+        p.stem
+        for p in folder.iterdir()
+        if p.is_file() and p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+    ]
+    total = len(image_stems)
+    captioned = sum(1 for stem in image_stems if (folder / f"{stem}.txt").exists())
+    return JSONResponse({
+        "ok": True,
+        "total": total,
+        "captioned": captioned,
+        "ready": total > 0 and captioned == total,
+    })

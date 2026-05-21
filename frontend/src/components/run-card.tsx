@@ -36,7 +36,7 @@ function formatDuration(ms: number): string {
   return `${m}m ${rem}s`
 }
 
-function formatRelativeTime(iso: string): string {
+export function formatRelativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime()
   const mins = Math.floor(diff / 60000)
   if (mins < 1) return 'just now'
@@ -78,7 +78,7 @@ function classifyUrl(url: string): 'video' | 'audio' | 'image' | 'file' {
 
 /** True when a `loras` output is a trained downloadable LoRA (LoRA Train),
  *  not a LoRA Selector workflow config. */
-function looksLikeTrainedLora(value: unknown): boolean {
+export function looksLikeTrainedLora(value: unknown): boolean {
   if (!Array.isArray(value) || value.length === 0) return false
   const head = value[0] as Record<string, unknown> | null
   if (!head || typeof head !== 'object') return false
@@ -86,7 +86,7 @@ function looksLikeTrainedLora(value: unknown): boolean {
 }
 
 /** Find the primary artifact from block results (scan in reverse: lora > dataset > video > image > prompt > any). */
-function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unknown; label: string; blockIndex: number; siblings: Record<string, { kind: string; value: unknown }> } | null {
+export function findPrimaryArtifact(results: BlockResult[]): { kind: string; value: unknown; label: string; blockIndex: number; siblings: Record<string, { kind: string; value: unknown }> } | null {
   const priority = ['loras', 'lora', 'dataset', 'video', 'image', 'prompt']
   for (const kind of priority) {
     for (let i = results.length - 1; i >= 0; i--) {

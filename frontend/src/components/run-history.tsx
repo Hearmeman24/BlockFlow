@@ -7,7 +7,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useRuns } from '@/lib/hooks'
 import type { MediaKindFilter } from '@/lib/api'
-import { RunCard } from './run-card'
+import { RunCard, findPrimaryArtifact, looksLikeTrainedLora } from './run-card'
+import { DatasetCard } from './dataset-card'
+import { LoraCard } from './lora-card'
+import type { RunEntry } from '@/lib/types'
 
 const PAGE_SIZE = 24
 const MEDIA_KINDS: { value: MediaKindFilter | 'all'; label: string }[] = [
@@ -21,6 +24,36 @@ const MEDIA_KINDS: { value: MediaKindFilter | 'all'; label: string }[] = [
 
 function isMediaKind(v: string | null): v is MediaKindFilter {
   return v === 'video' || v === 'image' || v === 'dataset' || v === 'lora' || v === 'other'
+}
+
+function renderCard(run: RunEntry, onChanged: () => void) {
+  const primary = findPrimaryArtifact(run.block_results)
+  if (primary) {
+    if (primary.kind === 'dataset' && primary.value && typeof primary.value === 'object') {
+      return (
+        <DatasetCard
+          key={run.id}
+          run={run}
+          value={primary.value as Parameters<typeof DatasetCard>[0]['value']}
+          onDeleted={onChanged}
+          onFavoriteToggled={onChanged}
+        />
+      )
+    }
+    if ((primary.kind === 'lora' || primary.kind === 'loras') && looksLikeTrainedLora(primary.value)) {
+      return (
+        <LoraCard
+          key={run.id}
+          run={run}
+          loras={primary.value as Parameters<typeof LoraCard>[0]['loras']}
+          siblings={primary.siblings}
+          onDeleted={onChanged}
+          onFavoriteToggled={onChanged}
+        />
+      )
+    }
+  }
+  return <RunCard key={run.id} run={run} onDeleted={onChanged} onFavoriteToggled={onChanged} />
 }
 
 export function RunHistory() {
@@ -185,9 +218,7 @@ export function RunHistory() {
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-            {runs.map((run) => (
-              <RunCard key={run.id} run={run} onDeleted={() => mutate()} onFavoriteToggled={() => mutate()} />
-            ))}
+            {runs.map((run) => renderCard(run, () => mutate()))}
           </div>
           <div className="flex justify-end">
             {prevNextButtons}

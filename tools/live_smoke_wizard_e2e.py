@@ -101,32 +101,12 @@ def setup_app() -> tuple[TestClient, Path]:
     return TestClient(app), db_path
 
 
-def poll_until_ready(client: TestClient, endpoint_id: str) -> None:
-    """Wait for at least one worker to be ready (or idle), up to COLD_START_TIMEOUT_S."""
-    log(f"polling /health for endpoint {endpoint_id} (cold-start can take 15-20min)...")
-    start = time.time()
-    last_print = 0.0
-    while True:
-        elapsed = time.time() - start
-        if elapsed > COLD_START_TIMEOUT_S:
-            raise TimeoutError(f"endpoint not ready after {COLD_START_TIMEOUT_S}s")
-
-        r = client.get(f"/api/wizard/comfygen/health/{endpoint_id}")
-        if r.status_code != 200:
-            log(f"  health check returned {r.status_code}: {r.text[:200]}")
-        else:
-            workers = r.json().get("workers", {})
-            if elapsed - last_print > 30:
-                log(f"  workers={workers} elapsed={int(elapsed)}s")
-                last_print = elapsed
-            # Worker is "ready" once the container has spun up. We don't need
-            # it to actually be processing — submit will trigger that.
-            if workers.get("ready", 0) > 0 or workers.get("idle", 0) > 0:
-                log(f"  worker ready after {int(elapsed)}s: {workers}")
-                return
-            # Also accept "initializing > 0" as a sign the cold-start is in progress;
-            # comfy-gen submit will queue the job and wait too.
-        time.sleep(15)
+def health_snapshot(client: TestClient, endpoint_id: str) -> dict:
+    """One-shot health peek — used for diagnostic logging, not as a gate."""
+    r = client.get(f"/api/wizard/comfygen/health/{endpoint_id}")
+    if r.status_code != 200:
+        return {"error": f"HTTP {r.status_code}: {r.text[:200]}"}
+    return r.json().get("workers", {})
 
 
 def submit_workflow(endpoint_id: str) -> dict:
@@ -177,13 +157,13 @@ def main() -> int:
 
     try:
         # === provision ===
-        # Use wizard defaults: tier=budget (low tier per request), but
-        # NO max_workers override so the canonical default of 3 applies
-        # (ComfyGen=3 + trainer=2 = 5 = RunPod free worker cap).
-        log("provisioning ComfyGen endpoint (tier=budget, max_workers=default=3)...")
+        # First attempt: budget (RTX 5090 EU-RO-1). Per user direction, fall
+        # back to recommended/performance tiers if budget has no supply.
+        tier_fallback = os.environ.get("SMOKE_TIER", "recommended")
+        log(f"provisioning ComfyGen endpoint (tier={tier_fallback}, max_workers=default=3)...")
         r = client.post(
             "/api/wizard/comfygen/provision",
-            json={"tier": "budget", "volume_size_gb": 50},
+            json={"tier": tier_fallback, "volume_size_gb": 50},
         )
         if r.status_code != 200:
             log(f"provision failed: HTTP {r.status_code}: {r.text}")
@@ -194,10 +174,15 @@ def main() -> int:
         volume_id = body["volume_id"]
         log(f"provisioned: endpoint={endpoint_id} template={body['template_id']} volume={volume_id}")
 
-        # === wait for worker ready ===
-        poll_until_ready(client, endpoint_id)
+        # === one-shot health snapshot for diagnostic only (no gating) ===
+        # workersMin=0 means RunPod doesn't spin up a worker until a job is
+        # submitted. Polling for ready BEFORE submit waits forever.
+        # comfy-gen submit will queue the job, RunPod cold-starts the worker,
+        # job runs. submit polls internally.
+        log(f"endpoint health snapshot (pre-submit): {health_snapshot(client, endpoint_id)}")
 
         # === run the workflow ===
+        log("submitting workflow — comfy-gen will poll until done (cold-start handled by RunPod)")
         result = submit_workflow(endpoint_id)
         log(f"workflow result: ok={result.get('ok')} job_id={result.get('job_id')}")
         if result.get("ok"):

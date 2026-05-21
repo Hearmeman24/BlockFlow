@@ -54,7 +54,54 @@ sm (280x220, blue), md (360x320, emerald), lg (440x460, violet), huge (540x580, 
 - Dark theme only (shadcn/ui, `class="dark"` on `<html>`)
 - URL-state routing: filters/sort in URL search params
 - Block API routes: `/api/blocks/<slug>/...` only
-- No Playwright testing — user tests manually, use `npm run build` for verification
+
+## Test-Driven Development (mandatory)
+
+**No production code without a failing test first.** Write the test, watch it fail, write minimal code to pass, watch it pass. Tests written after implementation prove nothing — they pass immediately because they were shaped by the code they "test."
+
+### What "passing" actually means
+
+A test that says "route returns 200" is **not enough**. The test must verify the **actual behavior produced**:
+
+- If the endpoint writes a file → assert the file exists with the right contents
+- If it updates state (DB, Settings, cache) → assert the new state is correct
+- If it calls a downstream service → assert the call was made with the right payload
+- If it returns data → assert every field that matters, not just the status code
+
+Build green ≠ feature works.
+
+### Edge cases are mandatory (not bonus)
+
+Every bead's test list must include explicit cases for: empty/missing/malformed inputs, network failures, partial failures, concurrency, boundary values, unicode, auth failures, cancellation mid-op (`AbortSignal` in the pipeline runtime).
+
+### Regression scope analysis (cross-block contagion)
+
+Before starting implementation on any bead that touches a block or shared module, write the **regression scope**: what else depends on the contract being changed? What other blocks consume the API / Settings / cache being touched? Tests must cover those neighbors, not just the changed surface.
+
+### Test infrastructure
+
+- **Backend (Python):** `pytest` — tests in `tests/`. Run with `uv run pytest tests/`.
+- **Frontend logic (TS):** `vitest` — colocated `*.test.ts`.
+- **Frontend components (React):** `vitest` + `@testing-library/react` (jsdom). `*.test.tsx` colocated or in `__tests__/`.
+- **No Playwright** — full-browser E2E out of scope.
+
+### External-resource carve-out
+
+If a test would require GPU hardware, real RunPod API calls that cost money, real worker provisioning, or human visual verification — **stop and flag** before building. Default substitute is a mocked test at the boundary; never mock the logic under test.
+
+### CI enforcement
+
+Every PR runs the full pytest + vitest suite. Red blocks merge. See `.github/workflows/ci.yml`.
+
+### Definition of done for any bead
+
+- [ ] Tests written first; each watched to fail for the expected reason
+- [ ] Minimal code makes them pass
+- [ ] Regression scope covered
+- [ ] All tests pass; no warnings
+- [ ] External-resource items flagged + mocked or human-approved
+
+See `/docs/testing.md` for worked examples.
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->

@@ -492,8 +492,8 @@ describe('integration: batch override merging', () => {
         '230': { steps: '18', cfg: '3.2', denoise: '1', sampler_name: 'euler', scheduler: 'normal' },
       },
     }))
-    const combo = { '230.sampler_name': 'res_3s', '230.cfg': '3.6' }
-    const merged = { ...base.overrides, ...combo }
+    const combo: Record<string, string> = { '230.sampler_name': 'res_3s', '230.cfg': '3.6' }
+    const merged: Record<string, string> = { ...base.overrides, ...combo }
 
     expect(merged['230.sampler_name']).toBe('res_3s')  // combo wins
     expect(merged['230.cfg']).toBe('3.6')              // combo wins

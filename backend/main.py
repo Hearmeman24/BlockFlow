@@ -8,7 +8,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend import config, routes, state
+from backend import config, routes, settings_routes, settings_store, state
 
 app = FastAPI(title="BlockFlow API")
 
@@ -22,6 +22,12 @@ app.add_middleware(
 )
 
 app.include_router(routes.router)
+app.include_router(settings_routes.router)
+
+# Ensure the settings tables exist before any block sidecar (which may read
+# Settings on import in later beads). Safe to call repeatedly — it's a no-op
+# once the tables are present.
+settings_store.init_db()
 
 
 def _discover_sidecars(dirs: Iterable[tuple[Path, str]]) -> list[tuple[str, str, Path]]:

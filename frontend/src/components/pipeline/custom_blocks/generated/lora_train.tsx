@@ -135,15 +135,26 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
       const d = await res.json()
       if (!d.ok) {
         alert(`Cancel failed: ${d.error || 'unknown error'}`)
+        setCancelling(false)
       }
-      // The polling loop will pick up the CANCELLED status on the next tick
-      // and surface it in the live panel.
+      // Backend trainer polls RunPod on a ~15s interval, so the status
+      // snapshot can take up to ~20s to flip to CANCELLED. Leave the
+      // sticky "Cancelling…" state in place until that happens so the
+      // button doesn't snap back to "Cancel" and look like nothing
+      // happened. The effect below clears it on status transition.
     } catch (e) {
       alert(`Cancel failed: ${e instanceof Error ? e.message : String(e)}`)
-    } finally {
       setCancelling(false)
     }
   }
+
+  // Clear the sticky "Cancelling…" once the backend confirms the status
+  // moved off RUNNING (CANCELLED / FAILED / COMPLETED).
+  useEffect(() => {
+    if (progress && progress.status !== 'RUNNING' && cancelling) {
+      setCancelling(false)
+    }
+  }, [progress?.status, cancelling])
 
   const upstreamDataset = isDatasetValue(inputs.dataset) ? inputs.dataset : null
   const upstreamImages = useMemo(() => {
@@ -476,7 +487,7 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
       {progress && (
         <div className="space-y-1 rounded border border-border/60 p-2">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] text-muted-foreground font-mono">{progress.status}</span>
+            <span className="text-[10px] text-muted-foreground font-mono">{cancelling && progress.status === 'RUNNING' ? 'CANCELLING…' : progress.status}</span>
             <div className="flex items-center gap-2">
               <span className="text-[10px] text-muted-foreground">
                 {fmtDuration(elapsed)}

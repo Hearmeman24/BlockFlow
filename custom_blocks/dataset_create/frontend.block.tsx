@@ -142,6 +142,29 @@ function DatasetCreateBlock({
       .catch(() => {})
   }, [])
 
+  // Edit-time emit: surface the dataset this block *will* produce so
+  // downstream blocks (Dataset Caption, LoRA Train) can auto-detect the
+  // upstream connection before this block has actually run. Once the job
+  // completes, the real image-bearing value emitted by registerExecute
+  // takes over.
+  useEffect(() => {
+    if (progress && (progress.status === 'COMPLETED' || progress.status === 'PARTIAL')) {
+      return
+    }
+    const trimmed = name.trim()
+    if (!trimmed) {
+      setOutput('dataset', undefined)
+      return
+    }
+    setOutput('dataset', {
+      kind: 'dataset',
+      id: trimmed,
+      name: trimmed,
+      images: [],
+      manifest: { provider: 'pending', count: effectiveImageCount },
+    })
+  }, [name, effectiveImageCount, progress?.status, setOutput])
+
   const toggleAspect = (ar: string) => {
     setAspectRatios((prev) => {
       if (prev.includes(ar)) {

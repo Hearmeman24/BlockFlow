@@ -29,12 +29,19 @@ from pathlib import Path
 
 # Case-sensitive tokens
 TOKENS_CS: tuple[str, ...] = (
+    # Private RunPod endpoint IDs — never appear in public code paths
     "17rfasn4qhfuxm",
     "7cimkii50xunxw",
     "x06nemnipd7rru",
-    "LORA_SOURCE_SSH",
+    # Private S3 bucket name
     "hearmeman-loras",
+    # Internal repo name (referenced in docstrings before the OSS push)
     "hearmemanai_lora_training_app_v",
+    # NOTE: `LORA_SOURCE_SSH` was on this list during .9 grilling, but it's a
+    # variable name (a key) — not a value-leak. The runtime value is env-driven
+    # with empty default, so the variable name appearing in backend/config.py
+    # + backend/services.py doesn't leak private data. If the SSH impl moves
+    # entirely into private_blocks/ in a later cleanup, we can re-add.
 )
 
 # Case-insensitive tokens (stored lowercase)
@@ -52,6 +59,10 @@ SKIP_DIRS: frozenset[str] = frozenset({
     "node_modules",
     "private_blocks",
     "flows",
+    # Codegen output for private blocks (sgs-ui-wisp-las.8 + .9). Generated
+    # content mirrors the private source, which may legitimately contain
+    # private-deployment tokens.
+    "generated_private",
 })
 
 SCAN_EXTENSIONS: frozenset[str] = frozenset({

@@ -73,10 +73,8 @@ jobs:
   forbidden-tokens:
     name: Forbidden-token gate
     runs-on: ubuntu-latest
-    # NOTE: continue-on-error until sgs-ui-wisp-las.9 lands (moves generation/
-    # wan_22_image_to_video/lora_selector to private_blocks/ and strips
-    # remaining defaults). After .9, remove this and let the gate hard-fail.
-    continue-on-error: true
+    # Hard-fail since sgs-ui-wisp-las.9 cleaned up the public code paths.
+    # Private blocks (gitignored) + generated_private/ output are skipped.
     steps:
       - uses: actions/checkout@v4
 

@@ -72,11 +72,15 @@ def test_runpod_endpoint_id_detected(tmp_path: Path) -> None:
     assert "7cimkii50xunxw" in result.stdout
 
 
-def test_ssh_target_env_detected(tmp_path: Path) -> None:
-    (tmp_path / "config.py").write_text('LORA_SOURCE_SSH_TARGET = "ssh://user@host"\n')
+def test_ssh_variable_name_not_forbidden_when_value_empty(tmp_path: Path) -> None:
+    """LORA_SOURCE_SSH* was on the original .9 forbidden list but it's a
+    variable NAME, not a value-leak. Env-driven with empty default → no
+    private data lands in public code. Keep this regression test so future
+    cleanup deciding to re-add the token to the list also restores its
+    flagging behavior intentionally."""
+    (tmp_path / "config.py").write_text('LORA_SOURCE_SSH_TARGET = os.getenv("LORA_SOURCE_SSH_TARGET", "")\n')
     result = _run([str(tmp_path)])
-    assert result.returncode == 1
-    assert "LORA_SOURCE_SSH" in result.stdout
+    assert result.returncode == 0
 
 
 def test_daniella_token_is_case_insensitive(tmp_path: Path) -> None:

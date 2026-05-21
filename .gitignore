@@ -17,6 +17,8 @@ flows/*.flow.json
 
 # Private block overlay (local-only blocks that never enter the public OSS build)
 private_blocks/
+# Codegen output for private blocks (regenerated on every `npm run predev`)
+frontend/src/components/pipeline/custom_blocks/generated_private/
 
 # Dev artifacts (root-level scratch docs, not the public docs/architecture.md)
 /architecture.md

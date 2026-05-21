@@ -76,9 +76,11 @@ DEFAULT_FPS = int(os.getenv("DEFAULT_FPS", "16"))
 DEFAULT_FIXED_SEED = int(os.getenv("DEFAULT_FIXED_SEED", "42"))
 DEFAULT_NEGATIVE_PROMPT = os.getenv("DEFAULT_NEGATIVE_PROMPT", "")
 
-DEFAULT_DANIELLA_LORA = os.getenv("DEFAULT_DANIELLA_LORA", "Daniella01_low_V2.safetensors")
-DEFAULT_DANIELLA_BRANCH = os.getenv("DEFAULT_DANIELLA_BRANCH", "low")
-DEFAULT_DANIELLA_STRENGTH = float(os.getenv("DEFAULT_DANIELLA_STRENGTH", "1.0"))
+# Named-LoRA defaults used by private blocks (generation, wan_22_image_to_video).
+# Public OSS build defaults are empty; private deployments supply via env.
+DEFAULT_NAMED_LORA = os.getenv("DEFAULT_NAMED_LORA", "")
+DEFAULT_NAMED_LORA_BRANCH = os.getenv("DEFAULT_NAMED_LORA_BRANCH", "low")
+DEFAULT_NAMED_LORA_STRENGTH = float(os.getenv("DEFAULT_NAMED_LORA_STRENGTH", "1.0"))
 
 POLL_INTERVAL_SEC = float(os.getenv("RUNPOD_POLL_INTERVAL_SEC", "4"))
 POLL_TIMEOUT_SEC = int(os.getenv("RUNPOD_POLL_TIMEOUT_SEC", "2400"))

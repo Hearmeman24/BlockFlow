@@ -21,6 +21,18 @@ const customBlocksDir = path.join(repoRoot, 'custom_blocks')
 const privateBlocksDir = path.join(repoRoot, 'private_blocks')
 const outFile = path.join(frontendDir, 'src', 'components', 'pipeline', 'custom_blocks', '_register.ts')
 const generatedDir = path.join(frontendDir, 'src', 'components', 'pipeline', 'custom_blocks', 'generated')
+// Private blocks' generated outputs land in a gitignored sibling dir so the
+// forbidden-token gate doesn't see them. The _register.ts imports from
+// whichever dir holds each block.
+const generatedPrivateDir = path.join(frontendDir, 'src', 'components', 'pipeline', 'custom_blocks', 'generated_private')
+
+function generatedDirFor(source) {
+  return source === 'private_blocks' ? generatedPrivateDir : generatedDir
+}
+
+function importPathFor(source, slug) {
+  return source === 'private_blocks' ? `./generated_private/${slug}` : `./generated/${slug}`
+}
 
 const VALID_BINDING_MODES = new Set(['upstream_only', 'upstream_or_local', 'local_only'])
 const VALID_FORWARD_WHEN = new Set(['if_present', 'always'])
@@ -296,9 +308,9 @@ export function generateRegistrySource(blocks) {
   lines.push('// Run `npm run gen:custom-blocks` to regenerate.')
   lines.push("import { registerBlockDef } from '@/lib/pipeline/registry'")
 
-  for (const { slug } of blocks) {
+  for (const { slug, source } of blocks) {
     const varName = slugToVarName(slug)
-    lines.push(`import { blockDef as ${varName} } from './generated/${slug}'`)
+    lines.push(`import { blockDef as ${varName} } from '${importPathFor(source, slug)}'`)
   }
 
   lines.push('')
@@ -327,15 +339,27 @@ async function writeIfChanged(filePath, nextContent) {
 }
 
 async function syncGeneratedBlockModules(blocks) {
+  // Two output dirs:
+  //   generated/        — public blocks (custom_blocks/) — committed
+  //   generated_private/ — private blocks (private_blocks/) — gitignored
   await fs.mkdir(generatedDir, { recursive: true })
-  const expected = new Set(blocks.map(({ slug }) => `${slug}.tsx`))
-  const existing = await fs.readdir(generatedDir, { withFileTypes: true })
+  await fs.mkdir(generatedPrivateDir, { recursive: true })
 
-  for (const entry of existing) {
-    if (!entry.isFile()) continue
-    if (!entry.name.endsWith('.tsx')) continue
-    if (!expected.has(entry.name)) {
-      await fs.unlink(path.join(generatedDir, entry.name))
+  const expectedPublic = new Set(
+    blocks.filter((b) => b.source === 'custom_blocks').map((b) => `${b.slug}.tsx`),
+  )
+  const expectedPrivate = new Set(
+    blocks.filter((b) => b.source === 'private_blocks').map((b) => `${b.slug}.tsx`),
+  )
+
+  for (const [dir, expected] of [[generatedDir, expectedPublic], [generatedPrivateDir, expectedPrivate]]) {
+    const existing = await fs.readdir(dir, { withFileTypes: true })
+    for (const entry of existing) {
+      if (!entry.isFile()) continue
+      if (!entry.name.endsWith('.tsx')) continue
+      if (!expected.has(entry.name)) {
+        await fs.unlink(path.join(dir, entry.name))
+      }
     }
   }
 
@@ -348,7 +372,7 @@ async function syncGeneratedBlockModules(blocks) {
       sourceBody,
       '',
     ].join('\n')
-    await writeIfChanged(path.join(generatedDir, `${slug}.tsx`), generatedBody)
+    await writeIfChanged(path.join(generatedDirFor(source), `${slug}.tsx`), generatedBody)
   }
 }
 

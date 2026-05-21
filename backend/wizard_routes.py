@@ -34,8 +34,13 @@ TIERS: dict[str, dict[str, Any]] = {
     },
     "recommended": {
         "name": "Recommended",
+        # Multiple RTX PRO 6000 Blackwell variants widen the scheduling pool
+        # (matches the user's working ComfyGen endpoint config). A100 SXM as
+        # a fallback for capacity headroom.
         "gpu_ids": [
             "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+            "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
             "NVIDIA A100-SXM4-80GB",
         ],
         "datacenter": "EUR-IS-1",
@@ -51,11 +56,19 @@ TIERS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Required credentials must be present + non-empty.
 REQUIRED_R2_CREDS: tuple[str, ...] = (
-    "r2_endpoint_url",
     "r2_access_key_id",
     "r2_secret_access_key",
     "r2_bucket",
+)
+
+# Optional credentials can be present with empty value (e.g. r2_endpoint_url
+# is empty when targeting AWS S3 rather than Cloudflare R2 — the boto3 client
+# falls back to its default AWS endpoint).
+OPTIONAL_S3_CREDS: tuple[str, ...] = (
+    "r2_endpoint_url",
+    "r2_region",
 )
 
 DEFAULT_VOLUME_SIZE_GB = 200
@@ -98,7 +111,9 @@ def _build_env_for_template() -> dict[str, str]:
         "AWS_ACCESS_KEY_ID": settings_store.get_credential("r2_access_key_id") or "",
         "AWS_SECRET_ACCESS_KEY": settings_store.get_credential("r2_secret_access_key") or "",
         "S3_BUCKET": settings_store.get_credential("r2_bucket") or "",
-        "S3_REGION": "auto",
+        # Default 'auto' matches Cloudflare R2; AWS S3 users override via the
+        # optional r2_region credential (e.g. 'eu-west-2').
+        "S3_REGION": settings_store.get_credential("r2_region") or "auto",
         "S3_ENDPOINT_URL": settings_store.get_credential("r2_endpoint_url") or "",
     }
     # Optional CivitAI token if present

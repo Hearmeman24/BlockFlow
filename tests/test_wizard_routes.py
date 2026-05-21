@@ -60,10 +60,27 @@ def test_preflight_reports_all_credentials_missing(client):
     body = r.json()
     assert body["ready"] is False
     assert "runpod_api_key" in body["missing"]
-    assert "r2_endpoint_url" in body["missing"]
+    # r2_endpoint_url is OPTIONAL (empty means default AWS S3 endpoint),
+    # so it must NOT appear in the missing list when unset.
+    assert "r2_endpoint_url" not in body["missing"]
     assert "r2_access_key_id" in body["missing"]
     assert "r2_secret_access_key" in body["missing"]
     assert "r2_bucket" in body["missing"]
+
+
+def test_preflight_ready_with_empty_endpoint_url_for_aws_s3(client):
+    """Users on AWS S3 (not Cloudflare R2) leave r2_endpoint_url empty —
+    boto3 defaults to the AWS endpoint. Preflight must accept that."""
+    settings_store.set_credential("runpod_api_key", "rpa")
+    settings_store.set_credential("r2_access_key_id", "AKIA_aws")
+    settings_store.set_credential("r2_secret_access_key", "secret_aws")
+    settings_store.set_credential("r2_bucket", "hearmeman-loras")
+    # r2_endpoint_url deliberately not set
+
+    r = client.get("/api/wizard/comfygen/preflight")
+    body = r.json()
+    assert body["ready"] is True
+    assert body["missing"] == []
 
 
 def test_preflight_reports_ready_when_all_present(client, all_creds_configured):
@@ -214,13 +231,16 @@ def test_provision_400_when_runpod_key_missing(client):
 def test_provision_400_when_partial_r2_creds(client):
     settings_store.set_credential("runpod_api_key", "rpa")
     settings_store.set_credential("r2_endpoint_url", "https://x.r2.com")
-    # missing the other 3
+    settings_store.set_credential("r2_access_key_id", "AKIA")
+    # missing r2_secret_access_key + r2_bucket
 
     r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
     assert r.status_code == 400
     detail = r.json()["detail"]
-    for missing in ("r2_access_key_id", "r2_secret_access_key", "r2_bucket"):
+    for missing in ("r2_secret_access_key", "r2_bucket"):
         assert missing in detail
+    # r2_endpoint_url is NOT in the required list — empty = default AWS S3
+    assert "r2_endpoint_url" not in detail
 
 
 def test_provision_400_when_tier_invalid(client, all_creds_configured):

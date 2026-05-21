@@ -43,52 +43,70 @@ def log(msg: str) -> None:
 
 
 def setup_app() -> tuple[TestClient, Path]:
-    """Build a FastAPI app with the wizard router + an isolated settings DB."""
+    """Build a FastAPI app with the wizard router + an isolated settings DB.
+
+    Sources S3/R2 credentials from `~/.comfy-gen/config.json` if present, so
+    the worker baked into the new endpoint can actually read/write the
+    user's existing bucket (otherwise the SDXL Turbo job fails when it tries
+    to upload outputs)."""
     db_path = Path("/tmp/blockflow_live_smoke.db")
     if db_path.exists():
         db_path.unlink()
 
     settings_store.DB_PATH = db_path
     settings_store.init_db()
-
-    # Real RunPod key; dummy R2 creds (not exercised by the SDXL Turbo path)
     settings_store.set_credential("runpod_api_key", API_KEY)
-    settings_store.set_credential("r2_endpoint_url", "https://example.r2.cloudflarestorage.com")
-    settings_store.set_credential("r2_access_key_id", "dummy-access-key")
-    settings_store.set_credential("r2_secret_access_key", "dummy-secret-key")
-    settings_store.set_credential("r2_bucket", "blockflow-live-smoke-bucket")
+
+    # Pull real S3 creds from ComfyGen's existing init config if available.
+    # This is smoke-specific behavior — production BlockFlow reads from its
+    # own Settings UI; we're just borrowing the user's already-configured
+    # creds so the worker has working credentials for the run.
+    cg_config = Path.home() / ".comfy-gen" / "config.json"
+    if cg_config.exists():
+        try:
+            cfg = json.loads(cg_config.read_text())
+        except Exception:
+            cfg = {}
+    else:
+        cfg = {}
+
+    s3_access = cfg.get("aws_access_key_id") or ""
+    s3_secret = cfg.get("aws_secret_access_key") or ""
+    s3_bucket = cfg.get("s3_bucket") or ""
+    s3_endpoint = cfg.get("s3_endpoint_url") or ""
+    s3_region = cfg.get("s3_region") or "auto"
+
+    if s3_access and s3_secret and s3_bucket:
+        log(f"[smoke] using ComfyGen's S3 creds (bucket={s3_bucket}, region={s3_region}, endpoint={s3_endpoint or '<AWS default>'})")
+    else:
+        log("[smoke] WARN: no ComfyGen S3 creds found; falling back to dummies (worker S3 ops will fail)")
+        s3_access = "dummy-access-key"
+        s3_secret = "dummy-secret-key"
+        s3_bucket = "blockflow-live-smoke-bucket"
+        s3_endpoint = "https://example.r2.cloudflarestorage.com"
+        s3_region = "auto"
+
+    settings_store.set_credential("r2_endpoint_url", s3_endpoint)
+    settings_store.set_credential("r2_access_key_id", s3_access)
+    settings_store.set_credential("r2_secret_access_key", s3_secret)
+    settings_store.set_credential("r2_bucket", s3_bucket)
+    settings_store.set_credential("r2_region", s3_region)
+
+    # Also forward CivitAI if configured — some workflows need it to fetch LoRAs
+    if cfg.get("civitai_token"):
+        settings_store.set_credential("civitai_api_key", cfg["civitai_token"])
 
     app = FastAPI()
     app.include_router(wizard_routes.router)
     return TestClient(app), db_path
 
 
-def poll_until_ready(client: TestClient, endpoint_id: str) -> None:
-    """Wait for at least one worker to be ready (or idle), up to COLD_START_TIMEOUT_S."""
-    log(f"polling /health for endpoint {endpoint_id} (cold-start can take 15-20min)...")
-    start = time.time()
-    last_print = 0.0
-    while True:
-        elapsed = time.time() - start
-        if elapsed > COLD_START_TIMEOUT_S:
-            raise TimeoutError(f"endpoint not ready after {COLD_START_TIMEOUT_S}s")
-
-        r = client.get(f"/api/wizard/comfygen/health/{endpoint_id}")
-        if r.status_code != 200:
-            log(f"  health check returned {r.status_code}: {r.text[:200]}")
-        else:
-            workers = r.json().get("workers", {})
-            if elapsed - last_print > 30:
-                log(f"  workers={workers} elapsed={int(elapsed)}s")
-                last_print = elapsed
-            # Worker is "ready" once the container has spun up. We don't need
-            # it to actually be processing — submit will trigger that.
-            if workers.get("ready", 0) > 0 or workers.get("idle", 0) > 0:
-                log(f"  worker ready after {int(elapsed)}s: {workers}")
-                return
-            # Also accept "initializing > 0" as a sign the cold-start is in progress;
-            # comfy-gen submit will queue the job and wait too.
-        time.sleep(15)
+def health_snapshot(client: TestClient, endpoint_id: str) -> dict:
+    """One-shot health peek — used for diagnostic logging, not as a gate."""
+    r = client.get(f"/api/wizard/comfygen/health/{endpoint_id}")
+    if r.status_code != 200:
+        return {"error": f"HTTP {r.status_code}: {r.text[:200]}"}
+    return r.json().get("workers", {})
 
 
 def submit_workflow(endpoint_id: str) -> dict:
@@ -107,7 +125,11 @@ def submit_workflow(endpoint_id: str) -> dict:
     )
     if proc.returncode != 0:
         log(f"  comfy-gen submit failed (exit {proc.returncode}):")
-        log(f"  stderr (tail): {proc.stderr[-1500:]}")
+        log(f"  ==== full stderr ====")
+        log(proc.stderr)
+        log(f"  ==== full stdout ====")
+        log(proc.stdout)
+        log(f"  ==== end of comfy-gen submit output ====")
         raise RuntimeError(f"workflow submission failed: exit {proc.returncode}")
     try:
         return json.loads(proc.stdout)
@@ -135,13 +157,13 @@ def main() -> int:
 
     try:
         # === provision ===
-        # Use wizard defaults: tier=budget (low tier per request), but
-        # NO max_workers override so the canonical default of 3 applies
-        # (ComfyGen=3 + trainer=2 = 5 = RunPod free worker cap).
-        log("provisioning ComfyGen endpoint (tier=budget, max_workers=default=3)...")
+        # First attempt: budget (RTX 5090 EU-RO-1). Per user direction, fall
+        # back to recommended/performance tiers if budget has no supply.
+        tier_fallback = os.environ.get("SMOKE_TIER", "recommended")
+        log(f"provisioning ComfyGen endpoint (tier={tier_fallback}, max_workers=default=3)...")
         r = client.post(
             "/api/wizard/comfygen/provision",
-            json={"tier": "budget", "volume_size_gb": 50},
+            json={"tier": tier_fallback, "volume_size_gb": 50},
         )
         if r.status_code != 200:
             log(f"provision failed: HTTP {r.status_code}: {r.text}")
@@ -152,10 +174,39 @@ def main() -> int:
         volume_id = body["volume_id"]
         log(f"provisioned: endpoint={endpoint_id} template={body['template_id']} volume={volume_id}")
 
-        # === wait for worker ready ===
-        poll_until_ready(client, endpoint_id)
+        # === one-shot health snapshot for diagnostic only (no gating) ===
+        # workersMin=0 means RunPod doesn't spin up a worker until a job is
+        # submitted. Polling for ready BEFORE submit waits forever.
+        # comfy-gen submit will queue the job, RunPod cold-starts the worker,
+        # job runs. submit polls internally.
+        log(f"endpoint health snapshot (pre-submit): {health_snapshot(client, endpoint_id)}")
+
+        # === pre-download SDXL Turbo to the network volume ===
+        # Fresh volume has no models; the workflow references
+        # sd_xl_turbo_1.0_fp16.safetensors. Download via comfy-gen.
+        log("pre-downloading SDXL Turbo to volume via comfy-gen download...")
+        dl_proc = subprocess.run(
+            [
+                "comfy-gen", "download", "url",
+                "https://huggingface.co/stabilityai/sdxl-turbo/resolve/main/sd_xl_turbo_1.0_fp16.safetensors",
+                "--dest", "checkpoints",
+                "--filename", "sd_xl_turbo_1.0_fp16.safetensors",
+                "--endpoint-id", endpoint_id,
+                "--timeout", "900",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15 * 60,
+        )
+        if dl_proc.returncode != 0:
+            log(f"download failed (exit {dl_proc.returncode}):")
+            log(f"  stderr: {dl_proc.stderr[-1500:]}")
+            log(f"  stdout: {dl_proc.stdout[-1500:]}")
+            raise RuntimeError(f"model download failed: exit {dl_proc.returncode}")
+        log(f"download complete: {dl_proc.stdout[:300]}")
 
         # === run the workflow ===
+        log("submitting workflow — model is now on volume, expect ~30s inference")
         result = submit_workflow(endpoint_id)
         log(f"workflow result: ok={result.get('ok')} job_id={result.get('job_id')}")
         if result.get("ok"):

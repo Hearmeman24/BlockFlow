@@ -20,6 +20,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { toPublicUrls } from '@/lib/image-ref'
 import {
   Select,
   SelectContent,
@@ -182,11 +183,8 @@ function ImageUpscaleBlock({
   const [faceCreativity, setFaceCreativity] = useSessionState(`block_${blockId}_face_creativity`, '0.0')
   const [status, setStatus] = useSessionState(`block_${blockId}_status`, 'Ready')
 
-  const imageInputs = Array.isArray(inputs.image)
-    ? inputs.image.filter((v): v is string => typeof v === 'string')
-    : typeof inputs.image === 'string' && inputs.image.trim()
-      ? [inputs.image.trim()]
-      : undefined
+  const imageUrls = toPublicUrls(inputs.image)
+  const imageInputs = imageUrls.length > 0 ? imageUrls : undefined
   const latestProgressRef = useRef<PollingProgressEntry<Job>[]>([])
 
   const currentModels = category === 'sharpen' ? SHARPEN_MODELS : ENHANCE_MODELS
@@ -294,13 +292,8 @@ function ImageUpscaleBlock({
 
   useEffect(() => {
     registerExecute(async (freshInputs) => {
-      const rawImage = freshInputs.image
-      const sourceImages = Array.isArray(rawImage)
-        ? rawImage.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter((v) => v.length > 0)
-        : typeof rawImage === 'string' && rawImage.trim()
-          ? [rawImage.trim()]
-          : []
-      if (!sourceImages.length) throw new Error('No image input')
+      const sourceImages = toPublicUrls(freshInputs.image)
+      if (!sourceImages.length) throw new Error('No image input (Topaz needs a publicly fetchable URL)')
 
       const key = hasEnvApiKey ? '' : apiKey.trim()
       if (!hasEnvApiKey && !key) throw new Error('Topaz API key is required')

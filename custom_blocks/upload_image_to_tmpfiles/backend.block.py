@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import base64
 import json
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -16,43 +14,11 @@ from backend import config
 router = APIRouter()
 
 TMPFILES_UPLOAD_URL = "https://tmpfiles.org/api/v1/upload"
-IMGBB_UPLOAD_URL = "https://api.imgbb.com/1/upload"
 
 
 @router.get("/health")
 def health() -> JSONResponse:
-    return JSONResponse({
-        "ok": True,
-        "imgbb_key_present": bool(config.IMGBB_API_KEY),
-    })
-
-
-@router.post("/upload-imgbb")
-async def upload_imgbb(request: Request) -> JSONResponse:
-    """Upload to ImgBB — requires IMGBB_API_KEY in .env. Returns a public direct URL."""
-    body = await request.body()
-    if not body:
-        return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
-    if not config.IMGBB_API_KEY:
-        return JSONResponse({"ok": False, "error": "IMGBB_API_KEY not set in .env"}, status_code=400)
-
-    try:
-        data = urllib.parse.urlencode({
-            "key": config.IMGBB_API_KEY,
-            "image": base64.b64encode(body).decode("ascii"),
-        }).encode("ascii")
-        req = urllib.request.Request(IMGBB_UPLOAD_URL, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            resp_data = json.loads(resp.read().decode("utf-8"))
-        if not resp_data.get("success"):
-            return JSONResponse({"ok": False, "error": f"imgbb returned: {resp_data}"})
-        d = resp_data.get("data", {})
-        url = d.get("image", {}).get("url") or d.get("display_url") or d.get("url") or ""
-        if not url:
-            return JSONResponse({"ok": False, "error": "imgbb returned no url"})
-        return JSONResponse({"ok": True, "image_url": url})
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)})
+    return JSONResponse({"ok": True})
 
 
 @router.post("/save-local")

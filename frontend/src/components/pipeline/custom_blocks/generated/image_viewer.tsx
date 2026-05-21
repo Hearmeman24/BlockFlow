@@ -29,22 +29,12 @@ function isDataset(value: unknown): value is DatasetLike {
   )
 }
 
+import { toDisplayUrls } from '@/lib/image-ref'
+
 function toImageUrls(value: unknown): string[] {
-  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
-  if (Array.isArray(value)) {
-    return value
-      .filter((item): item is string => typeof item === 'string')
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0)
-  }
-  if (value && typeof value === 'object') {
-    const obj = value as Record<string, unknown>
-    const candidate = obj.image_url ?? obj.url ?? obj.path
-    if (typeof candidate === 'string' && candidate.trim()) {
-      return [candidate.trim()]
-    }
-  }
-  return []
+  // Browser display — local /outputs URLs are served by FastAPI, so prefer
+  // those over the tmpfiles URL (avoids a third-party hop just to render).
+  return toDisplayUrls(value)
 }
 
 function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentProps) {

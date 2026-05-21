@@ -454,13 +454,18 @@ function snap4n1(v: number): number {
   return Math.max(1, Math.round((v - 1) / 4) * 4 + 1)
 }
 
+import { toDisplayUrl, toDisplayUrls } from '@/lib/image-ref'
+
 function toMediaUrl(value: unknown): string {
+  // ComfyGen backend resolves /outputs/... → local disk path and uploads
+  // bytes to ComfyUI on RunPod. Prefer the local form. Plain strings are
+  // also accepted (video URLs / legacy producers).
   if (typeof value === 'string') return value.trim()
-  if (Array.isArray(value)) {
-    const first = value.find((v): v is string => typeof v === 'string' && v.trim() !== '')
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+    const first = (value as string[]).find((v) => v.trim() !== '')
     return first?.trim() || ''
   }
-  return ''
+  return toDisplayUrl(value) || ''
 }
 
 function makePendingOutput(kind: 'image' | 'video') {
@@ -1146,7 +1151,7 @@ function ComfyGenBlock({
       // Auto-detect upstream image array → add as batch axis
       const upstreamImageRaw = freshInputs.image
       const upstreamImages = Array.isArray(upstreamImageRaw)
-        ? (upstreamImageRaw as string[]).filter((p) => typeof p === 'string' && p.trim())
+        ? toDisplayUrls(upstreamImageRaw)
         : []
       if (upstreamImages.length > 1 && nodeMappings.some((m) => m.portKind === 'image')) {
         axes.push({ key: '__upstream_image__', values: upstreamImages, label: 'image' })

@@ -59,20 +59,13 @@ type JobSnap = {
   dataset: DatasetValue | null
 }
 
+import { toPublicUrls } from '@/lib/image-ref'
+
 function toReferenceUrls(value: unknown): string[] {
-  const out: string[] = []
-  const push = (v: unknown) => {
-    if (typeof v !== 'string') return
-    const t = v.trim()
-    if (!t) return
-    // accept http(s) URLs (RunPod-fetchable) and local /outputs paths
-    if (t.startsWith('http') || t.startsWith('/')) out.push(t)
-  }
-  if (typeof value === 'string') push(value)
-  else if (Array.isArray(value)) value.forEach(push)
-  // Dedupe while preserving insertion order — upstream pair-outputs (e.g. from
-  // I2V Prompt Writer with N>1) repeat the same reference once per prompt.
-  return Array.from(new Set(out))
+  // RunPod's Nano Banana 2 endpoint can only fetch http(s) URLs — bare
+  // /outputs paths are not externally reachable. Dedupe to handle upstream
+  // pair-outputs (e.g. I2V Prompt Writer with N>1) that repeat refs.
+  return Array.from(new Set(toPublicUrls(value)))
 }
 
 function toPromptList(value: unknown): string[] {

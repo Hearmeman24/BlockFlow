@@ -108,5 +108,4 @@ COMFY_GEN_INFO_CACHE_PATH = ROOT_DIR / "comfy_gen_info_cache.json"
 ADVANCED_MODE = os.getenv("SGS_ADVANCED", "").strip().lower() in ("1", "true", "yes")
 
 CIVITAI_API_KEY = os.getenv("CIVITAI_API_KEY", "")
-IMGBB_API_KEY = os.getenv("IMGBB_API_KEY", "")
 OUTPUT_DIR = LOCAL_OUTPUT_DIR

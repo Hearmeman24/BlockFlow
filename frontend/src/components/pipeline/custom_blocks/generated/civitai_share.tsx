@@ -63,15 +63,18 @@ interface GenerationMeta {
   software?: string
 }
 
+import { toPublicUrls } from '@/lib/image-ref'
+
 function toMediaUrls(value: unknown): string[] {
-  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
-  if (Array.isArray(value)) {
-    return value
-      .filter((item): item is string => typeof item === 'string')
-      .map((item) => item.trim())
-      .filter(Boolean)
+  // CivitAI ingest needs publicly fetchable URLs — bare local paths and
+  // blob: previews would fail. Image values can also be ImageRef objects
+  // (Upload Image), which toPublicUrls handles.
+  if (typeof value === 'string') return value.trim().startsWith('http') ? [value.trim()] : []
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+    // Video URLs come through as plain strings — preserve original behaviour.
+    return (value as string[]).map((s) => s.trim()).filter(Boolean)
   }
-  return []
+  return toPublicUrls(value)
 }
 
 function CivitAIShareBlock({

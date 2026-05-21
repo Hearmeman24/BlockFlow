@@ -99,7 +99,7 @@ export function PresetsPageBody() {
   const installedIds = new Set(installed.map((p) => p.preset_id))
 
   return (
-    <main className="container mx-auto max-w-4xl py-6 px-4 space-y-6">
+    <main className="mx-auto max-w-4xl px-4 pt-20 pb-6 space-y-6">
       <header className="flex items-baseline justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Presets</h1>

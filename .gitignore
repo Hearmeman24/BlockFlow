@@ -43,3 +43,8 @@ comfy_gen_info_cache.json
 
 # Agent worktrees
 .claude/worktrees/
+
+# Runtime artifacts from preset installer (sgs-ui-wisp-las.3)
+/preset_install.log
+/preset_manifest_cache.json
+

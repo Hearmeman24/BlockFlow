@@ -160,6 +160,11 @@ function UploadImageBlock({
     {},
   )
   const inFlightRef = useRef<Record<string, { local?: Promise<string>; url?: Promise<string> }>>({})
+  // Mirror of the persisted `uploads` state, kept synchronous so execute()
+  // can read the latest resolved URLs without waiting for a React re-render.
+  // The useSessionState write is async; this ref is updated the instant the
+  // upload promise resolves, so the pipeline runner sees consistent values.
+  const resolvedRef = useRef<Record<string, UploadState>>({})
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const dragCounterRef = useRef(0)
@@ -171,6 +176,12 @@ function UploadImageBlock({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Rehydrate the synchronous ref from the persisted state on mount and
+  // whenever uploads changes (e.g. when a different fingerprint resolves).
+  useEffect(() => {
+    resolvedRef.current = { ...uploads }
+  }, [uploads])
 
   // Build the output payload from current uploads state. While the public URL
   // upload is in flight, the value carries only `local`; consumers that need
@@ -199,32 +210,34 @@ function UploadImageBlock({
 
     const prepared = await prepareImageForUpload(entry.file)
 
+    const recordResolved = (field: 'local' | 'url', url: string) => {
+      resolvedRef.current[fp] = { ...resolvedRef.current[fp], [field]: url, [`${field}Error`]: undefined } as UploadState
+      setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], [field]: url, [`${field}Error`]: undefined } }))
+    }
+    const recordError = (field: 'local' | 'url', err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      resolvedRef.current[fp] = { ...resolvedRef.current[fp], [`${field}Error`]: msg } as UploadState
+      setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], [`${field}Error`]: msg } }))
+    }
+
     // Local — required for any pipeline that needs disk-readable bytes
     // (i2v_prompt_writer, image inspector display, etc).
-    if (!uploads[fp]?.local && !inFlightRef.current[fp].local) {
+    if (!resolvedRef.current[fp]?.local && !inFlightRef.current[fp].local) {
       const p = uploadToEndpoint(prepared, SAVE_LOCAL_ENDPOINT)
       inFlightRef.current[fp].local = p
-      p.then((url) => {
-        setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], local: url, localError: undefined } }))
-      }).catch((e) => {
-        setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], localError: e instanceof Error ? e.message : String(e) } }))
-      }).finally(() => {
-        if (inFlightRef.current[fp]) inFlightRef.current[fp].local = undefined
-      })
+      p.then((url) => recordResolved('local', url))
+        .catch((e) => recordError('local', e))
+        .finally(() => { if (inFlightRef.current[fp]) inFlightRef.current[fp].local = undefined })
     }
 
     // Public URL — required for any RunPod-backed downstream block. Done in
     // parallel; if it fails, downstream URL consumers will surface the error.
-    if (!uploads[fp]?.url && !inFlightRef.current[fp].url) {
+    if (!resolvedRef.current[fp]?.url && !inFlightRef.current[fp].url) {
       const p = uploadToEndpoint(prepared, TMPFILES_ENDPOINT)
       inFlightRef.current[fp].url = p
-      p.then((url) => {
-        setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], url, urlError: undefined } }))
-      }).catch((e) => {
-        setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], urlError: e instanceof Error ? e.message : String(e) } }))
-      }).finally(() => {
-        if (inFlightRef.current[fp]) inFlightRef.current[fp].url = undefined
-      })
+      p.then((url) => recordResolved('url', url))
+        .catch((e) => recordError('url', e))
+        .finally(() => { if (inFlightRef.current[fp]) inFlightRef.current[fp].url = undefined })
     }
   }, [uploads, setUploads])
 
@@ -266,6 +279,7 @@ function UploadImageBlock({
     })
     setUploads({})
     inFlightRef.current = {}
+    resolvedRef.current = {}
     if (fileInputRef.current) fileInputRef.current.value = ''
   }, [setUploads])
 
@@ -288,6 +302,28 @@ function UploadImageBlock({
     registerExecute(async () => {
       if (files.length === 0) throw new Error('Select at least one image file before running this block')
       await waitForUploads(files)
+      // Build the final output payload from the synchronous ref. We can't
+      // rely on the emit-via-useEffect path here: setUploads is async and
+      // its useEffect hasn't fired yet by the time the pipeline runner
+      // resolves freshInputs for the next block.
+      const refs: ImageRef[] = files.map((entry) => {
+        const u = resolvedRef.current[entry.fingerprint]
+        return {
+          kind: 'image-ref' as const,
+          local: u?.local || entry.previewUrl,
+          ...(u?.url ? { url: u.url } : {}),
+        }
+      })
+      const errors = files
+        .map((e) => resolvedRef.current[e.fingerprint])
+        .flatMap((u) => [u?.localError, u?.urlError].filter((s): s is string => !!s))
+      if (errors.length > 0) {
+        // Surface the first failure so downstream blocks aren't run with a
+        // partial payload. (Tmpfiles being down breaks RunPod consumers;
+        // a local save failure breaks local consumers.)
+        throw new Error(`Upload failed: ${errors[0]}`)
+      }
+      setOutput('image', refs.length === 1 ? refs[0] : refs)
       setStatusMessage(`${files.length} image${files.length === 1 ? '' : 's'} ready`)
     })
   })

@@ -50,18 +50,12 @@ const DEFAULT_ENDPOINT_ID = 'x06nemnipd7rru'
 const RUN_ENDPOINT = '/api/blocks/wan_22_image_to_video/run'
 const STATUS_ENDPOINT_BASE = '/api/blocks/wan_22_image_to_video/status'
 
+import { toPublicUrl, toDisplayUrl } from '@/lib/image-ref'
+
 function asImageInput(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) {
-    const first = value.find((item): item is string => typeof item === 'string' && item.trim().length > 0)
-    if (first) return first
-  }
-  if (value && typeof value === 'object') {
-    const obj = value as Record<string, unknown>
-    const candidate = obj.image_url ?? obj.url ?? obj.path
-    if (typeof candidate === 'string') return candidate
-  }
-  return ''
+  // Prefer the externally-fetchable URL; the backend will auto-tmpfiles a
+  // /outputs path if that's all we have.
+  return toPublicUrl(value) || toDisplayUrl(value) || ''
 }
 
 interface Wan22I2vPayload {

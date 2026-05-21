@@ -121,17 +121,13 @@ function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.trunc(value)))
 }
 
+import { toDisplayUrls } from '@/lib/image-ref'
+
 function asImageInputs(value: unknown): string[] {
-  if (typeof value === 'string' && value.trim()) return [value]
-  if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-  }
-  if (value && typeof value === 'object') {
-    const obj = value as Record<string, unknown>
-    const candidate = obj.image_url ?? obj.url ?? obj.path
-    if (typeof candidate === 'string' && candidate.trim()) return [candidate]
-  }
-  return []
+  // The vision model backend accepts either a local /outputs path (which
+  // it reads from disk and embeds as a data URL) or a remote http URL.
+  // Prefer the local form so we don't depend on tmpfiles round-tripping.
+  return toDisplayUrls(value)
 }
 
 function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, setStatusMessage }: BlockComponentProps) {

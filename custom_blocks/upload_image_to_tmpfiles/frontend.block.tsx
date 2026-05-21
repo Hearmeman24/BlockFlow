@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { useSessionState } from '@/lib/use-session-state'
+import type { ImageRef } from '@/lib/image-ref'
 import {
   PORT_IMAGE,
   PORT_TEXT,
@@ -10,11 +11,8 @@ import {
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
 
-const UPLOAD_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload'
 const SAVE_LOCAL_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/save-local'
-const IMGBB_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload-imgbb'
-
-type UploadMode = 'local' | 'tmpfiles' | 'imgbb'
+const TMPFILES_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload'
 
 // Visually-lossless ceiling for upload. AI generation pipelines never consume
 // more than this; anything beyond is wasted bandwidth and trips proxy body limits.
@@ -101,27 +99,28 @@ async function prepareImageForUpload(file: File): Promise<File> {
   })
 }
 
-async function uploadImageFile(file: File, mode: UploadMode) {
-  const prepared = await prepareImageForUpload(file)
-  const endpoint = mode === 'local' ? SAVE_LOCAL_ENDPOINT
-    : mode === 'imgbb' ? IMGBB_ENDPOINT
-    : UPLOAD_ENDPOINT
+async function uploadToEndpoint(file: File, endpoint: string): Promise<string> {
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/octet-stream',
-      'X-Filename': prepared.name,
-      'X-Content-Type': prepared.type || 'application/octet-stream',
+      'X-Filename': file.name,
+      'X-Content-Type': file.type || 'application/octet-stream',
     },
-    body: await prepared.arrayBuffer(),
+    body: await file.arrayBuffer(),
   })
   const text = await res.text()
+  let parsed: { ok?: boolean; image_url?: string; error?: string }
   try {
-    return JSON.parse(text)
+    parsed = JSON.parse(text)
   } catch {
     const excerpt = text.slice(0, 160).trim() || '(empty response body)'
     throw new Error(`Upload failed (HTTP ${res.status}): ${excerpt}`)
   }
+  if (!parsed.ok) throw new Error(parsed.error || `Upload failed (HTTP ${res.status})`)
+  const url = String(parsed.image_url || '').trim()
+  if (!url) throw new Error('Upload succeeded but no URL returned')
+  return url
 }
 
 async function fingerprintFile(file: File): Promise<string> {
@@ -138,9 +137,13 @@ interface FileEntry {
   file: File
   fingerprint: string
   previewUrl: string
-  /** Cached upload URL (matches current mode) */
-  uploadedUrl?: string
-  uploadedMode?: UploadMode
+}
+
+interface UploadState {
+  local?: string
+  url?: string
+  localError?: string
+  urlError?: string
 }
 
 function UploadImageBlock({
@@ -149,12 +152,14 @@ function UploadImageBlock({
   registerExecute,
   setStatusMessage,
 }: BlockComponentProps) {
-  const [uploadMode, setUploadMode] = useSessionState<UploadMode>(`block_${blockId}_upload_mode`, 'local')
   const [files, setFiles] = useState<FileEntry[]>([])
-  // Persist uploaded URLs so they survive re-renders (keyed by fingerprint)
-  const [cachedUploads, setCachedUploads] = useSessionState<Record<string, { url: string; mode: UploadMode }>>(
-    `block_${blockId}_cached_uploads`, {}
+  // Persist completed uploads (fingerprint → { local, url }) across re-mounts.
+  // In-flight promises live in a ref because they aren't serializable.
+  const [uploads, setUploads] = useSessionState<Record<string, UploadState>>(
+    `block_${blockId}_uploads_v2`,
+    {},
   )
+  const inFlightRef = useRef<Record<string, { local?: Promise<string>; url?: Promise<string> }>>({})
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const dragCounterRef = useRef(0)
@@ -167,23 +172,61 @@ function UploadImageBlock({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Expose the current file set to downstream blocks at edit time, before the
-  // pipeline has run. Prefer the cached uploaded URL when present (so refs are
-  // immediately usable on a re-mount); otherwise fall back to the local blob:
-  // previewUrl (which the pipeline runner will replace with a real URL on run).
+  // Build the output payload from current uploads state. While the public URL
+  // upload is in flight, the value carries only `local`; consumers that need
+  // a URL will wait for it via registerExecute below.
   useEffect(() => {
-    const urls = files.map((entry) => {
-      const cached = cachedUploads[entry.fingerprint]
-      return cached?.url || entry.previewUrl
+    const refs: Array<ImageRef> = files.map((entry) => {
+      const u = uploads[entry.fingerprint]
+      return {
+        kind: 'image-ref' as const,
+        local: u?.local || entry.previewUrl,
+        ...(u?.url ? { url: u.url } : {}),
+      }
     })
-    if (urls.length === 0) {
+    if (refs.length === 0) {
       setOutput('image', undefined)
-    } else if (urls.length === 1) {
-      setOutput('image', urls[0])
+    } else if (refs.length === 1) {
+      setOutput('image', refs[0])
     } else {
-      setOutput('image', urls)
+      setOutput('image', refs)
     }
-  }, [files, cachedUploads, setOutput])
+  }, [files, uploads, setOutput])
+
+  const kickOffUploads = useCallback(async (entry: FileEntry) => {
+    const fp = entry.fingerprint
+    inFlightRef.current[fp] = inFlightRef.current[fp] || {}
+
+    const prepared = await prepareImageForUpload(entry.file)
+
+    // Local — required for any pipeline that needs disk-readable bytes
+    // (i2v_prompt_writer, image inspector display, etc).
+    if (!uploads[fp]?.local && !inFlightRef.current[fp].local) {
+      const p = uploadToEndpoint(prepared, SAVE_LOCAL_ENDPOINT)
+      inFlightRef.current[fp].local = p
+      p.then((url) => {
+        setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], local: url, localError: undefined } }))
+      }).catch((e) => {
+        setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], localError: e instanceof Error ? e.message : String(e) } }))
+      }).finally(() => {
+        if (inFlightRef.current[fp]) inFlightRef.current[fp].local = undefined
+      })
+    }
+
+    // Public URL — required for any RunPod-backed downstream block. Done in
+    // parallel; if it fails, downstream URL consumers will surface the error.
+    if (!uploads[fp]?.url && !inFlightRef.current[fp].url) {
+      const p = uploadToEndpoint(prepared, TMPFILES_ENDPOINT)
+      inFlightRef.current[fp].url = p
+      p.then((url) => {
+        setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], url, urlError: undefined } }))
+      }).catch((e) => {
+        setUploads((prev) => ({ ...prev, [fp]: { ...prev[fp], urlError: e instanceof Error ? e.message : String(e) } }))
+      }).finally(() => {
+        if (inFlightRef.current[fp]) inFlightRef.current[fp].url = undefined
+      })
+    }
+  }, [uploads, setUploads])
 
   const addFiles = useCallback(async (newFiles: File[]) => {
     const imageFiles = newFiles.filter((f) => f.type.startsWith('image/'))
@@ -194,17 +237,19 @@ function UploadImageBlock({
         file,
         fingerprint: await fingerprintFile(file),
         previewUrl: URL.createObjectURL(file),
-      }))
+      })),
     )
 
     setFiles((prev) => {
       const existingFingerprints = new Set(prev.map((f) => f.fingerprint))
       const unique = entries.filter((e) => !existingFingerprints.has(e.fingerprint))
-      // Revoke URLs for duplicates
-      entries.filter((e) => existingFingerprints.has(e.fingerprint)).forEach((e) => URL.revokeObjectURL(e.previewUrl))
+      entries
+        .filter((e) => existingFingerprints.has(e.fingerprint))
+        .forEach((e) => URL.revokeObjectURL(e.previewUrl))
+      unique.forEach((e) => void kickOffUploads(e))
       return [...prev, ...unique]
     })
-  }, [])
+  }, [kickOffUploads])
 
   const removeFile = useCallback((index: number) => {
     setFiles((prev) => {
@@ -219,41 +264,31 @@ function UploadImageBlock({
       prev.forEach((f) => URL.revokeObjectURL(f.previewUrl))
       return []
     })
-    setCachedUploads({})
+    setUploads({})
+    inFlightRef.current = {}
     if (fileInputRef.current) fileInputRef.current.value = ''
-  }, [setCachedUploads])
+  }, [setUploads])
 
-  const materializeUrls = async (entries: FileEntry[]): Promise<string[]> => {
-    const urls: string[] = []
+  // Wait for every currently-known fingerprint's uploads to settle.
+  const waitForUploads = useCallback(async (entries: FileEntry[]) => {
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i]
-      // Check cache
-      const cached = cachedUploads[entry.fingerprint]
-      if (cached && cached.mode === uploadMode) {
-        urls.push(cached.url)
-        continue
+      const inflight = inFlightRef.current[entry.fingerprint]
+      const promises: Promise<unknown>[] = []
+      if (inflight?.local) promises.push(inflight.local)
+      if (inflight?.url) promises.push(inflight.url)
+      if (promises.length > 0) {
+        setStatusMessage(`Finishing upload ${i + 1}/${entries.length}...`)
+        await Promise.allSettled(promises)
       }
-
-      setStatusMessage(`Uploading image ${i + 1}/${entries.length}...`)
-      const res = await uploadImageFile(entry.file, uploadMode)
-      if (!res?.ok) throw new Error(res?.error ?? `Image upload failed for ${entry.file.name}`)
-      const imageUrl = String(res.image_url || '').trim()
-      if (!imageUrl) throw new Error(`Upload succeeded but no URL returned for ${entry.file.name}`)
-
-      urls.push(imageUrl)
-      setCachedUploads((prev) => ({ ...prev, [entry.fingerprint]: { url: imageUrl, mode: uploadMode } }))
     }
-    return urls
-  }
+  }, [setStatusMessage])
 
   useEffect(() => {
     registerExecute(async () => {
       if (files.length === 0) throw new Error('Select at least one image file before running this block')
-      setStatusMessage(`Preparing ${files.length} image${files.length === 1 ? '' : 's'}...`)
-      const urls = await materializeUrls(files)
-      // Output array for iteration, or single string if only one
-      setOutput('image', urls.length === 1 ? urls[0] : urls)
-      setStatusMessage(`${urls.length} image${urls.length === 1 ? '' : 's'} ready`)
+      await waitForUploads(files)
+      setStatusMessage(`${files.length} image${files.length === 1 ? '' : 's'} ready`)
     })
   })
 
@@ -287,17 +322,20 @@ function UploadImageBlock({
     addFiles(droppedFiles)
   }, [addFiles])
 
-  const handleModeChange = (mode: UploadMode) => {
-    setUploadMode(mode)
-    // Invalidate cached uploads for different mode
-    setCachedUploads((prev) => {
-      const filtered: Record<string, { url: string; mode: UploadMode }> = {}
-      for (const [k, v] of Object.entries(prev)) {
-        if (v.mode === mode) filtered[k] = v
-      }
-      return filtered
-    })
-  }
+  const uploadSummary = (() => {
+    if (files.length === 0) return null
+    let localDone = 0, urlDone = 0, errors = 0
+    for (const f of files) {
+      const u = uploads[f.fingerprint]
+      if (u?.local) localDone++
+      if (u?.url) urlDone++
+      if (u?.localError || u?.urlError) errors++
+    }
+    const pending = files.length * 2 - localDone - urlDone
+    if (pending > 0) return `Uploading… (${localDone + urlDone}/${files.length * 2})`
+    if (errors > 0) return `Ready · ${errors} upload error${errors === 1 ? '' : 's'}`
+    return 'Ready'
+  })()
 
   return (
     <div className="space-y-3">
@@ -313,31 +351,6 @@ function UploadImageBlock({
           if (fileInputRef.current) fileInputRef.current.value = ''
         }}
       />
-
-      {/* Upload mode toggle */}
-      <div className="flex items-center gap-1 rounded-md border border-border/60 p-0.5">
-        {(['local', 'tmpfiles', 'imgbb'] as const).map((m) => (
-          <button
-            key={m}
-            type="button"
-            className={`flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-              uploadMode === m
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground'
-            }`}
-            onClick={() => handleModeChange(m)}
-          >
-            {m === 'local' ? 'Local' : m === 'tmpfiles' ? 'Tmpfiles' : 'ImgBB'}
-          </button>
-        ))}
-      </div>
-      <p className="text-[10px] text-muted-foreground -mt-1">
-        {uploadMode === 'local'
-          ? 'Saves to /outputs — use for ComfyUI Gen or CivitAI Share.'
-          : uploadMode === 'tmpfiles'
-            ? 'Uploads to tmpfiles.org — use for remote RunPod endpoints.'
-            : 'Uploads to ImgBB (needs IMGBB_API_KEY in .env) — most reliable for remote endpoints.'}
-      </p>
 
       {files.length === 0 ? (
         <div
@@ -356,11 +369,13 @@ function UploadImageBlock({
             <p className="text-[10px] text-muted-foreground">
               or drag &amp; drop images here
             </p>
+            <p className="text-[10px] text-muted-foreground/70">
+              Saved locally + uploaded for remote endpoints automatically.
+            </p>
           </div>
         </div>
       ) : (
         <div className="space-y-2">
-          {/* Image grid */}
           <div
             className={`grid gap-1.5 rounded-md border p-1.5 transition-colors ${
               isDragging ? 'border-primary bg-primary/5' : 'border-border/60'
@@ -370,27 +385,42 @@ function UploadImageBlock({
             onDragOver={handleDragOver}
             onDrop={handleDrop}
           >
-            {files.map((entry, idx) => (
-              <div key={entry.fingerprint} className="group relative">
-                <img
-                  src={entry.previewUrl}
-                  alt={entry.file.name}
-                  className={`w-full rounded object-cover ${files.length === 1 ? '' : 'aspect-square'}`}
-                />
-                <button
-                  type="button"
-                  className="absolute top-0.5 right-0.5 hidden group-hover:flex h-4 w-4 items-center justify-center rounded-full bg-black/70 text-white text-[9px] leading-none"
-                  onClick={() => removeFile(idx)}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
+            {files.map((entry, idx) => {
+              const u = uploads[entry.fingerprint]
+              const localReady = !!u?.local
+              const urlReady = !!u?.url
+              return (
+                <div key={entry.fingerprint} className="group relative">
+                  <img
+                    src={entry.previewUrl}
+                    alt={entry.file.name}
+                    className={`w-full rounded object-cover ${files.length === 1 ? '' : 'aspect-square'}`}
+                  />
+                  <div className="absolute bottom-0.5 left-0.5 flex gap-0.5">
+                    <span
+                      className={`text-[8px] px-1 rounded ${localReady ? 'bg-emerald-500/70 text-white' : 'bg-black/60 text-muted-foreground'}`}
+                      title="Local /outputs save"
+                    >local</span>
+                    <span
+                      className={`text-[8px] px-1 rounded ${urlReady ? 'bg-emerald-500/70 text-white' : 'bg-black/60 text-muted-foreground'}`}
+                      title="Public URL upload (tmpfiles.org)"
+                    >url</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="absolute top-0.5 right-0.5 hidden group-hover:flex h-4 w-4 items-center justify-center rounded-full bg-black/70 text-white text-[9px] leading-none"
+                    onClick={() => removeFile(idx)}
+                  >
+                    ×
+                  </button>
+                </div>
+              )
+            })}
           </div>
 
           <p className="text-[10px] text-muted-foreground text-center">
             {files.length} image{files.length === 1 ? '' : 's'} selected
-            {files.length > 1 && ' — all emitted as batch'}
+            {uploadSummary ? ` · ${uploadSummary}` : ''}
           </p>
 
           <div className="grid grid-cols-2 gap-2">
@@ -410,7 +440,7 @@ function UploadImageBlock({
 export const blockDef: BlockDef = {
   type: 'uploadImageToTmpfiles',
   label: 'Upload Image',
-  description: 'Upload one or more images (local save or tmpfiles.org)',
+  description: 'Upload one or more images — saved locally and to a public URL for remote endpoints automatically.',
   size: 'md',
   canStart: true,
   suggestedDownstream: ['i2vPromptWriter', 'datasetCreate', 'comfyGen', 'imageViewer'],
@@ -421,8 +451,7 @@ export const blockDef: BlockDef = {
   ],
   forwards: [{ fromInput: 'text', toOutput: 'text', when: 'if_present' }],
   configKeys: [
-    'upload_mode',
-    'cached_uploads',
+    'uploads_v2',
   ],
   component: UploadImageBlock,
 }

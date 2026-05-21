@@ -141,8 +141,10 @@ def test_validate_r2_partial_config_lists_only_missing(client, store):
 def test_validate_r2_success(client, configured_r2, mocker):
     # Mock the boto3 client factory at the boundary; validator constructs its own
     # client config (which we want to verify) but the network call is faked.
+    # Switched to head_bucket per the .1 fix — list_buckets fails on R2 tokens
+    # that are scoped to a single bucket.
     fake_client = mocker.MagicMock()
-    fake_client.list_buckets.return_value = {"Buckets": [{"Name": "my-bucket"}]}
+    fake_client.head_bucket.return_value = {}
     mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
 
     r = client.post("/api/settings/validate/r2")
@@ -150,7 +152,7 @@ def test_validate_r2_success(client, configured_r2, mocker):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
-    fake_client.list_buckets.assert_called_once()
+    fake_client.head_bucket.assert_called_once_with(Bucket="my-bucket")
 
 
 def test_validate_r2_passes_correct_creds_to_boto3(client, configured_r2, mocker):
@@ -159,7 +161,7 @@ def test_validate_r2_passes_correct_creds_to_boto3(client, configured_r2, mocker
     plumbing.
     """
     fake_client = mocker.MagicMock()
-    fake_client.list_buckets.return_value = {"Buckets": []}
+    fake_client.head_bucket.return_value = {}
     factory = mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
 
     client.post("/api/settings/validate/r2")
@@ -173,7 +175,7 @@ def test_validate_r2_passes_correct_creds_to_boto3(client, configured_r2, mocker
 
 def test_validate_r2_boto3_error_returns_ok_false(client, configured_r2, mocker):
     fake_client = mocker.MagicMock()
-    fake_client.list_buckets.side_effect = settings_validators.ValidationFailed("InvalidAccessKeyId")
+    fake_client.head_bucket.side_effect = settings_validators.ValidationFailed("InvalidAccessKeyId")
     mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
 
     r = client.post("/api/settings/validate/r2")
@@ -183,17 +185,32 @@ def test_validate_r2_boto3_error_returns_ok_false(client, configured_r2, mocker)
     assert "InvalidAccessKeyId" in body["error"]
 
 
-def test_validate_r2_bucket_not_in_listing_returns_ok_false(client, configured_r2, mocker):
-    """If the credentials work but the configured bucket isn't owned by them, that's a config error."""
+def test_validate_r2_access_denied_surfaced_verbatim(client, configured_r2, mocker):
+    """boto3 ClientError stringifies as 'An error occurred (AccessDenied) when calling...';
+    the validator must surface that as-is so the UI shows AWS's actual message."""
     fake_client = mocker.MagicMock()
-    fake_client.list_buckets.return_value = {"Buckets": [{"Name": "some-other-bucket"}]}
+    fake_client.head_bucket.side_effect = Exception(
+        "An error occurred (AccessDenied) when calling the HeadBucket operation: Access Denied"
+    )
     mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
 
     r = client.post("/api/settings/validate/r2")
-    assert r.status_code == 200
     body = r.json()
     assert body["ok"] is False
-    assert "my-bucket" in body["error"]
+    # No leading 'Exception:' type prefix — recognized error name surfaces clean
+    assert body["error"].startswith("An error occurred (AccessDenied)")
+
+
+def test_validate_r2_no_longer_calls_list_buckets(client, configured_r2, mocker):
+    """Regression for the R2-token bug: R2 tokens scoped to one bucket lack
+    ListBuckets permission. Validator must not call list_buckets at all."""
+    fake_client = mocker.MagicMock()
+    fake_client.head_bucket.return_value = {}
+    mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
+
+    client.post("/api/settings/validate/r2")
+
+    fake_client.list_buckets.assert_not_called()
 
 
 # === OpenRouter validator ===================================================

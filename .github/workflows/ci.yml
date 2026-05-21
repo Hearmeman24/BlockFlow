@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  frontend:
+    name: Frontend build + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate custom block registry
+        run: npm run gen:custom-blocks
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      # NOTE: pre-existing lint debt (17 errors, mainly setState-in-effect + a
+      # few conditional hook calls). A follow-up bead should fix these before
+      # this step becomes hard-fail. Keeping the job visible in CI so the debt
+      # is tracked.
+      - name: Lint
+        run: npm run lint
+        continue-on-error: true
+
+      - name: Test (vitest + jsdom + RTL)
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  backend:
+    name: Backend test + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies (with dev extras)
+        run: uv sync --extra dev
+
+      # NOTE: pre-existing ruff debt (~45 errors: import ordering, multi-statement
+      # lines, unused imports). Most auto-fixable but conflating cleanup with .12
+      # work bloats the diff. Continue-on-error keeps the signal visible; sibling
+      # bead sgs-ui-wisp-las.13 tracks the cleanup.
+      - name: Lint (ruff)
+        run: uv run ruff check .
+        continue-on-error: true
+
+      - name: Test (pytest)
+        run: uv run pytest tests/ -ra
+
+  forbidden-tokens:
+    name: Forbidden-token gate
+    runs-on: ubuntu-latest
+    # NOTE: continue-on-error until sgs-ui-wisp-las.9 lands (moves generation/
+    # wan_22_image_to_video/lora_selector to private_blocks/ and strips
+    # remaining defaults). After .9, remove this and let the gate hard-fail.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run gate
+        run: python scripts/check_no_forbidden_tokens.py custom_blocks backend frontend/src

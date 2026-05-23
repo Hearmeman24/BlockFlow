@@ -230,11 +230,17 @@ def test_list_installed_returns_settings_rows(client):
     assert qwen["disk_size_gb"] == 65
     # workflow_json is NOT in the list response (would bloat); UI fetches detail separately
     assert "workflow_json" not in qwen
+    # workflow NAMES are included so the ComfyGen dropdown can enumerate
+    # one entry per (preset, workflow) without an N+1 detail fetch (sgs-ui-chf).
+    assert qwen["workflows"] == [{"name": "Default"}]
 
 
 # === installed presets detail ===============================================
 
-def test_get_installed_detail_returns_workflow_json(client):
+def test_get_installed_detail_wraps_legacy_dict_workflow_json(client):
+    """A row written before workflows[] (legacy single-dict workflow_json)
+    must read back as a wrapped array so the ComfyGen block can treat all
+    presets uniformly."""
     settings_store.record_installed_preset(
         preset_id="qwen-image-lighting",
         version="0.2.0",
@@ -245,7 +251,27 @@ def test_get_installed_detail_returns_workflow_json(client):
     assert r.status_code == 200
     body = r.json()
     assert body["preset_id"] == "qwen-image-lighting"
-    assert body["workflow_json"] == {"3": {"class_type": "KSampler"}}
+    assert body["workflow_json"] == [
+        {"name": "Default", "json": {"3": {"class_type": "KSampler"}}}
+    ]
+
+
+def test_get_installed_detail_returns_workflows_array_as_is(client):
+    """Modern rows store the workflows[] form directly; read-path passes
+    through unchanged."""
+    payload = [
+        {"name": "I2V", "json": {"3": {"class_type": "KSampler"}}},
+        {"name": "V2V", "json": {"3": {"class_type": "KSampler"}, "4": {}}},
+    ]
+    settings_store.record_installed_preset(
+        preset_id="multi-flow",
+        version="0.1.0",
+        disk_size_gb=10,
+        workflow_json=json.dumps(payload),
+    )
+    r = client.get("/api/presets/installed/multi-flow")
+    assert r.status_code == 200
+    assert r.json()["workflow_json"] == payload
 
 
 def test_get_installed_detail_404_when_missing(client):
@@ -260,10 +286,13 @@ QWEN_FULL_PRESET = {
     "name": "Qwen Image 2512 — Lightning 4-step",
     "comfygen_min_version": "0.2.0",
     "tags": ["t2i"],
-    "workflow": {
-        "url": "https://example/workflow.json",
-        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    },
+    "workflows": [
+        {
+            "name": "Default",
+            "url": "https://example/workflow.json",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        }
+    ],
     "models": [
         {
             "source": "huggingface",
@@ -441,11 +470,15 @@ def test_install_persists_to_settings_on_success(client, install_ready, mocker):
     assert ep is not None
     assert ep["version"] == "0.2.0"
     assert ep["disk_size_gb"] == 55
-    # workflow_json is persisted as a JSON string (parseable dict). In this
-    # test the workflow URL fetch isn't separately mocked so the dict can be
-    # empty; what matters is that the column was populated.
+    # workflow_json is now persisted as a JSON-encoded list of {name, json}
+    # entries (sgs-ui-chf). Workflow URL fetch isn't separately mocked here so
+    # the inner json can be empty; what matters is that the column was
+    # populated and carries the canonical 'Default' entry.
     import json as _json
-    assert isinstance(_json.loads(ep["workflow_json"]), dict)
+    workflows = _json.loads(ep["workflow_json"])
+    assert isinstance(workflows, list)
+    assert len(workflows) == 1
+    assert workflows[0]["name"] == "Default"
 
 
 def test_install_409_when_already_running(client, install_ready, mocker):
@@ -526,6 +559,83 @@ def test_install_progress_returns_current_state(client):
     assert body["state"] == "running"
     assert body["preset_id"] == "qwen-image-lighting"
     assert body["files_total"] == 4
+
+
+# === Stage B: multi-workflow presets (sgs-ui-chf) ===========================
+
+def test_install_persists_workflows_array_with_names(client, install_ready, mocker):
+    """preset.workflows[] → workflow_json stored as JSON-encoded list of
+    {name, json} entries. Each URL-backed workflow gets fetched once."""
+    wf_i2v = {"3": {"class_type": "WanAnimateI2V"}}
+    wf_v2v = {"3": {"class_type": "WanAnimateV2V"}, "4": {}}
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "wan-animate",
+        "workflows": [
+            {"name": "I2V", "url": "https://example/i2v.json", "sha256": "0" * 64},
+            {"name": "V2V", "url": "https://example/v2v.json", "sha256": "1" * 64},
+        ],
+    }
+    # Route fetches by URL — dispatch on URL, not call order, so any extra
+    # cache-warmup fetches don't shift the responses.
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([{**_qwen_preset_entry(), "id": "wan-animate", "preset_url": "https://example/preset.json"}]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        if "i2v.json" in url:
+            return _mock_response(wf_i2v)
+        if "v2v.json" in url:
+            return _mock_response(wf_v2v)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    def _popen_side_effect(args, *a, **kw):
+        if args[:2] == ["comfy-gen", "hash"]:
+            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
+        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+
+    r = client.post("/api/presets/install", json={"preset_id": "wan-animate"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    persisted = settings_store.get_installed_preset("wan-animate")
+    assert persisted is not None
+    workflows = json.loads(persisted["workflow_json"])
+    assert workflows == [
+        {"name": "I2V", "json": wf_i2v},
+        {"name": "V2V", "json": wf_v2v},
+    ]
+
+
+def test_install_inline_workflow_skips_fetch(client, install_ready, mocker):
+    """Inline workflow JSON doesn't need an HTTP fetch — persists directly."""
+    inline = {"3": {"class_type": "KSampler"}}
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "inline-flow",
+        "workflows": [{"name": "Default", "json": inline}],
+    }
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([{**_qwen_preset_entry(), "id": "inline-flow", "preset_url": "https://example/preset.json"}]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    def _popen_side_effect(args, *a, **kw):
+        if args[:2] == ["comfy-gen", "hash"]:
+            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
+        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+
+    r = client.post("/api/presets/install", json={"preset_id": "inline-flow"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    persisted = settings_store.get_installed_preset("inline-flow")
+    workflows = json.loads(persisted["workflow_json"])
+    assert workflows == [{"name": "Default", "json": inline}]
 
 
 # === Stage B: hash pre-flight (sgs-ui-zr0) ==================================

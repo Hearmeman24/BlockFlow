@@ -291,10 +291,23 @@ export type InstalledPresetSummary = {
   disk_size_gb: number | null
   installed_at: string
   updated_at: string
+  // Names only — bodies live behind getInstalledPreset. Enumerated by the
+  // ComfyGen block dropdown as one entry per (preset, workflow).
+  workflows: { name: string }[]
+}
+
+// A single entry inside an installed preset's workflows list. `name` is the
+// author-supplied display string ("I2V", "V2V", "Default", etc.) shown in the
+// ComfyGen block dropdown after the preset's own name.
+export type InstalledPresetWorkflow = {
+  name: string
+  json: Record<string, unknown>
 }
 
 export type InstalledPresetDetail = InstalledPresetSummary & {
-  workflow_json: Record<string, unknown>
+  // Always a list since sgs-ui-chf. Pre-chf rows are normalized server-side
+  // to a single-entry list with name='Default'.
+  workflow_json: InstalledPresetWorkflow[]
 }
 
 export async function getPresetManifest(opts: { refresh?: boolean } = {}): Promise<PresetManifest> {

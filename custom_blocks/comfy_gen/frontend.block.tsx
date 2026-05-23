@@ -515,6 +515,36 @@ function ComfyGenBlock({
     localStorage.setItem(ENDPOINT_KEY, v)
   }, [])
 
+  // sgs-ui-chf: Advanced mode (workspace-wide toggle). When OFF (default):
+  // preset dropdown is the only loader; Load JSON / From PNG / Auto button /
+  // endpoint editor are hidden. Toggled via the gear icon in the header.
+  const [advancedMode, setAdvancedMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return localStorage.getItem('comfy_gen_advanced_mode') === '1'
+  })
+  const toggleAdvancedMode = useCallback(() => {
+    setAdvancedMode((prev) => {
+      const next = !prev
+      localStorage.setItem('comfy_gen_advanced_mode', next ? '1' : '0')
+      // Notify other mounted ComfyGen blocks in the same tab so they re-render.
+      window.dispatchEvent(new StorageEvent('storage', { key: 'comfy_gen_advanced_mode', newValue: next ? '1' : '0' }))
+      return next
+    })
+  }, [])
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'comfy_gen_advanced_mode') {
+        setAdvancedMode(e.newValue === '1')
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  // Endpoint chip — display mode vs inline-edit mode (only relevant in
+  // advanced mode; chip is hidden entirely in default mode).
+  const [endpointEditing, setEndpointEditing] = useState(false)
+
   const [workflowJson, setWorkflowJson] = useSessionState(`block_${blockId}_workflow`, '')
   const [loadNodes, setLoadNodes] = useSessionState<LoadNode[]>(`block_${blockId}_load_nodes`, [])
   const [nodeMappings, setNodeMappings] = useSessionState<NodeMapping[]>(`block_${blockId}_mappings`, [])
@@ -710,16 +740,19 @@ function ComfyGenBlock({
         : 'Auto'
     setHeaderActions?.(
       <>
-        <Button
-          variant={automateEnabled ? 'default' : 'ghost'}
-          size="sm"
-          className={`h-5 px-1.5 text-[10px] gap-1 ${automateEnabled ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30' : 'text-muted-foreground hover:text-foreground'}`}
-          onClick={() => setAutomateEnabled(!automateEnabled)}
-          disabled={batchRunning}
-        >
-          <svg className={`w-3 h-3 ${batchRunning ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-          {autoLabel}
-        </Button>
+        {/* sgs-ui-chf: Auto (parameter sweep) is advanced-mode only. */}
+        {advancedMode && (
+          <Button
+            variant={automateEnabled ? 'default' : 'ghost'}
+            size="sm"
+            className={`h-5 px-1.5 text-[10px] gap-1 ${automateEnabled ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30' : 'text-muted-foreground hover:text-foreground'}`}
+            onClick={() => setAutomateEnabled(!automateEnabled)}
+            disabled={batchRunning}
+          >
+            <svg className={`w-3 h-3 ${batchRunning ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+            {autoLabel}
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -730,9 +763,20 @@ function ComfyGenBlock({
           <svg className={`w-3 h-3 ${cacheRefreshing ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
           {cacheRefreshing ? (cacheStatus || 'Syncing…') : 'Sync'}
         </Button>
+        {/* sgs-ui-chf: Advanced toggle (workspace-wide). Pressed state shows
+            Endpoint chip, Load JSON / From PNG, Auto. */}
+        <Button
+          variant={advancedMode ? 'default' : 'ghost'}
+          size="sm"
+          className={`h-5 px-1.5 text-[10px] gap-1 ${advancedMode ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30 hover:bg-blue-500/30' : 'text-muted-foreground hover:text-foreground'}`}
+          onClick={toggleAdvancedMode}
+          title={advancedMode ? 'Advanced mode on — click to hide power-user controls' : 'Show advanced controls (endpoint override, Load JSON / From PNG, parameter sweep)'}
+        >
+          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </Button>
       </>
     )
-  }, [setHeaderActions, refreshCache, cacheRefreshing, cacheStatus, automateEnabled, combinationCount, setAutomateEnabled, batchRunning, batchDone, batchState])
+  }, [setHeaderActions, refreshCache, cacheRefreshing, cacheStatus, automateEnabled, combinationCount, setAutomateEnabled, batchRunning, batchDone, batchState, advancedMode, toggleAdvancedMode])
 
   // Prompt binding for upstream text override
   // Filter to only show blocks that output a port named "prompt" (not generic text like URLs)
@@ -1027,16 +1071,28 @@ function ComfyGenBlock({
     listInstalledPresets().then(setInstalledPresets).catch(() => setInstalledPresets([]))
   }, [])
 
-  const handleApplyPreset = useCallback(async (presetId: string) => {
-    if (!presetId) return
+  // sgs-ui-chf: presetSelection encodes "<preset_id>::<workflow_index>" so the
+  // dropdown can show one entry per (preset, workflow) pair without changing
+  // shadcn Select's single-string value contract.
+  const handleApplyPreset = useCallback(async (selection: string) => {
+    if (!selection) return
+    const sepIdx = selection.lastIndexOf('::')
+    const presetId = sepIdx < 0 ? selection : selection.slice(0, sepIdx)
+    const workflowIdx = sepIdx < 0 ? 0 : parseInt(selection.slice(sepIdx + 2), 10) || 0
     setPresetApplyError('')
     setPresetApplying(true)
     try {
       const detail = await getInstalledPreset(presetId)
-      const json = JSON.stringify(detail.workflow_json, null, 2)
+      const flows = detail.workflow_json || []
+      const chosen = flows[workflowIdx]
+      if (!chosen) {
+        setPresetApplyError(`preset '${presetId}' has no workflow at index ${workflowIdx}`)
+        return
+      }
+      const json = JSON.stringify(chosen.json, null, 2)
       resetRuntimeFromBlock(blockId, { preserveOutputHint: true })
       setWorkflowJson(json)
-      setWorkflowName(`preset: ${presetId}`)
+      setWorkflowName(`${presetId} · ${chosen.name}`)
       const detectedType = await parseWorkflow(json)
       if (detectedType === 'image' || detectedType === 'video') {
         setOutput(detectedType, makePendingOutput(detectedType))
@@ -1063,7 +1119,10 @@ function ComfyGenBlock({
     }
     const json = JSON.stringify(data.workflow)
     setWorkflowJson(json)
-    setWorkflowName(file.name)
+    // sgs-ui-chf: label PNG sources with a stable name; the original filename
+    // is rarely meaningful since the workflow was extracted from the image's
+    // metadata, not the file's content.
+    setWorkflowName('PNG Workflow')
     const detectedType = await parseWorkflow(json)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
@@ -1646,26 +1705,58 @@ function ComfyGenBlock({
         </div>
       )}
 
-      {/* Endpoint ID — Settings is the source of truth; this field is an
-          optional per-block override (persisted to localStorage). */}
-      <div className="space-y-1">
-        <Label className="text-xs">Endpoint ID</Label>
-        <Input
-          value={endpointIdOverride}
-          onChange={(e) => persistEndpoint(e.target.value)}
-          placeholder={
-            settingsEndpointId
-              ? `Using ${settingsEndpointId} from Settings — type to override`
-              : 'RunPod endpoint ID (set one up in Settings → Endpoints)'
-          }
-          className="h-8 text-xs"
-        />
-        {settingsEndpointId && !endpointIdOverride.trim() && (
-          <p className="text-[10px] text-muted-foreground/80">
-            From Settings → Endpoints → ComfyGen.
-          </p>
-        )}
-      </div>
+      {/* sgs-ui-chf: header line — current workflow at a glance. Replaces
+          the full-width endpoint section that previously dominated the top
+          of the block. */}
+      {workflowName && (
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          <span>Current workflow:</span>
+          <span className="font-medium text-foreground truncate">{workflowName}</span>
+        </div>
+      )}
+
+      {/* sgs-ui-chf: endpoint chip — only in advanced mode. Compact single
+          line with an inline override toggle. Default mode hides this
+          entirely; the endpoint resolves from Settings silently. */}
+      {advancedMode && (
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="text-muted-foreground">Endpoint:</span>
+          {endpointEditing ? (
+            <>
+              <Input
+                value={endpointIdOverride}
+                onChange={(e) => persistEndpoint(e.target.value)}
+                placeholder={settingsEndpointId ?? 'RunPod endpoint ID'}
+                className="h-6 text-xs flex-1 max-w-[260px]"
+                autoFocus
+              />
+              <Button
+                type="button" variant="ghost" size="sm"
+                className="h-6 px-2 text-[10px]"
+                onClick={() => setEndpointEditing(false)}
+              >
+                Done
+              </Button>
+            </>
+          ) : (
+            <>
+              <span className="font-mono text-foreground truncate max-w-[180px]">
+                {endpointId || '(none)'}
+              </span>
+              <span className="text-muted-foreground/70">
+                · {endpointIdOverride.trim() ? 'override' : 'from Settings'}
+              </span>
+              <Button
+                type="button" variant="ghost" size="sm"
+                className="h-5 px-1.5 text-[10px] ml-auto"
+                onClick={() => setEndpointEditing(true)}
+              >
+                override
+              </Button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Workflow upload + preset picker */}
       <div className="space-y-1">
@@ -1683,11 +1774,17 @@ function ComfyGenBlock({
                 <SelectValue placeholder="Load from preset…" />
               </SelectTrigger>
               <SelectContent>
-                {installedPresets.map((p) => (
-                  <SelectItem key={p.preset_id} value={p.preset_id} className="text-xs">
-                    {p.preset_id}
-                  </SelectItem>
-                ))}
+                {installedPresets.flatMap((p) =>
+                  (p.workflows && p.workflows.length > 0 ? p.workflows : [{ name: 'Default' }]).map((w, i) => (
+                    <SelectItem
+                      key={`${p.preset_id}::${i}`}
+                      value={`${p.preset_id}::${i}`}
+                      className="text-xs"
+                    >
+                      {p.preset_id} · {w.name}
+                    </SelectItem>
+                  ))
+                )}
               </SelectContent>
             </Select>
             {presetApplying && (
@@ -1729,29 +1826,31 @@ function ComfyGenBlock({
             if (file) handlePngFile(file)
           }}
         />
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={() => workflowFileRef.current?.click()}
-          >
-            Load JSON
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="h-8 text-xs"
-            onClick={() => pngFileRef.current?.click()}
-          >
-            From PNG
-          </Button>
-          {workflowName && (
-            <span className="text-[11px] text-muted-foreground truncate max-w-[140px]">{workflowName}</span>
-          )}
-        </div>
+        {/* sgs-ui-chf: Load JSON / From PNG are advanced-mode only — operators
+            on a preset shouldn't see these. Auto button in the header is gated
+            by the same flag (see setHeaderActions effect). */}
+        {advancedMode && (
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => workflowFileRef.current?.click()}
+            >
+              Load JSON
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs"
+              onClick={() => pngFileRef.current?.click()}
+            >
+              From PNG
+            </Button>
+          </div>
+        )}
         {workflowError && (
           <p className="text-[10px] text-red-400">{workflowError}</p>
         )}

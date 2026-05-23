@@ -148,6 +148,13 @@ def get_manifest(refresh: int = 0) -> JSONResponse:
 @router.get("/api/presets/installed")
 def list_installed() -> JSONResponse:
     rows = settings_store.list_installed_presets()
+    # Hydrate workflow NAMES only (not bodies — keeps the list small) so the
+    # ComfyGen block dropdown can enumerate one entry per (preset, workflow)
+    # without an N+1 detail fetch.
+    for row in rows:
+        detail = settings_store.get_installed_preset(row["preset_id"])
+        workflows = _normalize_stored_workflows(detail["workflow_json"]) if detail else []
+        row["workflows"] = [{"name": w.get("name", "Default")} for w in workflows]
     return JSONResponse({"installed": rows})
 
 
@@ -156,12 +163,9 @@ def get_installed(preset_id: str) -> JSONResponse:
     row = settings_store.get_installed_preset(preset_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"preset '{preset_id}' is not installed")
-    # workflow_json is stored as a string; parse for the consumer.
-    try:
-        wf = json.loads(row["workflow_json"]) if row["workflow_json"] else {}
-    except (ValueError, json.JSONDecodeError):
-        wf = {}
-    return JSONResponse({**row, "workflow_json": wf})
+    # workflow_json is stored as a string; normalize to the list-of-{name,json}
+    # shape so callers don't have to handle the legacy dict form themselves.
+    return JSONResponse({**row, "workflow_json": _normalize_stored_workflows(row["workflow_json"])})
 
 
 # === Stage B: install + uninstall ============================================
@@ -571,22 +575,52 @@ def _strip_internal_fields(entry: dict) -> dict:
     return {k: v for k, v in entry.items() if not k.startswith("_")}
 
 
-def _fetch_workflow_for_preset(preset: dict) -> dict:
-    """Workflow can be inline (preset.workflow.json) or referenced by URL
-    (preset.workflow.url). Always return a dict ready to persist."""
-    wf = preset.get("workflow") or {}
-    if "json" in wf and isinstance(wf["json"], dict):
-        return wf["json"]
-    url = wf.get("url")
-    if not url:
-        return {}
+def _fetch_workflows_for_preset(preset: dict) -> list[dict]:
+    """preset.workflows is a list of entries: each has a `name` (display
+    string for the ComfyGen dropdown) and either inline `json` or `url`+
+    `sha256`. Returns a list of {name, json} dicts ready to persist.
+
+    Empty list if `workflows` is missing or empty (the install proceeds —
+    presets that ship models without workflows are valid, the user just
+    has nothing to load in the dropdown)."""
+    entries = preset.get("workflows") or []
+    out: list[dict] = []
+    for entry in entries:
+        name = entry.get("name") or "Default"
+        if "json" in entry and isinstance(entry["json"], dict):
+            out.append({"name": name, "json": entry["json"]})
+            continue
+        url = entry.get("url")
+        if not url:
+            out.append({"name": name, "json": {}})
+            continue
+        try:
+            resp = _cffi_requests.get(url, timeout=_HTTP_TIMEOUT_SEC)
+            body = resp.json() if resp.status_code < 400 else {}
+        except Exception:
+            body = {}
+        out.append({"name": name, "json": body})
+    return out
+
+
+def _normalize_stored_workflows(raw: str | None) -> list[dict]:
+    """Read-path tolerance for legacy rows. Pre-sgs-ui-chf rows stored a
+    single workflow dict in workflow_json; new rows store a list of
+    {name, json} entries. Always return the list shape so consumers
+    (ComfyGen block dropdown, /api/presets/installed/{id}) can treat
+    them uniformly."""
+    if not raw:
+        return []
     try:
-        resp = _cffi_requests.get(url, timeout=_HTTP_TIMEOUT_SEC)
-        if resp.status_code >= 400:
-            return {}
-        return resp.json()
-    except Exception:
-        return {}
+        parsed = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return []
+    if isinstance(parsed, dict):
+        # Legacy: wrap as a single 'Default' workflow.
+        return [{"name": "Default", "json": parsed}]
+    if isinstance(parsed, list):
+        return parsed
+    return []
 
 
 @router.post("/api/presets/install")
@@ -669,9 +703,11 @@ def install_preset(body: InstallBody) -> JSONResponse:
                 entry["_expected_bytes"] = int(float(size_gb) * (1024 ** 3))
             batch_spec.append(entry)
 
-        # Fetch workflow JSON (inline or URL) so it's cached locally for the
-        # ComfyGen block dropdown to apply later.
-        workflow = _fetch_workflow_for_preset(preset)
+        # Fetch each workflow JSON (inline or URL) so they're cached locally
+        # for the ComfyGen block dropdown to apply later. Multiple workflows
+        # per preset is the canonical shape (sgs-ui-chf); the list keeps the
+        # author-supplied display names ('I2V', 'V2V', 'Default', etc.).
+        workflows = _fetch_workflows_for_preset(preset)
 
         _install_state.update({
             "state": "queued",
@@ -690,7 +726,7 @@ def install_preset(body: InstallBody) -> JSONResponse:
             preset_id=body.preset_id,
             version=preset.get("comfygen_min_version", "0.0.0"),
             disk_size_gb=preset.get("disk_size_estimate_gb", 0),
-            workflow_json_str=json.dumps(workflow),
+            workflow_json_str=json.dumps(workflows),
             batch_spec=batch_spec,
             endpoint_id=ep["endpoint_id"],
         )

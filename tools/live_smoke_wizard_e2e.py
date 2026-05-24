@@ -32,7 +32,12 @@ from fastapi.testclient import TestClient  # noqa: E402
 from backend import runpod_api, settings_store, wizard_routes  # noqa: E402
 
 API_KEY = os.environ.get("RUNPOD_API_KEY", "")
-EXAMPLE_WORKFLOW = Path("/Users/avivkaplan/src/comfy/remote_comfy_generator/examples/sdxl_turbo_portrait.json")
+# Defaults to a fixture sibling-checked-in next to the smoke runner; override
+# via SMOKE_EXAMPLE_WORKFLOW for a local ComfyGen checkout if you have one.
+EXAMPLE_WORKFLOW = Path(
+    os.environ.get("SMOKE_EXAMPLE_WORKFLOW")
+    or (ROOT / "tools" / "fixtures" / "sdxl_turbo_portrait.json")
+).expanduser()
 COLD_START_TIMEOUT_S = 30 * 60  # 30 min upper bound for first cold start
 JOB_TIMEOUT_S = 15 * 60          # 15 min for SDXL Turbo workflow to complete
 

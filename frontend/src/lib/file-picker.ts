@@ -102,6 +102,14 @@ interface ShowOpenFilePickerOptions {
   excludeAcceptAllOption?: boolean
   types?: { description?: string; accept: AcceptMap }[]
   startIn?: FileSystemFileHandle | FileSystemDirectoryHandle | string
+  id?: string
+}
+
+// The browser remembers the last-used directory per `id`. Without an `id`,
+// every picker on the origin shares one "recently used" directory and our
+// startIn is ignored. Chromium accepts at most 32 chars, [a-z0-9_].
+function pickerIdFor(slug: string): string {
+  return slug.replace(/[^a-z0-9_]/gi, '_').toLowerCase().slice(0, 32)
 }
 
 type ShowOpenFilePicker = (opts?: ShowOpenFilePickerOptions) => Promise<FileSystemFileHandle[]>
@@ -119,6 +127,7 @@ async function pickWithNative(opts: PickFilesOptions, picker: ShowOpenFilePicker
     const handles = await picker({
       multiple: opts.multiple ?? false,
       excludeAcceptAllOption: false,
+      id: pickerIdFor(opts.slug),
       ...typeSpec,
       ...(stored ? { startIn: stored } : {}),
     })

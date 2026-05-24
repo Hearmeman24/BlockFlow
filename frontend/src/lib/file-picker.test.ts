@@ -137,6 +137,18 @@ describe('pickFiles — native (showOpenFilePicker) path', () => {
     createSpy.mockRestore()
   })
 
+  it('passes a sanitized per-slug id so the browser remembers the directory per block', async () => {
+    ;(window as unknown as { showOpenFilePicker: (opts: ShowOpenFilePickerCall & { id?: string }) => Promise<unknown[]> }).showOpenFilePicker = async (opts) => {
+      nativeCalls.push(opts)
+      return [makeHandle(makeFile('a.png'))]
+    }
+    await pickFiles({ slug: 'comfy_gen:workflow', accept: '.json' })
+    await pickFiles({ slug: 'video_loader', accept: 'video/*' })
+    // Colons are illegal in Chrome's id; must be sanitized to underscore.
+    expect((nativeCalls[0] as { id?: string }).id).toBe('comfy_gen_workflow')
+    expect((nativeCalls[1] as { id?: string }).id).toBe('video_loader')
+  })
+
   it('translates bare extensions like .cube into a types entry', async () => {
     ;(window as unknown as { showOpenFilePicker: (opts: ShowOpenFilePickerCall) => Promise<unknown[]> }).showOpenFilePicker = async (opts) => {
       nativeCalls.push(opts)

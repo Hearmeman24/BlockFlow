@@ -7,6 +7,7 @@ import {
   getPresetManifest,
   installPreset,
   listInstalledPresets,
+  refreshInstalledPresets,
   uninstallPreset,
   type InstallProgress,
   type InstalledPresetSummary,
@@ -21,13 +22,21 @@ export function PresetsPageBody() {
   const [progress, setProgress] = useState<InstallProgress | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (opts?: { syncInstalled?: boolean }) => {
     setManifestErr(null)
     try {
-      const m = await getPresetManifest()
+      const m = await getPresetManifest({ refresh: opts?.syncInstalled })
       setManifest(m)
     } catch (err) {
       setManifestErr(err instanceof Error ? err.message : String(err))
+    }
+    // sgs-ui-gb4 follow-up: manual Refresh on /presets also re-syncs every
+    // installed preset's metadata blob (workflows + settings + recs) with
+    // the registry. Without this, a registry-side edit (e.g. new
+    // workflows[].settings knob) wouldn't reach already-installed presets
+    // until the next backend restart.
+    if (opts?.syncInstalled) {
+      try { await refreshInstalledPresets() } catch { /* best-effort */ }
     }
     try {
       setInstalled(await listInstalledPresets())
@@ -111,8 +120,9 @@ export function PresetsPageBody() {
         </div>
         <button
           type="button"
-          onClick={() => refresh()}
+          onClick={() => refresh({ syncInstalled: true })}
           className="px-3 py-1.5 text-xs rounded border border-border"
+          title="Re-fetch the registry manifest AND re-sync every installed preset's metadata (workflows, settings, recommendations). Models aren't touched."
         >
           Refresh
         </button>

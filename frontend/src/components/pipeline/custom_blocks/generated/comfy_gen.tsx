@@ -30,6 +30,7 @@ import {
   getInstalledPreset,
   listInstalledPresets,
   type InstalledPresetSummary,
+  type WorkflowSetting,
 } from '@/lib/settings/client'
 import { PresetRecommendationsTooltip } from '@/components/pipeline/preset-recommendations-tooltip'
 import {
@@ -57,6 +58,11 @@ import {
 } from '@/lib/comfygen-overrides'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockById, findBlockInTree } from '@/lib/pipeline/tree-utils'
+import {
+  collectAutoDetectedKeys,
+  filterVisibleSettings,
+  mergeSettingsOverrides,
+} from '@/lib/workflow-settings'
 
 const ENDPOINT_KEY = 'comfygen_endpoint_id'
 const RUN_ENDPOINT = '/api/blocks/comfy_gen/run'
@@ -587,6 +593,14 @@ function ComfyGenBlock({
   const [loraNodes, setLoraNodes] = useSessionState<LoraNodeInfo[]>(`block_${blockId}_lora_nodes`, [])
   const [loraOverrides, setLoraOverrides] = useSessionState<Record<string, LoraOverride>>(`block_${blockId}_lora_overrides`, {})
   const [addedLoras, setAddedLoras] = useSessionState<AddedLora[]>(`block_${blockId}_added_loras`, [])
+  // sgs-ui-gb4: preset.workflows[].settings — author-declared knobs surfaced
+  // as a flat 'Workflow Settings' panel. The declarations stay in session
+  // state so re-mounts don't need to refetch the preset detail; the override
+  // values are scoped per (preset+workflow) so switching workflow within the
+  // same preset shows fresh defaults while remembering prior edits on
+  // workflow switch-back.
+  const [workflowSettings, setWorkflowSettings] = useSessionState<WorkflowSetting[]>(`block_${blockId}_workflow_settings`, [])
+  const [workflowSettingsOverridesByScope, setWorkflowSettingsOverridesByScope] = useSessionState<Record<string, Record<string, string>>>(`block_${blockId}_workflow_settings_overrides`, {})
   const [availableLoras, setAvailableLoras] = useState<string[]>([])
   const [availableSamplers, setAvailableSamplers] = useState<string[]>([])
   const [availableSchedulers, setAvailableSchedulers] = useState<string[]>([])
@@ -1088,11 +1102,14 @@ function ComfyGenBlock({
     // recommendations carried over from a prior preset apply so the
     // tooltip doesn't lie about the current workflow.
     setPresetRecommendations({ global: [], workflow: [] })
+    // sgs-ui-gb4: user-loaded JSON has no preset behind it → hide the
+    // Workflow Settings panel (its declarations come from a preset only).
+    setWorkflowSettings([])
     const detectedType = await parseWorkflow(text)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
     }
-  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setPresetRecommendations])
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setPresetRecommendations, setWorkflowSettings])
 
   // Refresh the installed-preset list on mount + whenever the user mounts
   // (cheap GET; the data is from local Settings).
@@ -1130,6 +1147,11 @@ function ComfyGenBlock({
         global: recs.global || [],
         workflow: (recs.workflows && recs.workflows[chosen.name]) || [],
       })
+      // sgs-ui-gb4: pick up author-declared knobs (if any) for this workflow.
+      // The render-time overlap filter drops any (node_id, field) already
+      // covered by an auto-detected panel, so an over-eager preset author
+      // doesn't end up with two UIs for the same field.
+      setWorkflowSettings(Array.isArray(chosen.settings) ? chosen.settings : [])
       const detectedType = await parseWorkflow(json)
       if (detectedType === 'image' || detectedType === 'video') {
         setOutput(detectedType, makePendingOutput(detectedType))
@@ -1139,7 +1161,7 @@ function ComfyGenBlock({
     } finally {
       setPresetApplying(false)
     }
-  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setPresetRecommendations])
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setPresetRecommendations, setWorkflowSettings])
 
   const handlePngFile = useCallback(async (file: File) => {
     setWorkflowError('')
@@ -1162,11 +1184,13 @@ function ComfyGenBlock({
     setWorkflowName('PNG Workflow')
     // sgs-ui-fmy: PNG-extracted workflows have no preset behind them.
     setPresetRecommendations({ global: [], workflow: [] })
+    // sgs-ui-gb4: same — no preset, no Workflow Settings panel.
+    setWorkflowSettings([])
     const detectedType = await parseWorkflow(json)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
     }
-  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setWorkflowJson, setWorkflowName, setOutput, setPresetRecommendations])
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setWorkflowJson, setWorkflowName, setOutput, setPresetRecommendations, setWorkflowSettings])
 
   // Polling helper with progress updates
   // onProgress callback used during batch mode to route status to per-job tracking
@@ -1248,6 +1272,41 @@ function ComfyGenBlock({
     throw new Error('Job timed out')
   }, [setStatusMessage])
 
+  // sgs-ui-gb4: <node_id>.<field> keys already driven by an auto-detected
+  // panel (KSampler, LoRA, Resolution, Frame, RefVideo, LoadNode, Text).
+  // The Workflow Settings panel hides any overlapping entries — auto-detect
+  // wins. Logic lives in workflow-settings.ts so the overlap rule is
+  // unit-testable without mounting the 2,500-line component.
+  const autoDetectedKeys = useMemo(
+    () => collectAutoDetectedKeys({
+      ksamplers, loraNodes, resolutionNodes, frameCounts, refVideo, loadNodes, textOverrides,
+    }),
+    [ksamplers, loraNodes, resolutionNodes, frameCounts, refVideo, loadNodes, textOverrides],
+  )
+
+  const visibleWorkflowSettings = useMemo(
+    () => filterVisibleSettings(workflowSettings, autoDetectedKeys),
+    [workflowSettings, autoDetectedKeys],
+  )
+
+  // Active scope key for the per-(preset, workflow) override map. Empty when
+  // no preset is selected → panel is hidden, so the key is irrelevant.
+  const settingsScope = selectedPresetId
+  const workflowSettingsOverrides = workflowSettingsOverridesByScope[settingsScope] || {}
+  const setWorkflowSettingsOverride = useCallback((nodeField: string, value: string) => {
+    setWorkflowSettingsOverridesByScope((prev) => ({
+      ...prev,
+      [settingsScope]: { ...(prev[settingsScope] || {}), [nodeField]: value },
+    }))
+  }, [settingsScope, setWorkflowSettingsOverridesByScope])
+  const resetWorkflowSettingsOverride = useCallback((nodeField: string) => {
+    setWorkflowSettingsOverridesByScope((prev) => {
+      const cur = { ...(prev[settingsScope] || {}) }
+      delete cur[nodeField]
+      return { ...prev, [settingsScope]: cur }
+    })
+  }, [settingsScope, setWorkflowSettingsOverridesByScope])
+
   // Build base overrides from current UI state (shared by single and batch paths)
   const buildBaseOverrides = useCallback((freshInputs: Record<string, unknown>) => {
     const fileInputs: Record<string, { field: string; media_url: string }> = {}
@@ -1263,8 +1322,13 @@ function ComfyGenBlock({
       loraNodes, loraOverrides, autoSelect, autoNumeric,
       textOverrides, textValues, textUpstreamFlags, upstreamPromptText,
     })
-    return { fileInputs, overrides, bypassLoras }
-  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags])
+    // sgs-ui-gb4: merge user-edited Workflow Settings knobs as additional
+    // <node_id>.<field> entries. Auto-detected fields win (the panel doesn't
+    // render an overlapping row, and mergeSettingsOverrides won't clobber an
+    // existing key either — belt + suspenders).
+    const merged = mergeSettingsOverrides(overrides, visibleWorkflowSettings, workflowSettingsOverrides)
+    return { fileInputs, overrides: merged, bypassLoras }
+  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, visibleWorkflowSettings, workflowSettingsOverrides])
 
   useEffect(() => {
     registerExecute(async (freshInputs, signal) => {
@@ -2311,6 +2375,82 @@ function ComfyGenBlock({
         )
       })()}
 
+      {/* sgs-ui-gb4: Workflow Settings — preset-author-declared knobs not
+          already covered by an auto-detected panel. Hidden when no preset
+          is applied or when every declared knob overlaps with auto-detect. */}
+      {visibleWorkflowSettings.length > 0 && (
+        <CollapsibleSection
+          label="Workflow Settings"
+          badge={visibleWorkflowSettings.length > 1 ? `${visibleWorkflowSettings.length} knobs` : undefined}
+        >
+          {visibleWorkflowSettings.map((s) => {
+            const key = `${s.node_id}.${s.field}`
+            const raw = workflowSettingsOverrides[key]
+            const hasOverride = raw !== undefined && raw !== ''
+            return (
+              <div key={key} className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-xs">{s.label}</Label>
+                  {hasOverride && (
+                    <button
+                      type="button"
+                      onClick={() => resetWorkflowSettingsOverride(key)}
+                      title="Reset to workflow default"
+                      className="text-[10px] text-muted-foreground hover:text-foreground px-1"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+                {s.type === 'bool' ? (
+                  <input
+                    type="checkbox"
+                    checked={raw === 'true'}
+                    onChange={(e) => setWorkflowSettingsOverride(key, e.target.checked ? 'true' : 'false')}
+                    className="h-4 w-4 accent-blue-600"
+                  />
+                ) : s.type === 'combo' ? (
+                  <Select
+                    value={raw ?? ''}
+                    onValueChange={(v) => setWorkflowSettingsOverride(key, v)}
+                  >
+                    <SelectTrigger className="h-7 text-xs">
+                      <SelectValue placeholder="Workflow default" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(s.choices || []).map((c) => (
+                        <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : s.type === 'int' || s.type === 'float' ? (
+                  <Input
+                    type="number"
+                    value={raw ?? ''}
+                    onChange={(e) => setWorkflowSettingsOverride(key, e.target.value)}
+                    placeholder="Workflow default"
+                    min={s.min}
+                    max={s.max}
+                    step={s.step ?? (s.type === 'int' ? 1 : undefined)}
+                    className="h-7 text-xs"
+                  />
+                ) : (
+                  <Input
+                    value={raw ?? ''}
+                    onChange={(e) => setWorkflowSettingsOverride(key, e.target.value)}
+                    placeholder="Workflow default"
+                    className="h-7 text-xs"
+                  />
+                )}
+                {s.description && (
+                  <p className="text-[10px] text-muted-foreground">{s.description}</p>
+                )}
+              </div>
+            )
+          })}
+        </CollapsibleSection>
+      )}
+
       {/* Text overrides — grouped by node label */}
       {Object.entries(textOverrideGroups).map(([groupLabel, items]) => {
         const renderTextField = (to: TextOverrideInfo, showLabel: boolean) => {
@@ -2491,6 +2631,11 @@ export const blockDef: BlockDef = {
     'frame_overrides',
     'ref_video',
     'ref_video_overrides',
+    // sgs-ui-gb4: preset.workflows[].settings — author-declared knobs +
+    // per-(preset, workflow) override values, so Restore rehydrates the
+    // Workflow Settings panel just like the other panels.
+    'workflow_settings',
+    'workflow_settings_overrides',
     'output_type',
     'lock_seed',
     'automate_enabled',

@@ -612,19 +612,32 @@ def _fetch_workflows_for_preset(preset: dict) -> list[dict]:
     out: list[dict] = []
     for entry in entries:
         name = entry.get("name") or "Default"
+        # sgs-ui-gb4: author-declared knobs ride alongside the workflow JSON.
+        # Only attach when the array is non-empty so legacy / unannotated
+        # workflows keep their compact {name, json} shape.
+        settings = entry.get("settings")
         if "json" in entry and isinstance(entry["json"], dict):
-            out.append({"name": name, "json": entry["json"]})
+            item: dict = {"name": name, "json": entry["json"]}
+            if isinstance(settings, list) and settings:
+                item["settings"] = settings
+            out.append(item)
             continue
         url = entry.get("url")
         if not url:
-            out.append({"name": name, "json": {}})
+            item = {"name": name, "json": {}}
+            if isinstance(settings, list) and settings:
+                item["settings"] = settings
+            out.append(item)
             continue
         try:
             resp = _cffi_requests.get(url, timeout=_HTTP_TIMEOUT_SEC)
             body = resp.json() if resp.status_code < 400 else {}
         except Exception:
             body = {}
-        out.append({"name": name, "json": body})
+        item = {"name": name, "json": body}
+        if isinstance(settings, list) and settings:
+            item["settings"] = settings
+        out.append(item)
     return out
 
 
@@ -843,6 +856,102 @@ def install_preset(body: InstallBody) -> JSONResponse:
 @router.get("/api/presets/install/progress")
 def install_progress() -> JSONResponse:
     return JSONResponse(dict(_install_state))
+
+
+def refresh_installed_presets() -> dict[str, Any]:
+    """Re-fetch each installed preset's metadata from the registry and update
+    the locally-stored workflow_json blob (workflows + recommendations +
+    workflows[].settings) in place. Models are NOT re-downloaded — they're
+    content-addressable by sha256, so the existing files stay valid.
+    installed_paths is preserved verbatim.
+
+    Best-effort: a registry that's unreachable, a preset that was archived,
+    or a malformed preset.json is logged into the result and the existing
+    Settings row is left untouched (so the user doesn't lose their install
+    over a transient network blip).
+
+    Used by main.py on startup so that registry-side edits (e.g. a preset
+    author adding a workflows[].settings knob) actually propagate to
+    already-installed presets without forcing an uninstall + reinstall.
+    """
+    result: dict[str, Any] = {"refreshed": [], "skipped": [], "errors": []}
+    installed = settings_store.list_installed_presets()
+    if not installed:
+        return result
+
+    # Refresh the manifest cache once for the whole sweep — avoids one HTTP
+    # round-trip per installed preset.
+    try:
+        manifest = _fetch_manifest()
+        _cache["manifest"] = manifest
+        _cache["fetched_at"] = time.time()
+        _save_disk_cache(manifest)
+    except Exception as exc:
+        # Offline / registry down → fall back to whatever's cached. If even
+        # the disk cache is empty we just bail out: nothing to refresh from.
+        manifest = _cache["manifest"] or _load_disk_cache()
+        if manifest is None:
+            result["errors"].append({"scope": "manifest", "error": str(exc)})
+            return result
+
+    manifest_index = {
+        entry.get("id"): entry
+        for entry in manifest.get("presets", []) if entry.get("id")
+    }
+
+    for row in installed:
+        preset_id = row["preset_id"]
+        manifest_entry = manifest_index.get(preset_id)
+        if manifest_entry is None:
+            # Preset is no longer in the registry — keep the local row as-is.
+            # The user may have downloaded a now-yanked preset on purpose.
+            result["skipped"].append({"preset_id": preset_id, "reason": "not in manifest"})
+            continue
+        preset_url = manifest_entry.get("preset_url")
+        if not preset_url:
+            result["skipped"].append({"preset_id": preset_id, "reason": "manifest entry has no preset_url"})
+            continue
+
+        try:
+            resp = _cffi_requests.get(preset_url, timeout=_HTTP_TIMEOUT_SEC)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"HTTP {resp.status_code}")
+            preset = resp.json()
+        except Exception as exc:
+            result["errors"].append({"preset_id": preset_id, "error": str(exc)})
+            continue
+
+        # Rebuild the stored blob the same way install does, so the new
+        # workflows[].settings field (and any updated recommendations) lands
+        # in Settings.
+        try:
+            workflows = _fetch_workflows_for_preset(preset)
+            stored_blob = {
+                "workflows": workflows,
+                "recommendations": _extract_recommendations(preset),
+            }
+            existing_detail = settings_store.get_installed_preset(preset_id) or {}
+            settings_store.record_installed_preset(
+                preset_id=preset_id,
+                version=preset.get("comfygen_min_version", row.get("version") or "0.0.0"),
+                disk_size_gb=preset.get("disk_size_estimate_gb", row.get("disk_size_gb")),
+                workflow_json=json.dumps(stored_blob),
+                # Preserve the canonical paths from the original install — a
+                # metadata refresh must not nuke uninstall's path list.
+                installed_paths=existing_detail.get("installed_paths") or None,
+            )
+            result["refreshed"].append({"preset_id": preset_id})
+        except Exception as exc:
+            result["errors"].append({"preset_id": preset_id, "error": f"persist: {exc}"})
+
+    return result
+
+
+@router.post("/api/presets/refresh-installed")
+def refresh_installed_route() -> JSONResponse:
+    """Manually trigger a metadata refresh for every installed preset.
+    Returns a summary {refreshed, skipped, errors} the UI can surface."""
+    return JSONResponse(refresh_installed_presets())
 
 
 @router.post("/api/presets/uninstall/{preset_id}")

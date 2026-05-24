@@ -3,15 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  clearDownloadState,
   deleteLoras,
   detectUrlSource,
   downloadLora,
   formatBytes,
+  getDownloadProgress,
   listLoras,
   NoEndpointError,
   parseCivitaiInput,
   setSource,
   syncLoras,
+  type DownloadProgress,
   type LoraRow,
   type LoraSource,
   type LorasListResponse,
@@ -490,6 +493,24 @@ function DownloadDialog({
   const [filename, setFilename] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [progress, setProgress] = useState<DownloadProgress | null>(null)
+
+  // Poll progress while a download is active in this dialog.
+  useEffect(() => {
+    if (!progress || progress.state === 'completed' || progress.state === 'error') return
+    const id = setInterval(async () => {
+      try {
+        const p = await getDownloadProgress()
+        // Guard against a transiently-undefined poll response (e.g. a stub
+        // returning nothing in tests, or a malformed body): keep the last
+        // known good state instead of wiping the dialog back to the form.
+        if (p && p.state) setProgress(p)
+      } catch {
+        // transient — keep polling
+      }
+    }, 2000)
+    return () => clearInterval(id)
+  }, [progress])
 
   const trimmed = input.trim()
   const civitai = parseCivitaiInput(trimmed)
@@ -508,14 +529,15 @@ function DownloadDialog({
     setErr(null)
     setBusy(true)
     try {
+      let initial: DownloadProgress
       if (detectedSource === 'civitai' && civitai && 'versionId' in civitai) {
-        await downloadLora({
+        initial = await downloadLora({
           source: 'civitai',
           version_id: civitai.versionId,
           filename: filename.trim() || undefined,
         })
       } else if (detectedSource !== 'civitai') {
-        await downloadLora({
+        initial = await downloadLora({
           source: 'url',
           url: trimmed,
           filename: filename.trim() || undefined,
@@ -525,7 +547,7 @@ function DownloadDialog({
         setBusy(false)
         return
       }
-      onDownloaded()
+      setProgress(initial)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -533,52 +555,166 @@ function DownloadDialog({
     }
   }
 
+  const handleDoneClick = async () => {
+    try { await clearDownloadState() } catch { /* ignore */ }
+    onDownloaded()
+  }
+
+  // Single outer dialog node — the inner panel swaps between input form
+  // and progress card based on state. Keeps the dialog DOM node stable so
+  // tests holding a reference don't go stale across the transition.
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
          role="dialog" aria-label="Download LoRA">
       <div className="bg-card border border-border rounded-lg max-w-lg w-full p-5 space-y-3">
-        <h2 className="text-base font-semibold">Add LoRA</h2>
-        <p className="text-xs text-muted-foreground">
-          Paste a CivitAI URL, CivitAI version_id, HuggingFace URL, or direct download URL.
-        </p>
-        <input
-          type="text"
-          placeholder="https://civitai.com/models/12345?modelVersionId=67890 — or 67890 — or https://huggingface.co/…"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          className="w-full px-2 py-1.5 text-xs rounded border border-border bg-background font-mono"
-          aria-label="LoRA source"
-          autoFocus
-        />
-        <div className="text-[11px] text-muted-foreground">
-          {detectedSource === null && trimmed && <span className="text-destructive">Unrecognized — paste a valid URL or version_id.</span>}
-          {detectedSource === 'civitai' && civitai && 'versionId' in civitai &&
-            <>Detected: <strong>CivitAI</strong> · version {civitai.versionId}</>}
-          {civitaiNeedsLatest &&
-            <span className="text-destructive">CivitAI URL has no version ID. Click a specific version on civitai.com and re-copy the URL.</span>}
-          {detectedSource === 'hf' && <>Detected: <strong>HuggingFace</strong></>}
-          {detectedSource === 'url' && <>Detected: <strong>direct URL</strong></>}
-        </div>
-        <input
-          type="text"
-          placeholder="Filename override (optional)"
-          value={filename}
-          onChange={(e) => setFilename(e.target.value)}
-          className="w-full px-2 py-1.5 text-xs rounded border border-border bg-background font-mono"
-          aria-label="Filename override"
-        />
-        {err && <p className="text-xs text-destructive whitespace-pre-wrap">{err}</p>}
-        <div className="flex justify-end gap-2 pt-1">
-          <button type="button" onClick={onClose}
-                  className="px-3 py-1.5 text-xs rounded border border-border">
-            Cancel
-          </button>
-          <button type="button" onClick={handleSubmit} disabled={!canSubmit || busy}
-                  className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50">
-            {busy ? 'Downloading…' : 'Download'}
-          </button>
-        </div>
+        {progress ? (
+          <>
+            <DownloadProgressCard progress={progress} />
+            <div className="flex justify-end gap-2 pt-1">
+              {(progress.state === 'completed' || progress.state === 'error') ? (
+                <button type="button" onClick={handleDoneClick}
+                        className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground">
+                  Done
+                </button>
+              ) : (
+                <button type="button" onClick={onClose}
+                        className="px-3 py-1.5 text-xs rounded border border-border"
+                        title="Close the dialog. The download keeps running in the background.">
+                  Close (download continues)
+                </button>
+              )}
+            </div>
+          </>
+        ) : (
+          <InputForm
+            input={input} setInput={setInput}
+            filename={filename} setFilename={setFilename}
+            trimmed={trimmed} detectedSource={detectedSource}
+            civitai={civitai} civitaiNeedsLatest={civitaiNeedsLatest}
+            canSubmit={canSubmit} busy={busy} err={err}
+            onCancel={onClose} onSubmit={handleSubmit}
+          />
+        )}
       </div>
     </div>
+  )
+}
+
+function InputForm({
+  input, setInput, filename, setFilename, trimmed, detectedSource,
+  civitai, civitaiNeedsLatest, canSubmit, busy, err, onCancel, onSubmit,
+}: {
+  input: string; setInput: (s: string) => void
+  filename: string; setFilename: (s: string) => void
+  trimmed: string
+  detectedSource: 'civitai' | 'hf' | 'url' | null
+  civitai: ReturnType<typeof parseCivitaiInput>
+  civitaiNeedsLatest: boolean | null
+  canSubmit: boolean
+  busy: boolean
+  err: string | null
+  onCancel: () => void
+  onSubmit: () => void
+}) {
+  return (
+    <>
+      <h2 className="text-base font-semibold">Add LoRA</h2>
+      <p className="text-xs text-muted-foreground">
+        Paste a CivitAI URL, CivitAI version_id, HuggingFace URL, or direct download URL.
+      </p>
+      <input
+        type="text"
+        placeholder="https://civitai.com/models/12345?modelVersionId=67890 — or 67890 — or https://huggingface.co/…"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        className="w-full px-2 py-1.5 text-xs rounded border border-border bg-background font-mono"
+        aria-label="LoRA source"
+        autoFocus
+      />
+      <div className="text-[11px] text-muted-foreground">
+        {detectedSource === null && trimmed && <span className="text-destructive">Unrecognized — paste a valid URL or version_id.</span>}
+        {detectedSource === 'civitai' && civitai && 'versionId' in civitai &&
+          <>Detected: <strong>CivitAI</strong> · version {civitai.versionId}</>}
+        {civitaiNeedsLatest &&
+          <span className="text-destructive">CivitAI URL has no version ID. Click a specific version on civitai.com and re-copy the URL.</span>}
+        {detectedSource === 'hf' && <>Detected: <strong>HuggingFace</strong></>}
+        {detectedSource === 'url' && <>Detected: <strong>direct URL</strong></>}
+      </div>
+      <input
+        type="text"
+        placeholder="Filename override (optional)"
+        value={filename}
+        onChange={(e) => setFilename(e.target.value)}
+        className="w-full px-2 py-1.5 text-xs rounded border border-border bg-background font-mono"
+        aria-label="Filename override"
+      />
+      {err && <p className="text-xs text-destructive whitespace-pre-wrap">{err}</p>}
+      <div className="flex justify-end gap-2 pt-1">
+        <button type="button" onClick={onCancel}
+                className="px-3 py-1.5 text-xs rounded border border-border">
+          Cancel
+        </button>
+        <button type="button" onClick={onSubmit} disabled={!canSubmit || busy}
+                className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50">
+          {busy ? 'Starting…' : 'Download'}
+        </button>
+      </div>
+    </>
+  )
+}
+
+function DownloadProgressCard({ progress }: { progress: DownloadProgress }) {
+  const isActive = progress.state === 'queued' || progress.state === 'running'
+  const headline =
+    progress.state === 'completed' ? '✓ Download complete'
+    : progress.state === 'error'   ? '✗ Download failed'
+    : `Downloading ${progress.filename ?? ''}…`
+  const pct = progress.progress_percent
+  return (
+    <article className="space-y-2">
+      <header className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold">{headline}</h2>
+        <span className="text-[10px] font-mono text-muted-foreground">{progress.state}</span>
+      </header>
+      {progress.filename && (
+        <p className="text-xs font-mono text-muted-foreground truncate" title={progress.filename}>
+          {progress.filename}
+        </p>
+      )}
+      {isActive && (
+        <div className="h-1.5 w-full rounded bg-muted overflow-hidden">
+          <div
+            className="h-full bg-primary transition-all"
+            style={{ width: `${pct ?? 0}%` }}
+            role="progressbar"
+            aria-valuenow={pct ?? 0}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          />
+        </div>
+      )}
+      {isActive && pct !== null && (
+        <p className="text-[11px] text-muted-foreground">{pct}%</p>
+      )}
+      {progress.recovered_from_worker_bug && progress.state === 'completed' && (
+        <p className="text-[11px] text-amber-400">
+          comfy-gen reported &ldquo;no new files&rdquo; but the file is on the volume —
+          treated as success (known sgs-worker false-negative).
+        </p>
+      )}
+      {progress.log_tail && progress.state !== 'completed' && (
+        <pre className="mt-1 max-h-44 overflow-y-auto rounded bg-muted/30 px-2 py-1.5 font-mono text-[10px] leading-snug text-muted-foreground whitespace-pre-wrap break-all">
+          {progress.log_tail}
+        </pre>
+      )}
+      {progress.error && (
+        <p className="text-xs text-destructive whitespace-pre-wrap">{progress.error}</p>
+      )}
+      {progress.elapsed_seconds && (
+        <p className="text-[10px] text-muted-foreground">
+          {progress.elapsed_seconds.toFixed(1)}s elapsed
+        </p>
+      )}
+    </article>
   )
 }

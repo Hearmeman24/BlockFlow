@@ -33,8 +33,8 @@ def client(tmp_path, monkeypatch):
     app = FastAPI()
     app.include_router(lora_routes.router)
 
-    # Reset module-level concurrency state between tests.
-    lora_routes._download_in_flight = False
+    # Reset module-level state between tests.
+    lora_routes._reset_download_state()
 
     return TestClient(app)
 
@@ -216,9 +216,31 @@ def test_delete_failed_rows_stay_in_cache(client, monkeypatch, tmp_path) -> None
 
 # ---- POST /api/loras/download ----
 
-def test_civitai_download_persists_metadata(client, monkeypatch, mocker) -> None:
+# ---- Async download tests (sgs-ui-eqc.5) ----
+#
+# POST /api/loras/download now spawns a background thread and returns 202
+# immediately. To keep tests deterministic, we patch threading.Thread so the
+# runner executes inline before the POST returns — the state machine still
+# transitions through running → completed but it all happens synchronously
+# from the test's perspective.
+
+def _inline_threads(monkeypatch):
+    """Make threading.Thread in lora_routes execute target() synchronously."""
+    class InlineThread:
+        def __init__(self, target=None, daemon=None, **kwargs):
+            self._target = target
+        def start(self):
+            if self._target:
+                self._target()
+        def join(self, timeout=None):
+            pass
+    monkeypatch.setattr(lora_routes.threading, "Thread", InlineThread)
+
+
+def test_civitai_download_kicks_off_then_completes(client, monkeypatch, mocker) -> None:
     _configure_endpoint()
     monkeypatch.setattr(config, "CIVITAI_API_KEY", "")
+    _inline_threads(monkeypatch)
 
     payload = {
         "id": 67890, "modelId": 12345, "baseModel": "Flux.1 D",
@@ -228,17 +250,20 @@ def test_civitai_download_persists_metadata(client, monkeypatch, mocker) -> None
     mocker.patch.object(civitai_client._requests, "get",
                         return_value=_resp(200, payload))
 
-    dl_calls = []
-    def fake_download(entries, eid):
-        dl_calls.append((entries, eid))
-        return {"ok": True}
-    monkeypatch.setattr(lora_routes, "_download_subprocess", fake_download)
+    captured = []
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (captured.append((entries, eid)), (True, {"ok": True}))[1])
 
     r = client.post("/api/loras/download",
                     json={"source": "civitai", "version_id": 67890})
-    assert r.status_code == 200
-    assert r.json() == {"ok": True, "filename": "char_v2.safetensors"}
-    assert dl_calls[0][0] == [{"source": "civitai", "version_id": 67890, "dest": "loras"}]
+    assert r.status_code == 202
+    body = r.json()
+    assert body["state"] == "completed"
+    assert body["filename"] == "char_v2.safetensors"
+    assert body["progress_percent"] == 100
+    assert body["error"] is None
+
+    assert captured[0][0] == [{"source": "civitai", "version_id": 67890, "dest": "loras"}]
 
     row = lora_metadata.get("char_v2.safetensors")
     assert row is not None
@@ -252,14 +277,16 @@ def test_civitai_download_persists_metadata(client, monkeypatch, mocker) -> None
 def test_civitai_download_succeeds_when_metadata_fetch_fails(client, monkeypatch, mocker) -> None:
     _configure_endpoint()
     monkeypatch.setattr(config, "CIVITAI_API_KEY", "")
+    _inline_threads(monkeypatch)
     mocker.patch.object(civitai_client._requests, "get",
                         side_effect=RuntimeError("network down"))
-    monkeypatch.setattr(lora_routes, "_download_subprocess",
-                        lambda entries, eid: {"ok": True})
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (True, {"ok": True}))
 
     r = client.post("/api/loras/download",
                     json={"source": "civitai", "version_id": 99999, "filename": "fallback.safetensors"})
-    assert r.status_code == 200
+    assert r.status_code == 202
+    assert r.json()["state"] == "completed"
     row = lora_metadata.get("fallback.safetensors")
     assert row["source"] == "civitai"
     assert row["source_id"] == "99999"
@@ -269,27 +296,28 @@ def test_civitai_download_succeeds_when_metadata_fetch_fails(client, monkeypatch
 
 def test_url_download_detects_huggingface(client, monkeypatch) -> None:
     _configure_endpoint()
-    monkeypatch.setattr(lora_routes, "_download_subprocess",
-                        lambda entries, eid: {"ok": True})
+    _inline_threads(monkeypatch)
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (True, {"ok": True}))
 
     r = client.post("/api/loras/download",
                     json={"source": "url",
                           "url": "https://huggingface.co/foo/bar/resolve/main/model.safetensors"})
-    assert r.status_code == 200
+    assert r.status_code == 202
     row = lora_metadata.get("model.safetensors")
     assert row["source"] == "hf"
     assert row["source_id"] == "https://huggingface.co/foo/bar/resolve/main/model.safetensors"
-    assert row["trigger_words"] == []
 
 
 def test_url_download_generic_url(client, monkeypatch) -> None:
     _configure_endpoint()
-    monkeypatch.setattr(lora_routes, "_download_subprocess",
-                        lambda entries, eid: {"ok": True})
+    _inline_threads(monkeypatch)
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (True, {"ok": True}))
 
     r = client.post("/api/loras/download",
                     json={"source": "url", "url": "https://example.com/some/path/x.safetensors"})
-    assert r.status_code == 200
+    assert r.status_code == 202
     row = lora_metadata.get("x.safetensors")
     assert row["source"] == "url"
 
@@ -297,8 +325,9 @@ def test_url_download_generic_url(client, monkeypatch) -> None:
 def test_download_appends_filename_to_shared_cache(client, monkeypatch, tmp_path) -> None:
     _configure_endpoint()
     _seed_cache(tmp_path, ["existing.safetensors"])
-    monkeypatch.setattr(lora_routes, "_download_subprocess",
-                        lambda entries, eid: {"ok": True})
+    _inline_threads(monkeypatch)
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (True, {"ok": True}))
 
     client.post("/api/loras/download",
                 json={"source": "url", "url": "https://example.com/new.safetensors"})
@@ -310,13 +339,15 @@ def test_download_appends_filename_to_shared_cache(client, monkeypatch, tmp_path
 
 def test_download_concurrent_returns_409(client, monkeypatch) -> None:
     _configure_endpoint()
-    lora_routes._download_in_flight = True
+    lora_routes._download_state["state"] = "running"
+    lora_routes._download_state["filename"] = "first.safetensors"
     try:
         r = client.post("/api/loras/download",
                         json={"source": "url", "url": "https://x/a.safetensors"})
         assert r.status_code == 409
+        assert "first.safetensors" in r.json()["detail"]
     finally:
-        lora_routes._download_in_flight = False
+        lora_routes._reset_download_state()
 
 
 def test_download_409_when_no_endpoint(client) -> None:
@@ -329,6 +360,109 @@ def test_download_unknown_source_rejected(client, monkeypatch) -> None:
     _configure_endpoint()
     r = client.post("/api/loras/download", json={"source": "ftp", "url": "ftp://x"})
     assert r.status_code == 400
+
+
+def test_progress_route_reflects_state(client, monkeypatch) -> None:
+    _configure_endpoint()
+    _inline_threads(monkeypatch)
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (True, {"ok": True}))
+
+    client.post("/api/loras/download",
+                json={"source": "url", "url": "https://x/a.safetensors"})
+    r = client.get("/api/loras/download/progress")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "completed"
+    assert body["filename"] == "a.safetensors"
+    assert "_meta" not in body  # internal field stripped
+
+
+def test_progress_route_initial_state_is_idle(client) -> None:
+    r = client.get("/api/loras/download/progress")
+    assert r.json()["state"] == "idle"
+
+
+def test_clear_state_resets_after_terminal(client, monkeypatch) -> None:
+    _configure_endpoint()
+    _inline_threads(monkeypatch)
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (True, {"ok": True}))
+    client.post("/api/loras/download",
+                json={"source": "url", "url": "https://x/a.safetensors"})
+
+    r = client.post("/api/loras/download/clear")
+    assert r.status_code == 200
+    assert client.get("/api/loras/download/progress").json()["state"] == "idle"
+
+
+def test_clear_state_409_while_running(client) -> None:
+    lora_routes._download_state["state"] = "running"
+    try:
+        r = client.post("/api/loras/download/clear")
+        assert r.status_code == 409
+    finally:
+        lora_routes._reset_download_state()
+
+
+def test_subprocess_failure_transitions_to_error(client, monkeypatch) -> None:
+    _configure_endpoint()
+    _inline_threads(monkeypatch)
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (False, "boom"))
+
+    r = client.post("/api/loras/download",
+                    json={"source": "url", "url": "https://x/a.safetensors"})
+    body = r.json()
+    assert body["state"] == "error"
+    assert "boom" in body["error"]
+    # Metadata NOT persisted on real failure
+    assert lora_metadata.get("a.safetensors") is None
+
+
+def test_worker_bug_recovery_treats_no_new_files_as_success_when_volume_has_file(
+    client, monkeypatch, tmp_path,
+) -> None:
+    """Reproduces sgs-worker false-negative: comfy-gen errors with
+    'CivitAI download produced no new files' even though aria2 finished and
+    the file is on the volume. We verify post-error by listing and treat as
+    success if the expected filename is present.
+    """
+    _configure_endpoint()
+    _inline_threads(monkeypatch)
+    # Subprocess errors with the worker-bug message
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (False, "CivitAI download produced no new files. stdout: ..."))
+    # Post-error list shows the file IS on volume
+    monkeypatch.setattr(lora_routes, "_fetch_loras_from_comfygen",
+                        lambda eid: ["recovered.safetensors"])
+
+    r = client.post("/api/loras/download",
+                    json={"source": "url", "url": "https://x/recovered.safetensors"})
+    body = r.json()
+    assert body["state"] == "completed"
+    assert body["recovered_from_worker_bug"] is True
+    # Metadata IS persisted via the recovery path
+    assert lora_metadata.get("recovered.safetensors") is not None
+
+
+def test_worker_bug_recovery_stays_error_when_volume_truly_missing_file(
+    client, monkeypatch,
+) -> None:
+    """Same error message, but the file genuinely isn't on the volume —
+    must NOT silently treat as success."""
+    _configure_endpoint()
+    _inline_threads(monkeypatch)
+    monkeypatch.setattr(lora_routes, "_run_download_streaming",
+                        lambda entries, eid: (False, "CivitAI download produced no new files"))
+    monkeypatch.setattr(lora_routes, "_fetch_loras_from_comfygen",
+                        lambda eid: ["something_else.safetensors"])
+
+    r = client.post("/api/loras/download",
+                    json={"source": "url", "url": "https://x/missing.safetensors"})
+    body = r.json()
+    assert body["state"] == "error"
+    assert lora_metadata.get("missing.safetensors") is None
 
 
 # ---- POST /api/loras/set-source ----

@@ -1,21 +1,30 @@
-"""HTTP routes for the LoRA management page (sgs-ui-eqc.1).
+"""HTTP routes for the LoRA management page (sgs-ui-eqc.1 + .5).
 
-GET    /api/loras                  list LoRAs (volume + metadata, reconciled)
-POST   /api/loras/sync             explicit refresh: re-runs `comfy-gen list loras`
-POST   /api/loras/download         download from CivitAI version_id or URL/HF
-POST   /api/loras/delete           batch delete with per-file results
-POST   /api/loras/set-source       backfill source metadata for an existing LoRA
+GET    /api/loras                       list LoRAs (volume + metadata, reconciled)
+POST   /api/loras/sync                  explicit refresh: re-runs `comfy-gen list loras`
+POST   /api/loras/download              kick off async download (returns 202)
+GET    /api/loras/download/progress     poll current download state
+POST   /api/loras/download/clear        reset terminal state for next submit
+POST   /api/loras/delete                batch delete with per-file results
+POST   /api/loras/set-source            backfill source metadata for an existing LoRA
 
 Returns 409 when no ComfyGen endpoint is configured (matches preset_routes).
+
+Download runs in a background thread (one at a time). The route returns 202
+immediately with the queued state; the UI polls /download/progress every 2s
+to render live percentage + log tail. Mirrors the preset_routes installer.
 """
 from __future__ import annotations
 
+import collections
 import json
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -30,12 +39,57 @@ router = APIRouter()
 
 LORA_DEST_DIR = "/runpod-volume/ComfyUI/models/loras"
 _SUBPROCESS_TIMEOUT_SEC = 120  # `comfy-gen list loras` can cold-start ~50s
+_DOWNLOAD_TIMEOUT_SEC = 30 * 60  # CivitAI/HF downloads can take many minutes
 CACHE_STALE_AFTER_SEC = 24 * 3600  # 24h — matches the ComfyGen block cache TTL
+_LOG_TAIL_MAXLEN = 30
+_ARIA_PCT_RE = re.compile(r"\((\d+)%\)")
 _cache_lock = threading.Lock()
 
-# One batch download at a time. Concurrent submits get a 409.
+# ---- Async download state machine ----
+# state: "idle" → "queued" → "running" → "completed" | "error"
+# One download at a time; concurrent submits get a 409 with the in-flight name.
 _download_lock = threading.Lock()
-_download_in_flight = False
+_download_state: dict[str, Any] = {
+    "state": "idle",
+    "filename": None,
+    "source": None,
+    "source_id": None,
+    "started_at": None,
+    "completed_at": None,
+    "progress_percent": None,
+    "log_tail": "",
+    "error": None,
+    "elapsed_seconds": None,
+    "recovered_from_worker_bug": False,
+}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _reset_download_state() -> None:
+    _download_state.update({
+        "state": "idle",
+        "filename": None,
+        "source": None,
+        "source_id": None,
+        "started_at": None,
+        "completed_at": None,
+        "progress_percent": None,
+        "log_tail": "",
+        "error": None,
+        "elapsed_seconds": None,
+        "recovered_from_worker_bug": False,
+    })
+    # Drop internal carry-over fields too
+    for k in [k for k in _download_state if k.startswith("_")]:
+        _download_state.pop(k, None)
+
+
+def _public_download_state() -> dict[str, Any]:
+    """Strip internal underscore-prefixed fields before returning to the UI."""
+    return {k: v for k, v in _download_state.items() if not k.startswith("_")}
 
 
 # ---- Pydantic ----
@@ -184,34 +238,60 @@ def _delete_subprocess(filenames: list[str], endpoint_id: str) -> list[dict[str,
     return results if isinstance(results, list) else []
 
 
-def _download_subprocess(entries: list[dict[str, Any]], endpoint_id: str) -> dict[str, Any]:
-    """Invoke `comfy-gen download --batch <file>` and return the parsed result.
+def _run_download_streaming(
+    entries: list[dict[str, Any]], endpoint_id: str,
+) -> tuple[bool, Any]:
+    """Run `comfy-gen download --batch <file>` with live stderr streaming.
 
-    The CLI reads the batch payload from a JSON file (not stdin). Output is
-    always JSON on stdout: {ok, files: [...], job_id, elapsed_seconds}.
+    Returns (ok, payload):
+      - (True, parsed_json_dict)  on subprocess success
+      - (False, error_message)    on subprocess failure / timeout / non-JSON
+
+    Side effect: updates `_download_state["log_tail"]` and
+    `_download_state["progress_percent"]` as aria2 emits lines.
+    Tests monkeypatch this whole function to bypass the real subprocess.
     """
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tf:
         json.dump(entries, tf)
         batch_file = tf.name
+    tail: collections.deque[str] = collections.deque(maxlen=_LOG_TAIL_MAXLEN)
+
+    def _pump(stream) -> None:
+        for line in stream:
+            stripped = line.rstrip("\n")
+            tail.append(stripped)
+            _download_state["log_tail"] = "\n".join(tail)
+            m = _ARIA_PCT_RE.search(stripped)
+            if m:
+                try:
+                    _download_state["progress_percent"] = int(m.group(1))
+                except ValueError:
+                    pass
+
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             ["comfy-gen", "download", "--batch", batch_file, "--endpoint-id", endpoint_id],
-            capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC * 8,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
+        pump = threading.Thread(target=_pump, args=(proc.stderr,), daemon=True)
+        pump.start()
+        try:
+            stdout, _stderr = proc.communicate(timeout=_DOWNLOAD_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return (False, f"comfy-gen download timed out after {_DOWNLOAD_TIMEOUT_SEC}s")
+        pump.join(timeout=2)
+        if proc.returncode != 0:
+            return (False, ((stdout or "").strip() or "comfy-gen download failed")[:1000])
+        try:
+            return (True, json.loads(stdout))
+        except json.JSONDecodeError as exc:
+            return (False, f"non-JSON output from comfy-gen: {exc}")
     finally:
         try:
             Path(batch_file).unlink(missing_ok=True)
         except OSError:
             pass
-    if proc.returncode != 0:
-        raise HTTPException(
-            status_code=502,
-            detail=f"comfy-gen download failed: {(proc.stderr or proc.stdout).strip()[:500]}",
-        )
-    try:
-        return json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=502, detail=f"comfy-gen returned invalid JSON: {exc}") from exc
 
 
 # ---- Routes ----
@@ -286,87 +366,169 @@ def delete_loras_route(body: DeleteRequest) -> JSONResponse:
 
 @router.post("/api/loras/download")
 def download_lora_route(body: DownloadRequest) -> JSONResponse:
-    global _download_in_flight  # noqa: PLW0603
+    """Kick off an async download. Returns 202 with the queued state.
 
+    Validation + CivitAI metadata fetch happen inline (cheap, fast). The
+    subprocess + post-success metadata persist happens on a background
+    thread; UI polls /download/progress for status.
+    """
     endpoint_id = _endpoint_id_or_409()
 
     with _download_lock:
-        if _download_in_flight:
-            raise HTTPException(status_code=409, detail="another download is in progress")
-        _download_in_flight = True
+        if _download_state["state"] in ("queued", "running"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"another download is in progress: {_download_state['filename']}",
+            )
 
-    try:
+        # Inline validation + metadata fetch (fast — sub-second on success path)
         if body.source == "civitai":
-            return _do_civitai_download(body, endpoint_id)
+            if body.version_id is None:
+                raise HTTPException(status_code=400, detail="civitai source requires version_id")
+            meta: civitai_client.CivitAIVersionMetadata | None = None
+            try:
+                meta = civitai_client.fetch_version_metadata(
+                    body.version_id, api_key=config.CIVITAI_API_KEY,
+                )
+            except Exception:
+                meta = None  # graceful — proceed without enrichment
+            filename = body.filename \
+                or (meta.primary_file_name if meta else None) \
+                or f"civitai_{body.version_id}.safetensors"
+            entry = {"source": "civitai", "version_id": body.version_id, "dest": "loras"}
+            source = "civitai"
+            source_id = str(body.version_id)
         elif body.source == "url":
-            return _do_url_download(body, endpoint_id)
+            if not body.url:
+                raise HTTPException(status_code=400, detail="url source requires url")
+            host = (urlparse(body.url).hostname or "").lower()
+            source = "hf" if host.endswith("huggingface.co") else "url"
+            source_id = body.url
+            filename = body.filename or _filename_from_url(body.url)
+            entry = {"source": "url", "url": body.url, "dest": "loras", "filename": filename}
+            meta = None
         else:
             raise HTTPException(status_code=400, detail=f"unknown source: {body.source!r}")
-    finally:
-        with _download_lock:
-            _download_in_flight = False
+
+        # Seed the state machine; stash internal carry-over fields for the runner.
+        _reset_download_state()
+        _download_state.update({
+            "state": "queued",
+            "filename": filename,
+            "source": source,
+            "source_id": source_id,
+            "started_at": _now_iso(),
+            "progress_percent": 0,
+            "_entry": entry,
+            "_endpoint_id": endpoint_id,
+            "_meta": meta,
+            "_base_model_override": body.base_model,
+        })
+
+        threading.Thread(target=_download_runner, daemon=True).start()
+
+    return JSONResponse(_public_download_state(), status_code=202)
 
 
-def _do_civitai_download(body: DownloadRequest, endpoint_id: str) -> JSONResponse:
-    if body.version_id is None:
-        raise HTTPException(status_code=400, detail="civitai source requires version_id")
+def _download_runner() -> None:
+    """Background runner: invoke subprocess, persist metadata on success,
+    apply worker-bug recovery on the specific 'no new files' false-negative.
+    """
+    _download_state["state"] = "running"
+    start_time = time.time()
+    filename = _download_state["filename"]
+    source = _download_state["source"]
+    source_id = _download_state["source_id"]
+    endpoint_id = _download_state.get("_endpoint_id")
+    entry = _download_state.get("_entry")
+    meta = _download_state.get("_meta")
+    base_model_override = _download_state.get("_base_model_override")
 
-    api_key = config.CIVITAI_API_KEY
-    meta: civitai_client.CivitAIVersionMetadata | None = None
     try:
-        meta = civitai_client.fetch_version_metadata(body.version_id, api_key=api_key)
-    except Exception:
-        meta = None  # network failure / 404 / etc — proceed without enrichment
+        ok, payload = _run_download_streaming([entry], endpoint_id)
 
-    filename = body.filename or (meta.primary_file_name if meta else None) \
-        or f"civitai_{body.version_id}.safetensors"
+        if ok:
+            _finalize_download_success(filename, source, source_id, meta,
+                                       base_model_override, start_time)
+            return
 
-    entry = {
-        "source": "civitai",
-        "version_id": body.version_id,
-        "dest": "loras",
-    }
-    _download_subprocess([entry], endpoint_id)
+        # Worker false-negative recovery (sgs-worker bug):
+        # `_download_civitai` raises "CivitAI download produced no new files"
+        # when its before/after-listing diff doesn't see the new filename,
+        # even though aria2 actually delivered the file. Verify by re-listing
+        # and treat as success if our expected filename is now on the volume.
+        err_msg = str(payload)
+        if "no new files" in err_msg.lower():
+            try:
+                current = _fetch_loras_from_comfygen(endpoint_id)
+                if filename in current:
+                    _download_state["recovered_from_worker_bug"] = True
+                    _finalize_download_success(filename, source, source_id, meta,
+                                               base_model_override, start_time)
+                    return
+            except Exception:
+                pass  # fall through to error below
 
-    size_bytes = int(meta.primary_file_size_kb * 1024) if (meta and meta.primary_file_size_kb) else None
+        _download_state.update({
+            "state": "error",
+            "error": err_msg,
+            "completed_at": _now_iso(),
+            "elapsed_seconds": time.time() - start_time,
+        })
+    except Exception as exc:
+        _download_state.update({
+            "state": "error",
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+            "completed_at": _now_iso(),
+            "elapsed_seconds": time.time() - start_time,
+        })
+
+
+def _finalize_download_success(
+    filename: str,
+    source: str,
+    source_id: str,
+    meta: civitai_client.CivitAIVersionMetadata | None,
+    base_model_override: str | None,
+    start_time: float,
+) -> None:
+    size_bytes = (
+        int(meta.primary_file_size_kb * 1024)
+        if meta and meta.primary_file_size_kb else None
+    )
     lora_metadata.upsert(
         filename=filename,
-        source="civitai",
-        source_id=str(body.version_id),
-        base_model=(meta.base_model if meta else None) or body.base_model,
+        source=source,
+        source_id=source_id,
+        base_model=(meta.base_model if meta else None) or base_model_override,
         trigger_words=(meta.trigger_words if meta else []),
         size_bytes=size_bytes,
     )
     _append_to_cache(filename)
-    return JSONResponse({"ok": True, "filename": filename})
+    _download_state.update({
+        "state": "completed",
+        "progress_percent": 100,
+        "completed_at": _now_iso(),
+        "elapsed_seconds": time.time() - start_time,
+    })
 
 
-def _do_url_download(body: DownloadRequest, endpoint_id: str) -> JSONResponse:
-    if not body.url:
-        raise HTTPException(status_code=400, detail="url source requires url")
+@router.get("/api/loras/download/progress")
+def download_progress_route() -> JSONResponse:
+    return JSONResponse(_public_download_state())
 
-    host = (urlparse(body.url).hostname or "").lower()
-    detected_source = "hf" if host.endswith("huggingface.co") else "url"
 
-    filename = body.filename or _filename_from_url(body.url)
-
-    entry = {
-        "source": "url",
-        "url": body.url,
-        "dest": "loras",
-        "filename": filename,
-    }
-    _download_subprocess([entry], endpoint_id)
-
-    lora_metadata.upsert(
-        filename=filename,
-        source=detected_source,
-        source_id=body.url,
-        base_model=body.base_model,
-        trigger_words=[],
-    )
-    _append_to_cache(filename)
-    return JSONResponse({"ok": True, "filename": filename})
+@router.post("/api/loras/download/clear")
+def clear_download_state_route() -> JSONResponse:
+    """Drop terminal state so the next submit can run. 409 if still active."""
+    with _download_lock:
+        if _download_state["state"] in ("queued", "running"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"download still in progress: {_download_state['filename']}",
+            )
+        _reset_download_state()
+    return JSONResponse({"ok": True})
 
 
 def _append_to_cache(filename: str) -> None:

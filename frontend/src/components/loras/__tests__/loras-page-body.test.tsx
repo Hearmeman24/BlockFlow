@@ -16,8 +16,25 @@ vi.mock('@/lib/loras/client', async () => {
     syncLoras: vi.fn(),
     deleteLoras: vi.fn(),
     downloadLora: vi.fn(),
+    getDownloadProgress: vi.fn(),
+    clearDownloadState: vi.fn(),
     setSource: vi.fn(),
   }
+})
+
+const _progress = (overrides: Partial<client.DownloadProgress> = {}): client.DownloadProgress => ({
+  state: 'queued',
+  filename: null,
+  source: null,
+  source_id: null,
+  started_at: null,
+  completed_at: null,
+  progress_percent: 0,
+  log_tail: '',
+  error: null,
+  elapsed_seconds: null,
+  recovered_from_worker_bug: false,
+  ...overrides,
 })
 
 import * as client from '@/lib/loras/client'
@@ -211,7 +228,9 @@ describe('LorasPageBody — download dialog', () => {
 
   test('accepts civitai full URL and submits with extracted version_id', async () => {
     vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
-    vi.mocked(client.downloadLora).mockResolvedValue({ ok: true, filename: 'x.safetensors' })
+    vi.mocked(client.downloadLora).mockResolvedValue(_progress({
+      state: 'queued', filename: 'x.safetensors', source: 'civitai',
+    }))
 
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
@@ -254,7 +273,9 @@ describe('LorasPageBody — download dialog', () => {
 
   test('huggingface URL submits via url source', async () => {
     vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
-    vi.mocked(client.downloadLora).mockResolvedValue({ ok: true, filename: 'x.safetensors' })
+    vi.mocked(client.downloadLora).mockResolvedValue(_progress({
+      state: 'queued', filename: 'x.safetensors', source: 'hf',
+    }))
 
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
@@ -300,5 +321,110 @@ describe('LorasPageBody — stale-cache UX', () => {
       pruned: [], fetched_at: Date.now() / 1000, stale: false,
     })
     await screen.findByText('fresh.safetensors')
+  })
+})
+
+describe('LorasPageBody — async download progress (sgs-ui-eqc.5)', () => {
+  test('after submit, dialog shows progress card with filename and percent', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
+    vi.mocked(client.downloadLora).mockResolvedValue(_progress({
+      state: 'running', filename: 'big.safetensors', source: 'civitai',
+      progress_percent: 42,
+    }))
+
+    render(<LorasPageBody />)
+    await screen.findByText(/No LoRAs/i)
+    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
+
+    await userEvent.type(within(dialog).getByLabelText(/LoRA source/i), '67890')
+    await userEvent.click(within(dialog).getByRole('button', { name: /Download/i }))
+
+    const matches = await within(dialog).findAllByText(/big\.safetensors/)
+    expect(matches.length).toBeGreaterThan(0)
+    expect(within(dialog).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '42')
+  })
+
+  test('terminal completed state shows Done button + clears state on click', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
+    vi.mocked(client.downloadLora).mockResolvedValue(_progress({
+      state: 'completed', filename: 'done.safetensors', source: 'url',
+      progress_percent: 100,
+    }))
+    vi.mocked(client.clearDownloadState).mockResolvedValue()
+
+    render(<LorasPageBody />)
+    await screen.findByText(/No LoRAs/i)
+    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
+
+    await userEvent.type(within(dialog).getByLabelText(/LoRA source/i),
+                        'https://example.com/done.safetensors')
+    await userEvent.click(within(dialog).getByRole('button', { name: /Download/i }))
+
+    expect(await within(dialog).findByText(/Download complete/i)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('button', { name: /Done/i }))
+
+    expect(client.clearDownloadState).toHaveBeenCalledOnce()
+  })
+
+  test('error state surfaces backend error message', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
+    vi.mocked(client.downloadLora).mockResolvedValue(_progress({
+      state: 'error', filename: 'oops.safetensors', source: 'url',
+      error: 'comfy-gen download timed out after 1800s',
+    }))
+
+    render(<LorasPageBody />)
+    await screen.findByText(/No LoRAs/i)
+    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
+
+    await userEvent.type(within(dialog).getByLabelText(/LoRA source/i),
+                        'https://example.com/oops.safetensors')
+    await userEvent.click(within(dialog).getByRole('button', { name: /Download/i }))
+
+    expect(await within(dialog).findByText(/Download failed/i)).toBeInTheDocument()
+    expect(within(dialog).getByText(/timed out after 1800s/)).toBeInTheDocument()
+  })
+
+  test('worker-bug recovery banner shows when completed with the recovery flag', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
+    vi.mocked(client.downloadLora).mockResolvedValue(_progress({
+      state: 'completed', filename: 'epic.safetensors', source: 'civitai',
+      progress_percent: 100, recovered_from_worker_bug: true,
+    }))
+
+    render(<LorasPageBody />)
+    await screen.findByText(/No LoRAs/i)
+    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
+
+    await userEvent.type(within(dialog).getByLabelText(/LoRA source/i), '12345')
+    await userEvent.click(within(dialog).getByRole('button', { name: /Download/i }))
+
+    expect(await within(dialog).findByText(/no new files.*treated as success/i)).toBeInTheDocument()
+  })
+
+  test('while running, "Close (download continues)" button is shown instead of Cancel', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
+    vi.mocked(client.downloadLora).mockResolvedValue(_progress({
+      state: 'running', filename: 'still.safetensors', source: 'url',
+      progress_percent: 25,
+    }))
+    // Block the poll forever so state stays 'running'
+    vi.mocked(client.getDownloadProgress).mockReturnValue(new Promise(() => {}))
+
+    render(<LorasPageBody />)
+    await screen.findByText(/No LoRAs/i)
+    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
+
+    await userEvent.type(within(dialog).getByLabelText(/LoRA source/i),
+                        'https://example.com/still.safetensors')
+    await userEvent.click(within(dialog).getByRole('button', { name: /Download/i }))
+
+    expect(await within(dialog).findByRole('button', { name: /Close \(download continues\)/i }))
+      .toBeInTheDocument()
   })
 })

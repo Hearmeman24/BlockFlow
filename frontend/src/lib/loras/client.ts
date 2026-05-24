@@ -89,14 +89,46 @@ export async function syncLoras(): Promise<LorasListResponse> {
   return (await res.json()) as LorasListResponse
 }
 
-export async function downloadLora(req: DownloadRequest): Promise<{ ok: boolean; filename: string }> {
+export type DownloadState =
+  | 'idle' | 'queued' | 'running' | 'completed' | 'error'
+
+export type DownloadProgress = {
+  state: DownloadState
+  filename: string | null
+  source: LoraSource | null
+  source_id: string | null
+  started_at: string | null
+  completed_at: string | null
+  progress_percent: number | null
+  log_tail: string
+  error: string | null
+  elapsed_seconds: number | null
+  recovered_from_worker_bug: boolean
+}
+
+/**
+ * Kick off an async download. Backend returns 202 immediately with the
+ * queued state; poll getDownloadProgress() every 2s for live updates.
+ */
+export async function downloadLora(req: DownloadRequest): Promise<DownloadProgress> {
   const res = await fetch('/api/loras/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   })
+  if (res.status !== 202) await _throwIfNonOk(res)
+  return (await res.json()) as DownloadProgress
+}
+
+export async function getDownloadProgress(): Promise<DownloadProgress> {
+  const res = await fetch('/api/loras/download/progress', { method: 'GET' })
   await _throwIfNonOk(res)
-  return await res.json()
+  return (await res.json()) as DownloadProgress
+}
+
+export async function clearDownloadState(): Promise<void> {
+  const res = await fetch('/api/loras/download/clear', { method: 'POST' })
+  await _throwIfNonOk(res)
 }
 
 export async function deleteLoras(filenames: string[]): Promise<{ results: DeleteResult[] }> {

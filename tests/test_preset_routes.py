@@ -1287,3 +1287,329 @@ def test_install_without_recommendations_persists_empty(client, install_ready, m
 
     detail = client.get("/api/presets/installed/qwen-image-lighting").json()
     assert detail["recommendations"] == {"global": [], "workflows": {}}
+
+
+# === sgs-ui-gb4: workflows[].settings pass-through ==========================
+
+def _wan_animate_with_settings_preset() -> dict:
+    """Preset with two workflows: one has settings, one doesn't."""
+    return {
+        **QWEN_FULL_PRESET,
+        "id": "wan-animate",
+        "workflows": [
+            {
+                "name": "Keep Background",
+                "url": "https://example/kb.json",
+                "sha256": "0" * 64,
+                "settings": [
+                    {
+                        "node_id": "417",
+                        "field": "force_rate",
+                        "label": "Source FPS",
+                        "type": "int",
+                        "min": 1,
+                        "max": 60,
+                        "step": 1,
+                    },
+                    {
+                        "node_id": "417",
+                        "field": "frame_load_cap",
+                        "label": "Max frames",
+                        "type": "int",
+                    },
+                ],
+            },
+            {
+                "name": "Replace Face",
+                "url": "https://example/rf.json",
+                "sha256": "1" * 64,
+            },
+        ],
+    }
+
+
+def test_install_persists_workflow_settings_through_install(client, install_ready, mocker):
+    """workflows[].settings must round-trip end-to-end: preset.json → install
+    → settings_store → /installed/{id} response carries the same array."""
+    preset = _wan_animate_with_settings_preset()
+    wf_kb = {"3": {"class_type": "KSampler"}}
+    wf_rf = {"3": {"class_type": "WanAnimate"}}
+
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([{**_qwen_preset_entry(), "id": "wan-animate", "preset_url": "https://example/preset.json"}]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        if "kb.json" in url:
+            return _mock_response(wf_kb)
+        if "rf.json" in url:
+            return _mock_response(wf_rf)
+        return _mock_response({}, status=404)
+
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    def _popen_side_effect(args, *a, **kw):
+        if args[:2] == ["comfy-gen", "hash"]:
+            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
+        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+
+    r = client.post("/api/presets/install", json={"preset_id": "wan-animate"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    detail = client.get("/api/presets/installed/wan-animate").json()
+    flows = detail["workflow_json"]
+    assert len(flows) == 2
+
+    kb = next(f for f in flows if f["name"] == "Keep Background")
+    assert kb["settings"] == [
+        {
+            "node_id": "417",
+            "field": "force_rate",
+            "label": "Source FPS",
+            "type": "int",
+            "min": 1,
+            "max": 60,
+            "step": 1,
+        },
+        {
+            "node_id": "417",
+            "field": "frame_load_cap",
+            "label": "Max frames",
+            "type": "int",
+        },
+    ]
+
+    rf = next(f for f in flows if f["name"] == "Replace Face")
+    # Workflows that didn't declare settings get NO settings key in the
+    # response — UI treats absence as []. This keeps payloads small for
+    # the common case.
+    assert "settings" not in rf
+
+
+def test_legacy_workflow_row_has_no_settings_field(client):
+    """A row written before sgs-ui-gb4 doesn't have settings; the detail
+    endpoint must not invent it. ComfyGen block treats missing as []."""
+    settings_store.record_installed_preset(
+        preset_id="legacy",
+        version="0.1.0",
+        disk_size_gb=5,
+        workflow_json='{"3": {"class_type": "KSampler"}}',
+    )
+    detail = client.get("/api/presets/installed/legacy").json()
+    assert detail["workflow_json"] == [
+        {"name": "Default", "json": {"3": {"class_type": "KSampler"}}}
+    ]
+
+
+def test_install_inline_workflow_carries_settings(client, install_ready, mocker):
+    """Inline workflows (no URL fetch) still carry settings into the row."""
+    inline = {"3": {"class_type": "KSampler", "inputs": {"steps": 4}}}
+    preset = {
+        **QWEN_FULL_PRESET,
+        "id": "inline-settings",
+        "workflows": [
+            {
+                "name": "Default",
+                "json": inline,
+                "settings": [
+                    {"node_id": "3", "field": "steps", "label": "Steps", "type": "int"},
+                ],
+            }
+        ],
+    }
+
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([{**_qwen_preset_entry(), "id": "inline-settings", "preset_url": "https://example/preset.json"}]))
+        if "preset.json" in url:
+            return _mock_response(preset)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+    def _popen_side_effect(args, *a, **kw):
+        if args[:2] == ["comfy-gen", "hash"]:
+            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
+        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+
+    r = client.post("/api/presets/install", json={"preset_id": "inline-settings"})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error")
+
+    detail = client.get("/api/presets/installed/inline-settings").json()
+    assert detail["workflow_json"] == [
+        {
+            "name": "Default",
+            "json": inline,
+            "settings": [
+                {"node_id": "3", "field": "steps", "label": "Steps", "type": "int"},
+            ],
+        }
+    ]
+
+
+# === sgs-ui-gb4 follow-up: refresh installed presets ========================
+
+def test_refresh_installed_presets_updates_workflow_blob(client):
+    """A preset already in Settings gets its workflow_json blob replaced
+    with the registry's latest copy on refresh. The new blob carries the
+    newly-added workflows[].settings field through."""
+    # Pre-populate Settings with the OLD blob (no settings on Replace Face)
+    old_blob = {
+        "workflows": [{"name": "Replace Face", "json": {"3": {"class_type": "WanAnimate"}}}],
+        "recommendations": {"global": [], "workflows": {}},
+    }
+    settings_store.record_installed_preset(
+        preset_id="wan-animate",
+        version="0.2.0",
+        disk_size_gb=50,
+        workflow_json=json.dumps(old_blob),
+        installed_paths=["/runpod-volume/ComfyUI/models/loras/some.safetensors"],
+    )
+
+    # Registry now serves a NEW preset.json with a Mask Expansion setting.
+    new_preset = {
+        **QWEN_FULL_PRESET,
+        "id": "wan-animate",
+        "workflows": [{
+            "name": "Replace Face",
+            "url": "https://example/rf.json",
+            "sha256": "0" * 64,
+            "settings": [
+                {"node_id": "554", "field": "value", "label": "Mask Expansion", "type": "int"},
+            ],
+        }],
+        "recommendations": {"global": ["Pair with a character LoRA"], "workflows": {}},
+    }
+    new_workflow_body = {"3": {"class_type": "WanAnimate"}, "554": {"class_type": "PrimitiveInt"}}
+
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([
+                {**_qwen_preset_entry(), "id": "wan-animate", "preset_url": "https://example/preset.json"},
+            ]))
+        if "preset.json" in url:
+            return _mock_response(new_preset)
+        if "rf.json" in url:
+            return _mock_response(new_workflow_body)
+        return _mock_response({}, status=404)
+
+    import unittest.mock as _mock
+    with _mock.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get):
+        summary = preset_routes.refresh_installed_presets()
+
+    assert {r["preset_id"] for r in summary["refreshed"]} == {"wan-animate"}
+    assert summary["errors"] == []
+
+    detail = client.get("/api/presets/installed/wan-animate").json()
+    flows = detail["workflow_json"]
+    assert flows[0]["name"] == "Replace Face"
+    # NEW blob — settings now present
+    assert flows[0]["settings"] == [
+        {"node_id": "554", "field": "value", "label": "Mask Expansion", "type": "int"},
+    ]
+    # NEW recommendations now present
+    assert detail["recommendations"] == {
+        "global": ["Pair with a character LoRA"],
+        "workflows": {},
+    }
+    # installed_paths preserved — a metadata refresh must NEVER nuke them,
+    # else uninstall stops being able to remove the model files.
+    raw = settings_store.get_installed_preset("wan-animate")
+    assert raw["installed_paths"] == ["/runpod-volume/ComfyUI/models/loras/some.safetensors"]
+
+
+def test_refresh_installed_presets_skips_presets_not_in_manifest(client):
+    """A preset that was archived from the registry stays in Settings — we
+    don't silently uninstall on the user's behalf."""
+    settings_store.record_installed_preset(
+        preset_id="archived",
+        version="0.1.0",
+        disk_size_gb=10,
+        workflow_json=json.dumps({"workflows": [{"name": "Default", "json": {}}], "recommendations": {}}),
+        installed_paths=["/keep/me.safetensors"],
+    )
+
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([]))  # archived not present
+        return _mock_response({}, status=404)
+
+    import unittest.mock as _mock
+    with _mock.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get):
+        summary = preset_routes.refresh_installed_presets()
+
+    assert summary["refreshed"] == []
+    assert any(s["preset_id"] == "archived" for s in summary["skipped"])
+    # Row untouched
+    raw = settings_store.get_installed_preset("archived")
+    assert raw is not None
+    assert raw["installed_paths"] == ["/keep/me.safetensors"]
+
+
+def test_refresh_installed_presets_records_error_when_detail_fetch_fails(client):
+    """If we can reach the manifest but the preset.json fetch fails, the
+    existing Settings row is preserved and the failure is reported in the
+    summary — no silent data loss."""
+    settings_store.record_installed_preset(
+        preset_id="wan-animate",
+        version="0.2.0",
+        disk_size_gb=50,
+        workflow_json=json.dumps({"workflows": [{"name": "Replace Face", "json": {"3": {}}}], "recommendations": {}}),
+        installed_paths=["/x.safetensors"],
+    )
+
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([
+                {**_qwen_preset_entry(), "id": "wan-animate", "preset_url": "https://example/preset.json"},
+            ]))
+        if "preset.json" in url:
+            return _mock_response({}, status=500)
+        return _mock_response({}, status=404)
+
+    import unittest.mock as _mock
+    with _mock.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get):
+        summary = preset_routes.refresh_installed_presets()
+
+    assert summary["refreshed"] == []
+    assert any(e["preset_id"] == "wan-animate" for e in summary["errors"])
+    detail = client.get("/api/presets/installed/wan-animate").json()
+    assert detail["workflow_json"][0]["name"] == "Replace Face"
+
+
+def test_refresh_installed_presets_returns_empty_when_nothing_installed(client):
+    """No installed rows → nothing to do, no network calls, empty summary."""
+    summary = preset_routes.refresh_installed_presets()
+    assert summary == {"refreshed": [], "skipped": [], "errors": []}
+
+
+def test_refresh_installed_route_returns_summary(client, mocker):
+    """POST /api/presets/refresh-installed returns the same summary as the
+    underlying function — used by the manual 'Refresh' UI affordance."""
+    settings_store.record_installed_preset(
+        preset_id="wan-animate",
+        version="0.2.0",
+        disk_size_gb=50,
+        workflow_json=json.dumps({"workflows": [{"name": "Replace Face", "json": {}}], "recommendations": {}}),
+        installed_paths=[],
+    )
+    new_preset = {
+        **QWEN_FULL_PRESET,
+        "id": "wan-animate",
+        "workflows": [{"name": "Replace Face", "json": {"3": {}}}],
+    }
+    def _fake_get(url, **kw):
+        if "manifest.json" in url:
+            return _mock_response(_manifest([
+                {**_qwen_preset_entry(), "id": "wan-animate", "preset_url": "https://example/preset.json"},
+            ]))
+        if "preset.json" in url:
+            return _mock_response(new_preset)
+        return _mock_response({}, status=404)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
+
+    r = client.post("/api/presets/refresh-installed")
+    assert r.status_code == 200
+    body = r.json()
+    assert {p["preset_id"] for p in body["refreshed"]} == {"wan-animate"}

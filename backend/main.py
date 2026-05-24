@@ -70,6 +70,32 @@ def _prune_run_history_on_startup() -> None:
 _prune_run_history_on_startup()
 
 
+def _refresh_installed_presets_on_startup() -> None:
+    """Re-fetch installed presets' metadata from the registry on launch so
+    author-side edits (e.g. a new workflows[].settings knob, updated
+    recommendations) propagate without forcing the user to uninstall and
+    reinstall. Runs in a background daemon thread — network I/O must not
+    block the FastAPI server's boot, and a slow/offline registry must not
+    delay block sidecars or the UI starting up."""
+    import threading
+
+    def _runner() -> None:
+        try:
+            summary = preset_routes.refresh_installed_presets()
+            r = len(summary.get("refreshed", []))
+            s = len(summary.get("skipped", []))
+            e = len(summary.get("errors", []))
+            if r or e:
+                print(f"[preset-refresh] {r} refreshed, {s} skipped, {e} error(s)")
+        except Exception as exc:
+            print(f"[preset-refresh] background refresh crashed: {exc}")
+
+    threading.Thread(target=_runner, daemon=True).start()
+
+
+_refresh_installed_presets_on_startup()
+
+
 def _discover_sidecars(dirs: Iterable[tuple[Path, str]]) -> list[tuple[str, str, Path]]:
     """Walk each (root, source_label) pair; collect candidate (slug, source, backend_entry).
 

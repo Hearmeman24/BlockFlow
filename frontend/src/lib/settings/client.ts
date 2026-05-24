@@ -296,12 +296,29 @@ export type InstalledPresetSummary = {
   workflows: { name: string }[]
 }
 
+// sgs-ui-gb4: author-declared knob on a workflow node, surfaced as a row in
+// the ComfyGen block's Workflow Settings panel.
+export type WorkflowSetting = {
+  node_id: string
+  field: string
+  label: string
+  type: 'int' | 'float' | 'string' | 'bool' | 'combo'
+  description?: string
+  min?: number
+  max?: number
+  step?: number
+  choices?: string[]
+}
+
 // A single entry inside an installed preset's workflows list. `name` is the
 // author-supplied display string ("I2V", "V2V", "Default", etc.) shown in the
 // ComfyGen block dropdown after the preset's own name.
 export type InstalledPresetWorkflow = {
   name: string
   json: Record<string, unknown>
+  // Optional knobs (sgs-ui-gb4) — absent when the preset author didn't declare
+  // any. ComfyGen block treats missing as [].
+  settings?: WorkflowSetting[]
 }
 
 // sgs-ui-fmy: optional prose tips authored alongside the preset. Scoped
@@ -423,6 +440,24 @@ export type UninstallResult = {
   // Present only when delete failed wholesale (subprocess non-zero rather
   // than per-path errors).
   error?: string | null
+}
+
+// sgs-ui-gb4 follow-up: re-fetch every installed preset's metadata blob
+// (workflows + recommendations + workflows[].settings) from the registry.
+// Models aren't touched — they're content-addressable by sha256, so existing
+// files stay valid. Used by the /presets Refresh button and run
+// automatically on backend startup so registry-side edits propagate without
+// forcing uninstall + reinstall.
+export type RefreshInstalledSummary = {
+  refreshed: { preset_id: string }[]
+  skipped: { preset_id: string; reason: string }[]
+  errors: ({ preset_id?: string; scope?: string; error: string })[]
+}
+
+export async function refreshInstalledPresets(): Promise<RefreshInstalledSummary> {
+  const res = await fetch('/api/presets/refresh-installed', { method: 'POST' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as RefreshInstalledSummary
 }
 
 export async function uninstallPreset(presetId: string): Promise<UninstallResult> {

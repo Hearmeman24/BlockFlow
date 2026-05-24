@@ -565,6 +565,24 @@ describe('LorasPageBody — epoch grouping (sgs-ui-eqc.6)', () => {
     expect(await screen.findByText(/3 epochs · latest 80/)).toBeInTheDocument()
   })
 
+  test('family headline drops the latest member\'s _epochN and .safetensors chrome', async () => {
+    // The family row should NOT repeat "·epoch80" next to the stem when the
+    // subtitle already says "latest 80" — that was the original cram bug.
+    // Singletons keep their full ParsedFilename render.
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'family_epoch10.safetensors' }),
+      _row({ filename: 'family_epoch80.safetensors' }),
+    ]))
+
+    render(<LorasPageBody />)
+    const expandButton = await screen.findByRole('button', { name: /Expand 2 epochs of family/i })
+
+    // The headline button should NOT contain "·epoch80" (the per-member
+    // suffix) — only the family subtitle "latest 80" mentions the epoch.
+    expect(expandButton.textContent).not.toMatch(/·epoch\d+/)
+    expect(expandButton.textContent).not.toMatch(/\.safetensors/)
+  })
+
   test('singleton without _epoch suffix renders as a normal row, not a family', async () => {
     vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
       _row({ filename: 'Becca01_HighNoise.safetensors' }),

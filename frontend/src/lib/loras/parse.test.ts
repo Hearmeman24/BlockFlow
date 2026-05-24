@@ -73,9 +73,13 @@ describe('parseLoraFilename — base model hint (substring-only, no guessing)', 
     expect(parseLoraFilename('character_wan22_v1.safetensors').baseModelHint).toBe('WAN 2.2')
   })
 
-  test('detects qwen-image with version suffix', () => {
+  test('detects qwen-image with dated release suffix', () => {
+    // Qwen Image release suffixes are date stamps (2512 = Dec 2025,
+    // 2511 = Nov 2025), not semver. Don't reformat as 2.5.12 / 2.5.11.
     expect(parseLoraFilename('VagLoRA_qwen-image-2512_epoch20.safetensors').baseModelHint)
-      .toBe('Qwen Image 2.5.12')
+      .toBe('Qwen Image 2512')
+    expect(parseLoraFilename('thing_qwen-image-2511_v1.safetensors').baseModelHint)
+      .toBe('Qwen Image 2511')
   })
 
   test('detects bare qwen-image as fallback', () => {

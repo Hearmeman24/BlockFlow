@@ -522,19 +522,31 @@ function GroupedRowView({
           aria-label={`Select all ${group.members.length} epochs in ${group.stem}`}
         />
       </td>
-      <td className="p-2">
+      <td className="p-2 min-w-0">
+        {/*
+          Family headline: chevron + stem + family meta + base-model chip.
+          Deliberately drop the latest member's `·epochN` and `.safetensors`
+          chrome here — both are noise at the family level (epoch is in the
+          subtitle; extension is always the same for LoRAs). Singleton
+          rows below use the full ParsedFilename instead.
+        */}
         <button
           type="button"
           onClick={() => setExpanded((e) => !e)}
-          className="flex items-center gap-1.5 text-left w-full"
+          className="flex items-center gap-2 text-left w-full min-w-0"
           aria-expanded={expanded}
           aria-label={`${expanded ? 'Collapse' : 'Expand'} ${group.members.length} epochs of ${group.stem}`}
         >
-          <span className="text-muted-foreground text-[10px]">{expanded ? '▾' : '▸'}</span>
-          <ParsedFilename filename={latest.filename} effectiveBaseModel={effectiveBaseModel(latest)} />
-          <span className="text-[10px] text-muted-foreground">
+          <span className="text-muted-foreground text-[10px] w-3 shrink-0 text-center">
+            {expanded ? '▾' : '▸'}
+          </span>
+          <span className="font-mono text-foreground truncate">{group.stem}</span>
+          <span className="text-[10px] text-muted-foreground shrink-0">
             {group.members.length} epochs · latest {parseLoraFilename(latest.filename).epoch}
           </span>
+          {effectiveBaseModel(latest) && (
+            <BaseModelChip eff={effectiveBaseModel(latest)!} className="shrink-0" />
+          )}
         </button>
       </td>
       <td className="p-2"><SourceBadge source={latest.source} /></td>
@@ -590,30 +602,47 @@ function ParsedFilename({
 }) {
   const parsed = parseLoraFilename(filename)
   return (
-    <span className="flex items-baseline gap-1.5 min-w-0">
+    <span className="flex items-center gap-1.5 min-w-0">
       <span className="font-mono text-foreground truncate">{parsed.stem}</span>
       {parsed.epoch !== null && (
-        <span className="text-[10px] font-mono text-muted-foreground">·epoch{parsed.epoch}</span>
-      )}
-      {parsed.extension && (
-        <span className="text-[10px] text-muted-foreground/60 font-mono">.{parsed.extension}</span>
-      )}
-      {effectiveBaseModel && (
-        <span
-          className={`text-[10px] px-1.5 py-0.5 rounded ${
-            baseModelTone(effectiveBaseModel.label) === 'flux'    ? 'bg-purple-500/15 text-purple-300' :
-            baseModelTone(effectiveBaseModel.label) === 'wan'     ? 'bg-sky-500/15 text-sky-300' :
-            baseModelTone(effectiveBaseModel.label) === 'ltx'     ? 'bg-amber-500/15 text-amber-300' :
-            baseModelTone(effectiveBaseModel.label) === 'qwen'    ? 'bg-fuchsia-500/15 text-fuchsia-300' :
-            baseModelTone(effectiveBaseModel.label) === 'zimage'  ? 'bg-emerald-500/15 text-emerald-300' :
-            baseModelTone(effectiveBaseModel.label) === 'sdxl'    ? 'bg-rose-500/15 text-rose-300' :
-                                                                     'bg-muted/30 text-muted-foreground'
-          } ${effectiveBaseModel.inferred ? 'border border-dashed border-current/30' : ''}`}
-          title={effectiveBaseModel.inferred ? 'Inferred from filename — confirm via Set source' : undefined}
-        >
-          {effectiveBaseModel.label}
+        <span className="text-[10px] font-mono text-muted-foreground shrink-0">
+          ·epoch{parsed.epoch}
         </span>
       )}
+      {parsed.extension && (
+        <span className="text-[10px] text-muted-foreground/60 font-mono shrink-0">
+          .{parsed.extension}
+        </span>
+      )}
+      {effectiveBaseModel && (
+        <BaseModelChip eff={effectiveBaseModel} className="shrink-0" />
+      )}
+    </span>
+  )
+}
+
+function BaseModelChip({
+  eff, className = '',
+}: {
+  eff: { label: string; inferred: boolean }
+  className?: string
+}) {
+  const tone = baseModelTone(eff.label)
+  const toneClass =
+    tone === 'flux'    ? 'bg-purple-500/15 text-purple-300' :
+    tone === 'wan'     ? 'bg-sky-500/15 text-sky-300' :
+    tone === 'ltx'     ? 'bg-amber-500/15 text-amber-300' :
+    tone === 'qwen'    ? 'bg-fuchsia-500/15 text-fuchsia-300' :
+    tone === 'zimage'  ? 'bg-emerald-500/15 text-emerald-300' :
+    tone === 'sdxl'    ? 'bg-rose-500/15 text-rose-300' :
+                         'bg-muted/30 text-muted-foreground'
+  const inferredClass = eff.inferred ? 'border border-dashed border-current/30' : ''
+  return (
+    <span
+      className={`text-[10px] px-1.5 py-0.5 rounded ${toneClass} ${inferredClass} ${className}`}
+      title={eff.inferred ? 'Inferred from filename — confirm via Set source' : undefined}
+    >
+      {eff.label}
     </span>
   )
 }

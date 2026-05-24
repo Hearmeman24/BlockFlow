@@ -15,10 +15,15 @@ const _EPOCH_RE = /_epoch(\d+)$/i
 
 // Each pattern: substring matched (with word-boundary-ish guards) → canonical
 // label shown in chips. Order matters: more specific patterns first
-// (qwen-image-2512 before qwen-image; ltx 2.3 variants before bare ltx).
+// (qwen-image-2512 / 2511 before qwen-image; ltx 2.3 variants before bare ltx).
+//
+// Naming note: Qwen Image release suffixes are date stamps (YYMM —
+// "2512" = December 2025, "2511" = November 2025), NOT semver. Keep
+// the literal digits in the label so users recognize their releases.
 type FamilyPattern = { match: RegExp; label: string }
 const _FAMILY_PATTERNS: FamilyPattern[] = [
-  { match: /qwen[-_]?image[-_]?2512/i,            label: 'Qwen Image 2.5.12' },
+  { match: /qwen[-_]?image[-_]?2512/i,            label: 'Qwen Image 2512' },
+  { match: /qwen[-_]?image[-_]?2511/i,            label: 'Qwen Image 2511' },
   { match: /qwen[-_]?image/i,                     label: 'Qwen Image' },
   { match: /wan[-_]?2[._]?2/i,                    label: 'WAN 2.2' },
   { match: /wan[-_]?2[._]?1/i,                    label: 'WAN 2.1' },

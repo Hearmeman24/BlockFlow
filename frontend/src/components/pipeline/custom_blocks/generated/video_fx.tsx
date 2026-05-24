@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { useSessionState } from '@/lib/use-session-state'
+import { pickFiles } from '@/lib/file-picker'
 import {
   PORT_VIDEO,
   type BlockDef,
@@ -93,7 +94,6 @@ function VideoFxBlock({
   const [lutPath, setLutPath] = useSessionState(`block_${blockId}_lut_path`, '')
   const [lutName, setLutName] = useSessionState(`block_${blockId}_lut_name`, '')
   const [lutUploading, setLutUploading] = useState(false)
-  const lutFileInputRef = useRef<HTMLInputElement>(null)
 
   const [lastInputs, setLastInputs] = useState<string[]>([])
   const [isRunning, setIsRunning] = useState(false)
@@ -315,25 +315,16 @@ function VideoFxBlock({
         </div>
         {lutEnabled && (
           <div className="space-y-1.5">
-            <input
-              ref={lutFileInputRef}
-              type="file"
-              accept=".cube"
-              className="sr-only"
-              onChange={(e) => {
-                const file = e.target.files?.[0] ?? null
-                handleLutFile(file)
-                // Allow re-selecting the same file
-                if (e.target) e.target.value = ''
-              }}
-            />
             <Button
               type="button"
               variant="outline"
               size="sm"
               className="w-full h-7 text-xs"
               disabled={lutUploading}
-              onClick={() => lutFileInputRef.current?.click()}
+              onClick={async () => {
+                const files = await pickFiles({ slug: 'video_fx:lut', accept: '.cube', description: 'LUT (.cube)' })
+                if (files?.[0]) handleLutFile(files[0])
+              }}
             >
               {lutUploading ? 'Uploading…' : lutName ? 'Choose another .cube' : 'Choose .cube file'}
             </Button>

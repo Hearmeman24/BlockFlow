@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { useSessionState } from '@/lib/use-session-state'
+import { pickFiles } from '@/lib/file-picker'
 import type { ImageRef } from '@/lib/image-ref'
 import {
   PORT_IMAGE,
@@ -165,7 +166,6 @@ function UploadImageBlock({
   // The useSessionState write is async; this ref is updated the instant the
   // upload promise resolves, so the pipeline runner sees consistent values.
   const resolvedRef = useRef<Record<string, UploadState>>({})
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const dragCounterRef = useRef(0)
 
@@ -280,7 +280,6 @@ function UploadImageBlock({
     setUploads({})
     inFlightRef.current = {}
     resolvedRef.current = {}
-    if (fileInputRef.current) fileInputRef.current.value = ''
   }, [setUploads])
 
   // Wait for every currently-known fingerprint's uploads to settle.
@@ -328,7 +327,10 @@ function UploadImageBlock({
     })
   })
 
-  const openFilePicker = () => fileInputRef.current?.click()
+  const openFilePicker = async () => {
+    const selected = await pickFiles({ slug: 'upload_image_to_tmpfiles', accept: 'image/*', multiple: true, description: 'Images' })
+    if (selected) addFiles(selected)
+  }
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -375,18 +377,6 @@ function UploadImageBlock({
 
   return (
     <div className="space-y-3">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        className="sr-only"
-        onChange={(e) => {
-          const selected = Array.from(e.target.files ?? [])
-          addFiles(selected)
-          if (fileInputRef.current) fileInputRef.current.value = ''
-        }}
-      />
 
       {files.length === 0 ? (
         <div

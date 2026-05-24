@@ -1,6 +1,7 @@
 'use client'
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { parseDirectorPromptsJson } from '@/lib/director-prompts-json'
+import { pickFiles } from '@/lib/file-picker'
 import type { LoraEntry } from '@/lib/types'
 
 interface Props {
@@ -14,17 +15,16 @@ interface Props {
 }
 
 export function DirectorLoadJsonButton({ onLoaded }: Props) {
-  const inputRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string>('')
 
-  const handleClick = () => {
+  const handleClick = async () => {
     setError('')
-    inputRef.current?.click()
-  }
-
-  const handleChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]
-    e.target.value = ''
+    const files = await pickFiles({
+      slug: 'director_load_json',
+      accept: '.json,application/json',
+      description: 'Director prompts JSON',
+    })
+    const f = files?.[0]
     if (!f) return
     let text: string
     try {
@@ -51,13 +51,6 @@ export function DirectorLoadJsonButton({ onLoaded }: Props) {
       >
         Load JSON
       </button>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".json,application/json"
-        onChange={handleChange}
-        className="hidden"
-      />
       {error && (
         <span className="text-[10px] text-red-400" role="alert">{error}</span>
       )}

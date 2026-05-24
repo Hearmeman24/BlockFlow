@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { pickFiles } from '@/lib/file-picker'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -55,8 +56,6 @@ function VideoLoaderBlock({
   const [uploadedMode, setUploadedMode] = useSessionState<UploadMode | ''>(`block_${blockId}_uploaded_mode`, '')
   const [previewUrl, setPreviewUrl] = useState('')
   const [hasMeta, setHasMeta] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
-
   const materializeVideoUrl = async (): Promise<string> => {
     if (!selectedFile && uploadedVideoUrl && uploadedMode === uploadMode) {
       return uploadedVideoUrl
@@ -114,7 +113,15 @@ function VideoLoaderBlock({
     })
   })
 
-  const openFilePicker = () => fileInputRef.current?.click()
+  const openFilePicker = async () => {
+    const files = await pickFiles({ slug: 'video_loader', accept: 'video/*', description: 'Videos' })
+    const file = files?.[0] ?? null
+    if (!file) return
+    onFileChanged(file).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      setStatusMessage(msg || 'Failed to read selected video')
+    })
+  }
 
   const clearSelection = () => {
     setSelectedFile(null)
@@ -122,7 +129,6 @@ function VideoLoaderBlock({
     setUploadedVideoUrl('')
     setUploadedVideoFingerprint('')
     setUploadedMode('')
-    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   const onFileChanged = async (file: File | null) => {
@@ -152,20 +158,6 @@ function VideoLoaderBlock({
 
   return (
     <div className="space-y-3">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="video/*"
-        className="sr-only"
-        onChange={(e) => {
-          const file = e.target.files?.[0] ?? null
-          onFileChanged(file).catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err)
-            setStatusMessage(msg || 'Failed to read selected video')
-          })
-        }}
-      />
-
       {/* Upload mode toggle */}
       <div className="flex items-center gap-1 rounded-md border border-border/60 p-0.5">
         <button

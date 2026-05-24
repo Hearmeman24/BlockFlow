@@ -9,6 +9,7 @@ import { AdaptiveImageFrame, AdaptiveVideoFrame } from '@/components/adaptive-me
 import { usePipelineTabs } from '@/lib/pipeline/tabs-context'
 import { deleteRun, toggleRunFavorite } from '@/lib/api'
 import type { RunEntry, BlockResult } from '@/lib/types'
+import { extractComfyGenPresetLabels } from '@/lib/runs/preset-labels'
 
 const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov', '.m4v', '.mkv', '.avi']
 const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.aac', '.m4a', '.ogg', '.flac']
@@ -614,6 +615,24 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
             </Badge>
           ))}
         </div>
+
+        {/* sgs-ui-10h: preset / workflow lineage row. One line per ComfyGen
+            block in the snapshot that had a workflow loaded (preset or
+            user-uploaded). Hidden entirely when no labels are available. */}
+        {(() => {
+          const presetLabels = extractComfyGenPresetLabels(run.flow_snapshot)
+          if (presetLabels.length === 0) return null
+          return (
+            <div className="space-y-0.5 text-[10px] text-muted-foreground">
+              {presetLabels.map((label, i) => (
+                <div key={i} className="truncate">
+                  <span className="font-medium text-foreground/80">Preset:</span>{' '}
+                  {label}
+                </div>
+              ))}
+            </div>
+          )
+        })()}
 
         {/* Expanded block outputs */}
         {expanded && (

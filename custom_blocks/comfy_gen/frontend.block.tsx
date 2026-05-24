@@ -2483,6 +2483,12 @@ export const blockDef: BlockDef = {
   configKeys: [
     'workflow',
     'workflow_name',
+    // sgs-ui-10h: persist the preset dropdown's current selection + the
+    // recommendations snapshot so Restore from the Artifacts page rehydrates
+    // the dropdown ("wan-animate · Replace Face") and the lightbulb tooltip,
+    // not just the workflow JSON.
+    'selected_preset',
+    'preset_recommendations',
     'load_nodes',
     'mappings',
     'ksamplers',

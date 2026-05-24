@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   collectAutoDetectedKeys,
+  extractWorkflowSettingDefaults,
   filterVisibleSettings,
   mergeSettingsOverrides,
   type AutoDetectSources,
@@ -152,5 +153,66 @@ describe('mergeSettingsOverrides', () => {
     const out = mergeSettingsOverrides(existing, [fps], { '417.force_rate': '8' })
     expect(existing).toEqual({ 'x.y': '1' })
     expect(out).not.toBe(existing)
+  })
+})
+
+describe('extractWorkflowSettingDefaults', () => {
+  const mask: WorkflowSetting = { node_id: '554', field: 'value', label: 'Mask Expansion', type: 'int' }
+  const fps: WorkflowSetting = { node_id: '417', field: 'force_rate', label: 'FPS', type: 'int' }
+
+  it('reads the literal value from the workflow JSON', () => {
+    const wf = JSON.stringify({
+      '554': { class_type: 'PrimitiveInt', inputs: { value: 150 } },
+    })
+    expect(extractWorkflowSettingDefaults(wf, [mask])).toEqual({ '554.value': '150' })
+  })
+
+  it('coerces booleans and floats to strings', () => {
+    const bool: WorkflowSetting = { node_id: '1', field: 'enabled', label: 'On', type: 'bool' }
+    const flt: WorkflowSetting = { node_id: '2', field: 'cfg', label: 'CFG', type: 'float' }
+    const wf = JSON.stringify({
+      '1': { inputs: { enabled: true } },
+      '2': { inputs: { cfg: 7.5 } },
+    })
+    expect(extractWorkflowSettingDefaults(wf, [bool, flt])).toEqual({
+      '1.enabled': 'true',
+      '2.cfg': '7.5',
+    })
+  })
+
+  it('skips fields whose value is wired from an upstream node (array form)', () => {
+    // Upstream-wired in ComfyUI API format is [nodeId, outputSlot] — not a
+    // direct value the user can edit inline.
+    const wf = JSON.stringify({
+      '457': { class_type: 'GrowMaskWithBlur', inputs: { expand: ['554', 0] } },
+    })
+    const expand: WorkflowSetting = { node_id: '457', field: 'expand', label: 'Expand', type: 'int' }
+    expect(extractWorkflowSettingDefaults(wf, [expand])).toEqual({})
+  })
+
+  it('skips settings whose node_id is missing from the workflow', () => {
+    const wf = JSON.stringify({ '999': { inputs: { value: 1 } } })
+    expect(extractWorkflowSettingDefaults(wf, [mask])).toEqual({})
+  })
+
+  it('skips settings whose field is missing from the node inputs', () => {
+    const wf = JSON.stringify({ '554': { inputs: { somethingElse: 7 } } })
+    expect(extractWorkflowSettingDefaults(wf, [mask])).toEqual({})
+  })
+
+  it('returns empty for empty / malformed JSON', () => {
+    expect(extractWorkflowSettingDefaults('', [mask])).toEqual({})
+    expect(extractWorkflowSettingDefaults('{not json', [mask])).toEqual({})
+  })
+
+  it('extracts multiple knobs in one pass', () => {
+    const wf = JSON.stringify({
+      '417': { inputs: { force_rate: 16, frame_load_cap: 81 } },
+      '554': { inputs: { value: 150 } },
+    })
+    expect(extractWorkflowSettingDefaults(wf, [mask, fps])).toEqual({
+      '554.value': '150',
+      '417.force_rate': '16',
+    })
   })
 })

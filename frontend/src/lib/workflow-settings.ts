@@ -54,6 +54,40 @@ export function collectAutoDetectedKeys(src: AutoDetectSources): Set<string> {
   return s
 }
 
+/**
+ * Read each declared knob's CURRENT value out of the loaded workflow JSON.
+ * Used to pre-populate the Workflow Settings inputs so the user sees what
+ * the preset ships with (e.g. wan-animate Replace Face: node 554 = 150),
+ * instead of an empty input that only says "Workflow default".
+ *
+ * Skips values that are wired upstream — those appear as `[node_id, slot]`
+ * tuples in the ComfyUI API format, not direct values, so the user can't
+ * edit them inline.
+ *
+ * Returns `{}` if the JSON is unparseable; safe to call with empty input.
+ */
+export function extractWorkflowSettingDefaults(
+  workflowJson: string,
+  settings: WorkflowSetting[],
+): Record<string, string> {
+  if (!workflowJson) return {}
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(workflowJson) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+  const out: Record<string, string> = {}
+  for (const s of settings) {
+    const node = parsed[s.node_id] as { inputs?: Record<string, unknown> } | undefined
+    const v = node?.inputs?.[s.field]
+    if (v === undefined || v === null || Array.isArray(v)) continue
+    if (typeof v === 'object') continue
+    out[`${s.node_id}.${s.field}`] = String(v)
+  }
+  return out
+}
+
 /** Drop entries already covered by an auto-detected panel (auto-detect wins). */
 export function filterVisibleSettings(
   settings: WorkflowSetting[],

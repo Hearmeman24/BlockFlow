@@ -60,6 +60,7 @@ import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockById, findBlockInTree } from '@/lib/pipeline/tree-utils'
 import {
   collectAutoDetectedKeys,
+  extractWorkflowSettingDefaults,
   filterVisibleSettings,
   mergeSettingsOverrides,
 } from '@/lib/workflow-settings'
@@ -1289,6 +1290,16 @@ function ComfyGenBlock({
     [workflowSettings, autoDetectedKeys],
   )
 
+  // sgs-ui-gb4: pull each declared knob's CURRENT value out of the loaded
+  // workflow JSON so the input renders pre-populated (e.g. wan-animate
+  // Replace Face ships node 554 = 150 → user sees "150" in the Mask
+  // Expansion input, not a blank field with only "Workflow default"
+  // placeholder text).
+  const workflowSettingDefaults = useMemo(
+    () => extractWorkflowSettingDefaults(workflowJson, workflowSettings),
+    [workflowJson, workflowSettings],
+  )
+
   // Active scope key for the per-(preset, workflow) override map. Empty when
   // no preset is selected → panel is hidden, so the key is irrelevant.
   const settingsScope = selectedPresetId
@@ -2387,6 +2398,13 @@ function ComfyGenBlock({
             const key = `${s.node_id}.${s.field}`
             const raw = workflowSettingsOverrides[key]
             const hasOverride = raw !== undefined && raw !== ''
+            // Pre-populate the input with the workflow JSON's current value
+            // when the user hasn't overridden yet, so the knob doesn't render
+            // blank for values the preset ships (e.g. wan-animate Replace
+            // Face's Mask Expansion = 150). Empty string means the workflow
+            // wires this from an upstream node — fall back to placeholder.
+            const defaultVal = workflowSettingDefaults[key] ?? ''
+            const display = hasOverride ? raw : defaultVal
             return (
               <div key={key} className="space-y-1">
                 <div className="flex items-center justify-between gap-2">
@@ -2405,13 +2423,13 @@ function ComfyGenBlock({
                 {s.type === 'bool' ? (
                   <input
                     type="checkbox"
-                    checked={raw === 'true'}
+                    checked={hasOverride ? raw === 'true' : defaultVal === 'true'}
                     onChange={(e) => setWorkflowSettingsOverride(key, e.target.checked ? 'true' : 'false')}
                     className="h-4 w-4 accent-blue-600"
                   />
                 ) : s.type === 'combo' ? (
                   <Select
-                    value={raw ?? ''}
+                    value={display}
                     onValueChange={(v) => setWorkflowSettingsOverride(key, v)}
                   >
                     <SelectTrigger className="h-7 text-xs">
@@ -2426,7 +2444,7 @@ function ComfyGenBlock({
                 ) : s.type === 'int' || s.type === 'float' ? (
                   <Input
                     type="number"
-                    value={raw ?? ''}
+                    value={display}
                     onChange={(e) => setWorkflowSettingsOverride(key, e.target.value)}
                     placeholder="Workflow default"
                     min={s.min}
@@ -2436,7 +2454,7 @@ function ComfyGenBlock({
                   />
                 ) : (
                   <Input
-                    value={raw ?? ''}
+                    value={display}
                     onChange={(e) => setWorkflowSettingsOverride(key, e.target.value)}
                     placeholder="Workflow default"
                     className="h-7 text-xs"

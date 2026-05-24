@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import {
+  cancelInstall,
   getInstallProgress,
   getPresetManifest,
   installPreset,
@@ -49,16 +50,18 @@ export function PresetsPageBody() {
     refresh()
   }, [refresh])
 
-  // Poll install progress while a job is active
+  // Poll install progress while a job is active. sgs-ui-8ww: 'cancelling'
+  // is an in-flight state too — we keep polling until the runner lands on
+  // a terminal state (completed | error | cancelled).
   useEffect(() => {
-    if (!progress || progress.state === 'idle' || progress.state === 'completed' || progress.state === 'error') {
+    if (!progress || ['idle', 'completed', 'error', 'cancelled'].includes(progress.state)) {
       return
     }
     const interval = setInterval(async () => {
       try {
         const p = await getInstallProgress()
         setProgress(p)
-        if (p.state === 'completed' || p.state === 'error') {
+        if (['completed', 'error', 'cancelled'].includes(p.state)) {
           // Refresh the installed list so the new preset appears (or didn't)
           await refresh()
         }
@@ -141,7 +144,12 @@ export function PresetsPageBody() {
       )}
 
       {progress && progress.state !== 'idle' && (
-        <InstallProgressCard progress={progress} />
+        <InstallProgressCard
+          progress={progress}
+          onCancel={async () => {
+            try { await cancelInstall() } catch { /* tolerate 409 race */ }
+          }}
+        />
       )}
 
       {actionErr && (
@@ -176,44 +184,112 @@ export function PresetsPageBody() {
   )
 }
 
-function InstallProgressCard({ progress }: { progress: InstallProgress }) {
+function InstallProgressCard({
+  progress,
+  onCancel,
+}: {
+  progress: InstallProgress
+  onCancel: () => Promise<void>
+}) {
   const cached = progress.cached_count ?? 0
   const missing = progress.missing_count ?? 0
-  const stale = progress.stale_count ?? 0
   const downloadGB = progress.total_download_bytes
     ? (progress.total_download_bytes / 1024 ** 3).toFixed(1)
     : null
-  const hashRan = cached + missing + stale > 0
+  const filesDone = progress.files_done ?? 0
+  const filesTotal = progress.files_total
+  const files = progress.files ?? []
+  const isActive = progress.state === 'queued' || progress.state === 'running'
+  const cancelling = progress.state === 'cancelling'
+
+  const headline =
+    progress.state === 'completed' ? '✓ Install complete'
+    : progress.state === 'error'   ? '✗ Install failed'
+    : progress.state === 'cancelled' ? '⏹ Install cancelled'
+    : cancelling                    ? `Cancelling ${progress.preset_id}…`
+    : `Installing ${progress.preset_id}…`
+
   return (
     <article className="rounded border border-primary/30 bg-primary/5 p-4 space-y-2">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold">
-          {progress.state === 'completed'
-            ? '✓ Install complete'
-            : progress.state === 'error'
-              ? '✗ Install failed'
-              : `Installing ${progress.preset_id}…`}
-        </h2>
-        <span className="text-xs font-mono text-muted-foreground">{progress.state}</span>
+        <h2 className="text-sm font-semibold">{headline}</h2>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-mono text-muted-foreground">{progress.state}</span>
+          {isActive && (
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded border border-destructive/50 px-2 py-0.5 text-[10px] font-mono uppercase text-destructive hover:bg-destructive/10"
+            >
+              cancel
+            </button>
+          )}
+        </div>
       </div>
       <p className="text-xs text-muted-foreground">
-        {progress.files_total} file(s) total · started {progress.started_at}
+        {filesDone}/{filesTotal} file(s) · started {progress.started_at}
       </p>
-      {hashRan && (
+      {(cached > 0 || missing > 0 || downloadGB) && (
         <p className="text-xs text-muted-foreground">
-          {cached} cached
-          {missing > 0 && ` · ${missing} to download`}
-          {stale > 0 && ` · ${stale} stale (will be replaced)`}
-          {downloadGB && ` · ~${downloadGB} GB`}
+          {cached > 0 && `${cached} cached`}
+          {missing > 0 && `${cached > 0 ? ' · ' : ''}${missing} downloading`}
+          {downloadGB && ` · ~${downloadGB} GB total`}
         </p>
       )}
+      {files.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {files.map((f) => (
+            <li key={f.index} className="space-y-0.5">
+              <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
+                <span className="truncate text-muted-foreground" title={f.path ?? ''}>
+                  {f.path ? f.path.split('/').slice(-2).join('/') : `file ${f.index}`}
+                </span>
+                <span className="shrink-0 text-muted-foreground">
+                  {f.cached ? (
+                    <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-500">cached</span>
+                  ) : f.status === 'done' ? (
+                    <span className="text-emerald-500">100%</span>
+                  ) : f.status === 'downloading' ? (
+                    <span>
+                      {f.percent.toFixed(0)}%
+                      {f.speed && <span className="ml-1 text-muted-foreground/70">{f.speed}</span>}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground/50">queued</span>
+                  )}
+                </span>
+              </div>
+              {!f.cached && f.status !== 'pending' && (
+                <div className="h-1 w-full overflow-hidden rounded bg-muted">
+                  <div
+                    className="h-full bg-primary transition-all"
+                    style={{ width: `${Math.min(100, Math.max(0, f.percent))}%` }}
+                  />
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       {progress.log_tail && progress.state !== 'completed' && (
-        <pre className="mt-1 max-h-44 overflow-y-auto rounded bg-muted/30 px-2 py-1.5 font-mono text-[10px] leading-snug text-muted-foreground whitespace-pre-wrap break-all">
+        <pre className="mt-1 max-h-32 overflow-y-auto rounded bg-muted/30 px-2 py-1.5 font-mono text-[10px] leading-snug text-muted-foreground whitespace-pre-wrap break-all">
           {progress.log_tail}
         </pre>
       )}
       {progress.error && (
         <p className="text-xs text-destructive whitespace-pre-wrap">{progress.error}</p>
+      )}
+      {progress.state === 'error' && progress.pod_id && (
+        <p className="text-xs">
+          <a
+            href={`https://console.runpod.io/pods?id=${progress.pod_id}`}
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary hover:underline"
+          >
+            View pod logs ↗
+          </a>
+        </p>
       )}
     </article>
   )

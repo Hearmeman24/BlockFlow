@@ -385,22 +385,42 @@ export type DiskBudget = {
   free_estimate_gb: number | null
 }
 
+// sgs-ui-8ww: one row per model file, driven by the install-preset CLI's
+// download_start / download_progress / download_done event stream.
+export type InstallFile = {
+  index: number
+  path: string | null
+  status: 'pending' | 'downloading' | 'done'
+  percent: number
+  speed: string | null
+  cached: boolean
+  bytes?: number | null
+  sha256?: string | null
+}
+
 export type InstallProgress = {
-  state: 'idle' | 'queued' | 'running' | 'completed' | 'error'
+  // sgs-ui-8ww: 'cancelling' / 'cancelled' added to support the new
+  // SIGINT-based cancel route.
+  state: 'idle' | 'queued' | 'running' | 'completed' | 'error' | 'cancelling' | 'cancelled'
   preset_id: string | null
   started_at: string | null
   completed_at: string | null
   files_total: number
+  // sgs-ui-8ww: increments per download_done event.
+  files_done?: number
   error: string | null
-  // sgs-ui-zr0: hash pre-flight classification. Surfaces after the install
-  // handler runs `comfy-gen hash --batch`; all-zero until then.
+  // sgs-ui-8ww: cached_count/missing_count now derive from
+  // download_done.cached; stale_count is always 0 (CLI handles eviction).
   cached_count?: number
   missing_count?: number
   stale_count?: number
   total_download_bytes?: number
-  // sgs-ui-hh9: rolling tail of the current subprocess's stderr (last ~30
-  // lines). Updated live by the pump thread so the UI can render a log
-  // block while the install is mid-flight.
+  // sgs-ui-8ww: per-file progress entries from preflight_ok + download_*.
+  files?: InstallFile[]
+  // sgs-ui-8ww: installer pod id from pod_spawned. Lets the UI link to
+  // RunPod console logs when state ends in error.
+  pod_id?: string | null
+  // Rolling tail of the subprocess's stderr (~30 lines).
   log_tail?: string
 }
 
@@ -430,6 +450,15 @@ export async function getInstallProgress(): Promise<InstallProgress> {
   const res = await fetch('/api/presets/install/progress', { method: 'GET' })
   await _throwIfNonOk(res)
   return (await res.json()) as InstallProgress
+}
+
+// sgs-ui-8ww: SIGINT the running install-preset subprocess. Backend flips
+// state to 'cancelling' immediately; the runner will land on 'cancelled'
+// once the subprocess exits (≤30s via the watchdog).
+export async function cancelInstall(): Promise<{ ok: boolean; state: string; preset_id: string | null }> {
+  const res = await fetch('/api/presets/install/cancel', { method: 'POST' })
+  await _throwIfNonOk(res)
+  return res.json()
 }
 
 export type UninstallResult = {

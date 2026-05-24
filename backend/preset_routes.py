@@ -30,6 +30,7 @@ Install flow (Stage B):
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 import tempfile
 import threading
@@ -180,27 +181,48 @@ class InstallBody(BaseModel):
     preset_id: str = Field(..., min_length=1)
 
 
-# Module-level install state (single-install-at-a-time per .3 design call)
+# Module-level install state (single-install-at-a-time per .3 design call).
+# sgs-ui-8ww: state machine extended for the new install-preset CLI flow:
+# events drive `files`, `files_done`, `pod_id`; `state` now includes
+# "cancelling" / "cancelled".
 _install_state: dict[str, Any] = {
-    "state": "idle",        # "idle" | "queued" | "running" | "completed" | "error"
+    # "idle" | "queued" | "running" | "completed" | "error"
+    #   | "cancelling" | "cancelled"
+    "state": "idle",
     "preset_id": None,
     "started_at": None,
     "completed_at": None,
     "files_total": 0,
+    "files_done": 0,
     "error": None,
-    # sgs-ui-zr0: hash pre-flight classification (None until the hash phase
-    # runs; non-None means /progress can show the cached/download breakdown)
+    # sgs-ui-8ww: classification counts are derived live from
+    # download_done.cached — `stale_count` retained for the
+    # response shape but always zero now (CLI handles eviction internally).
     "cached_count": 0,
     "missing_count": 0,
     "stale_count": 0,
     "total_download_bytes": 0,
+    # sgs-ui-8ww: per-file progress entries built from preflight_ok and the
+    # download_* event stream. Shape:
+    # [{index, path, status: pending|downloading|done, percent, speed,
+    #   cached, bytes, sha256}]
+    "files": [],
+    # sgs-ui-8ww: pod_id from pod_spawned. Surfaces "View pod logs ↗" in
+    # the UI when state ends in error.
+    "pod_id": None,
     # sgs-ui-hh9: rolling tail (last ~30 lines) of the current subprocess's
-    # stderr. Updated live by _run_comfy_gen_capture's pump thread so
-    # /api/presets/install/progress can render a live log block while the
-    # install is mid-flight.
+    # stderr. Used to be the live UI feed for log lines; under the new CLI
+    # stdout carries structured events, so this tail is primarily for
+    # diagnostic stderr noise from the CLI itself.
     "log_tail": "",
 }
 _install_lock = threading.Lock()
+# sgs-ui-8ww: handle on the running `comfy-gen install-preset` subprocess
+# so the cancel route can SIGINT it. None when no install is in flight.
+_install_proc: dict[str, subprocess.Popen | None] = {"proc": None}
+# sgs-ui-8ww: per-endpoint network-volume cache so the install handler
+# doesn't query RunPod's REST API once per click.
+_volume_cache: dict[str, str] = {}
 
 # How many lines of stderr to keep in _install_state["log_tail"]. ~30 lines
 # fits a small UI panel; bigger inflates /progress responses unnecessarily.
@@ -215,13 +237,18 @@ def _reset_install_state() -> None:
         "started_at": None,
         "completed_at": None,
         "files_total": 0,
+        "files_done": 0,
         "error": None,
         "cached_count": 0,
         "missing_count": 0,
         "stale_count": 0,
         "total_download_bytes": 0,
+        "files": [],
+        "pod_id": None,
         "log_tail": "",
     })
+    _install_proc["proc"] = None
+    _volume_cache.clear()
 
 
 def _now_iso() -> str:
@@ -295,13 +322,6 @@ def _compute_disk_budget() -> dict[str, Any]:
 @router.get("/api/presets/disk-budget")
 def disk_budget() -> JSONResponse:
     return JSONResponse(_compute_disk_budget())
-
-
-def _canonical_path_for_entry(entry: dict) -> str:
-    """Build the /runpod-volume path comfy-gen writes each file to. The
-    dest+filename split mirrors what the worker's download_handler reassembles
-    when deciding cache hits."""
-    return f"/runpod-volume/ComfyUI/models/{entry['dest']}/{entry['filename']}"
 
 
 def _run_comfy_gen_capture(
@@ -382,56 +402,40 @@ def _run_comfy_gen_capture(
     return returncode, "".join(stdout_chunks), "".join(stderr_tail)
 
 
-def _hash_existing(
-    canonical_paths: list[str],
-    *,
-    endpoint_id: str,
-    log_fp,
-) -> dict[str, dict | None]:
-    """Call `comfy-gen hash --batch <paths>` and parse the response into
-    {path: {sha256, bytes} or None on error/missing}.
+def _resolve_volume_for_endpoint(api_key: str, endpoint_id: str) -> str:
+    """Look up the network volume attached to a RunPod endpoint via one
+    REST call, cache per-endpoint so retries don't re-query.
 
-    Returns an empty dict if the hash subprocess fails — the install handler
-    treats that as 'fall back to download everything', not as a hard error.
+    Raises HTTPException(400) when the endpoint has no volume attached —
+    the new installer can't write without one, and silently failing later
+    in the CLI subprocess is a worse UX than failing fast here.
     """
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False, encoding="utf-8"
-    ) as tf:
-        json.dump(canonical_paths, tf)
-        paths_file = tf.name
-    try:
-        rc, stdout, stderr = _run_comfy_gen_capture(
-            [
-                "comfy-gen", "hash",
-                "--batch", paths_file,
-                "--endpoint-id", endpoint_id,
-                "--timeout", "600",
-            ],
-            log_fp=log_fp,
-            label="hash",
-            timeout=660,
+    cached = _volume_cache.get(endpoint_id)
+    if cached:
+        return cached
+    data = runpod_api._rest_get(api_key, f"/endpoints/{endpoint_id}")
+    # RunPod's REST shape: volume id sits at the top level on the endpoint
+    # object as `networkVolumeId`. Older accounts surface it nested under
+    # `workersConfig` / `template`; check both before giving up.
+    vol = data.get("networkVolumeId")
+    if not vol:
+        wc = data.get("workersConfig")
+        if isinstance(wc, dict):
+            vol = wc.get("networkVolumeId")
+    if not vol:
+        tpl = data.get("template")
+        if isinstance(tpl, dict):
+            vol = tpl.get("networkVolumeId")
+    if not vol:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"endpoint {endpoint_id} has no network volume attached — "
+                "attach one before installing presets."
+            ),
         )
-        if rc != 0:
-            log_fp.write(f"\n[hash] FAILED rc={rc} (treating as 'all missing'): {stderr[-500:]}\n")
-            return {}
-        try:
-            payload = json.loads(stdout)
-        except json.JSONDecodeError:
-            log_fp.write("\n[hash] stdout not valid JSON (treating as 'all missing')\n")
-            return {}
-        results: dict[str, dict | None] = {}
-        for entry in payload.get("files", []):
-            path = entry.get("path")
-            if not path:
-                continue
-            sha = entry.get("sha256")
-            results[path] = {"sha256": sha, "bytes": entry.get("bytes")} if sha else None
-        return results
-    finally:
-        try:
-            Path(paths_file).unlink(missing_ok=True)
-        except OSError:
-            pass
+    _volume_cache[endpoint_id] = vol
+    return vol
 
 
 def _delete_paths(
@@ -474,107 +478,197 @@ def _delete_paths(
             pass
 
 
+# sgs-ui-8ww: cost recorded against every CPU-installer install. ComfyGen's
+# install-preset spawns the cheapest available cpu3c/5c/3g/5g sku; all four
+# are billed at $0.06/hr. If the CLI ever exposes the actual selected sku we
+# can persist that instead.
+_CPU_INSTALLER_COST_PER_HR = 0.06
+
+
+def _process_install_event(evt: dict) -> dict | None:
+    """Apply one SSE event to _install_state. Returns the event itself if
+    it's terminal (install_done / install_error / preflight_fail), else None.
+    """
+    etype = evt.get("type")
+    if etype == "pod_spawned":
+        _install_state["pod_id"] = evt.get("pod_id")
+    elif etype == "preflight_ok":
+        total = int(evt.get("models_count") or 0)
+        _install_state["files_total"] = total
+        _install_state["total_download_bytes"] = int(evt.get("total_bytes") or 0)
+        _install_state["files"] = [
+            {"index": i, "path": None, "status": "pending",
+             "percent": 0.0, "speed": None, "cached": False,
+             "bytes": None, "sha256": None}
+            for i in range(total)
+        ]
+    elif etype == "download_start":
+        i = int(evt.get("file_index") or 0)
+        files = _install_state["files"]
+        if 0 <= i < len(files):
+            files[i]["path"] = evt.get("file") or files[i]["path"]
+            files[i]["status"] = "downloading"
+    elif etype == "download_progress":
+        i = int(evt.get("file_index") or 0)
+        files = _install_state["files"]
+        if 0 <= i < len(files):
+            files[i]["percent"] = float(evt.get("percent") or 0.0)
+            files[i]["speed"] = evt.get("speed")
+            if evt.get("file"):
+                files[i]["path"] = evt["file"]
+    elif etype == "download_done":
+        i = int(evt.get("file_index") or 0)
+        files = _install_state["files"]
+        if 0 <= i < len(files):
+            files[i]["status"] = "done"
+            files[i]["percent"] = 100.0
+            if evt.get("file"):
+                files[i]["path"] = evt["file"]
+            files[i]["cached"] = bool(evt.get("cached"))
+            files[i]["bytes"] = evt.get("bytes")
+            files[i]["sha256"] = evt.get("sha256")
+        if evt.get("cached"):
+            _install_state["cached_count"] += 1
+        else:
+            _install_state["missing_count"] += 1
+        _install_state["files_done"] += 1
+    elif etype in ("install_done", "install_error", "preflight_fail"):
+        return evt
+    return None
+
+
 def _run_install_subprocess(
     *,
     preset_id: str,
     version: str,
     disk_size_gb: int,
     workflow_json_str: str,
-    batch_spec: list[dict],
-    endpoint_id: str,
+    volume_id: str,
+    canonical_paths: list[str],
+    civitai_token: str | None,
+    hf_token: str | None,
 ) -> None:
-    """Background worker. Hashes the canonical paths first, classifies each
-    entry as cached / missing / stale, deletes stale bytes, downloads only
-    what's actually needed, then persists Settings on success."""
-    canonical_paths = [_canonical_path_for_entry(e) for e in batch_spec]
+    """Background worker. Spawn `comfy-gen install-preset`, drive
+    _install_state from its line-delimited JSON event stream on stdout, and
+    persist Settings if and only if install_done.ok is true.
+
+    Stderr is teed to preset_install.log AND to a rolling tail in
+    _install_state["log_tail"] for the live UI feed.
+    """
     log_path = config.ROOT_DIR / "preset_install.log"
     log_fp = log_path.open("a", buffering=1)
-    log_fp.write(f"\n\n=== {_now_iso()} preset={preset_id} START ===\n")
-    download_batch_path: str | None = None
+    log_fp.write(f"\n\n=== {_now_iso()} preset={preset_id} START (install-preset CLI) ===\n")
+
+    args = [
+        "comfy-gen", "install-preset",
+        "--preset-id", preset_id,
+        "--volume-id", volume_id,
+    ]
+    if civitai_token:
+        args += ["--civitai-token", civitai_token]
+    if hf_token:
+        args += ["--hf-token", hf_token]
+
+    terminal: dict = {}
+    proc: subprocess.Popen | None = None
     try:
-        # === phase 1: hash pre-flight (sgs-ui-zr0) =========================
-        # Ask the worker for the sha256 of each canonical path. Missing
-        # files come back with null hash; mismatched files come back with a
-        # hash that doesn't match preset.json's expected value.
-        hash_results = _hash_existing(canonical_paths, endpoint_id=endpoint_id, log_fp=log_fp)
-
-        cached: list[str] = []
-        missing: list[tuple[dict, str, int]] = []   # (entry, path, expected_bytes)
-        stale: list[tuple[dict, str, int]] = []
-        for entry, path in zip(batch_spec, canonical_paths):
-            actual = hash_results.get(path) if hash_results else None
-            expected_sha = entry.get("sha256")
-            expected_bytes = int(entry.get("_expected_bytes") or 0)
-            if hash_results and actual and expected_sha and actual["sha256"] == expected_sha:
-                cached.append(path)
-            elif hash_results and actual:
-                # file present, but sha mismatch → stale
-                stale.append((entry, path, expected_bytes))
-            else:
-                # file absent OR hash failed (fall back to "submit")
-                missing.append((entry, path, expected_bytes))
-
-        _install_state.update({
-            "cached_count": len(cached),
-            "missing_count": len(missing),
-            "stale_count": len(stale),
-            "total_download_bytes": sum(b for _, _, b in missing) + sum(b for _, _, b in stale),
-        })
-
-        # === phase 2: evict stale bytes (sgs-ui-i7j) =======================
-        if stale:
-            stale_paths = [p for _, p, _ in stale]
-            log_fp.write(f"\n[install] {len(stale)} stale file(s) to delete: {stale_paths}\n")
-            del_result = _delete_paths(stale_paths, endpoint_id=endpoint_id, log_fp=log_fp)
-            if not del_result.get("ok"):
-                _install_state.update({
-                    "state": "error",
-                    "completed_at": _now_iso(),
-                    "error": f"failed to delete stale files: {del_result.get('error', 'unknown')}",
-                })
-                return
-
-        # === phase 3: download missing + stale =============================
-        reduced_batch = [_strip_internal_fields(e) for e, _, _ in missing + stale]
-        if reduced_batch:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".json", delete=False, encoding="utf-8"
-            ) as tf:
-                json.dump(reduced_batch, tf)
-                download_batch_path = tf.name
-
-            rc, _stdout, stderr_tail = _run_comfy_gen_capture(
-                [
-                    "comfy-gen", "download",
-                    "--batch", download_batch_path,
-                    "--endpoint-id", endpoint_id,
-                    "--timeout", "3600",
-                ],
-                log_fp=log_fp,
-                label="download",
-                timeout=3600 + 60,
-            )
-            if rc != 0:
-                err = (stderr_tail or "comfy-gen download failed").strip()
-                _install_state.update({
-                    "state": "error",
-                    "completed_at": _now_iso(),
-                    "error": err[-3000:] if len(err) > 3000 else err,
-                })
-                return
-
-        # === phase 4: persist ==============================================
-        settings_store.record_installed_preset(
-            preset_id=preset_id,
-            version=version,
-            disk_size_gb=disk_size_gb,
-            workflow_json=workflow_json_str,
-            installed_paths=canonical_paths,
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
         )
+        _install_proc["proc"] = proc
+
+        stderr_tail: deque[str] = deque(maxlen=_LOG_TAIL_MAXLEN)
+
+        def _pump_stderr() -> None:
+            assert proc is not None and proc.stderr is not None
+            try:
+                for line in iter(proc.stderr.readline, ""):
+                    stderr_tail.append(line)
+                    _install_state["log_tail"] = "".join(stderr_tail)
+                    log_fp.write("[stderr] " + line)
+            except (ValueError, OSError):
+                pass
+
+        t_err = threading.Thread(target=_pump_stderr, daemon=True)
+        t_err.start()
+
+        assert proc.stdout is not None
+        for line in iter(proc.stdout.readline, ""):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                evt = json.loads(stripped)
+            except json.JSONDecodeError:
+                log_fp.write(f"[install] non-JSON stdout line: {stripped[:200]}\n")
+                continue
+            log_fp.write(stripped + "\n")
+            maybe_terminal = _process_install_event(evt)
+            if maybe_terminal is not None:
+                terminal = maybe_terminal
+
+        rc = proc.wait(timeout=60)
+        try:
+            proc.stderr.close()  # type: ignore[union-attr]
+        except (OSError, ValueError):
+            pass
+        t_err.join(timeout=5)
+
+        # Cancellation takes precedence over the terminal event — the CLI
+        # may have emitted install_error("cancelled") just before exit, but
+        # the state machine should reflect "cancelled" specifically.
+        if _install_state["state"] == "cancelling":
+            _install_state.update({
+                "state": "cancelled",
+                "completed_at": _now_iso(),
+                "error": "install cancelled by user",
+            })
+            return
+
+        if terminal.get("type") == "install_done" and terminal.get("ok"):
+            # The CLI's download_done.file is a basename / partial path; we
+            # persist the full canonical paths computed from preset.models
+            # so uninstall can hand them to `comfy-gen delete`.
+            installed_paths = canonical_paths
+            settings_store.record_installed_preset(
+                preset_id=preset_id,
+                version=version,
+                disk_size_gb=disk_size_gb,
+                workflow_json=workflow_json_str,
+                installed_paths=installed_paths,
+                pod_id=_install_state.get("pod_id"),
+                install_mode="cpu",
+                cost_per_hr_at_spawn=_CPU_INSTALLER_COST_PER_HR,
+            )
+            _install_state.update({
+                "state": "completed",
+                "completed_at": _now_iso(),
+                "error": None,
+            })
+            return
+
+        # Failure paths.
+        if terminal.get("type") == "preflight_fail":
+            err = f"preflight failed: {terminal.get('reason') or 'unknown'}"
+        elif terminal.get("type") == "install_error":
+            stage = terminal.get("stage") or "?"
+            err = f"install error at {stage}: {terminal.get('reason') or 'unknown'}"
+        elif terminal:
+            err = f"unexpected terminal event: {terminal}"
+        else:
+            tail_hint = ("".join(stderr_tail).strip()[-400:]
+                         if stderr_tail else "")
+            err = f"subprocess exited rc={rc} with no terminal event"
+            if tail_hint:
+                err += f" — stderr tail: {tail_hint}"
         _install_state.update({
-            "state": "completed",
+            "state": "error",
             "completed_at": _now_iso(),
-            "error": None,
+            "error": err[:3000],
         })
 
     except Exception as exc:
@@ -584,20 +678,13 @@ def _run_install_subprocess(
             "error": str(exc)[:2000],
         })
     finally:
-        log_fp.write(f"\n=== {_now_iso()} preset={preset_id} state={_install_state['state']} ===\n")
+        log_fp.write(
+            f"\n=== {_now_iso()} preset={preset_id} "
+            f"state={_install_state['state']} ===\n"
+        )
         log_fp.flush()
         log_fp.close()
-        if download_batch_path:
-            try:
-                Path(download_batch_path).unlink(missing_ok=True)
-            except OSError:
-                pass
-
-
-def _strip_internal_fields(entry: dict) -> dict:
-    """Drop underscore-prefixed fields before writing the comfy-gen download
-    spec. The CLI doesn't tolerate unknown fields cleanly."""
-    return {k: v for k, v in entry.items() if not k.startswith("_")}
+        _install_proc["proc"] = None
 
 
 def _fetch_workflows_for_preset(preset: dict) -> list[dict]:
@@ -720,6 +807,10 @@ def _normalize_stored_recommendations(raw: str | None) -> dict:
 
 @router.post("/api/presets/install")
 def install_preset(body: InstallBody) -> JSONResponse:
+    """sgs-ui-8ww: shell out to `comfy-gen install-preset` which spawns a
+    CPU installer pod, does its own preflight, and streams JSON events
+    back. BlockFlow just resolves the volume_id, fetches the workflows for
+    the local dropdown, and drives the subprocess."""
     api_key = settings_store.get_credential("runpod_api_key")
     if not api_key:
         raise HTTPException(status_code=400, detail="runpod_api_key not configured in Settings")
@@ -735,7 +826,10 @@ def install_preset(body: InstallBody) -> JSONResponse:
     if entry is None:
         raise HTTPException(status_code=404, detail=f"preset '{body.preset_id}' not in registry manifest")
 
-    # Fetch full preset detail (models + workflow URL)
+    # Fetch full preset detail. The CLI re-resolves the preset itself
+    # against the registry, but BlockFlow still needs the workflows (cached
+    # for the ComfyGen block dropdown) and the version/disk_size fields
+    # for the Settings row.
     try:
         detail_resp = _cffi_requests.get(entry["preset_url"], timeout=_HTTP_TIMEOUT_SEC)
         if detail_resp.status_code >= 400:
@@ -744,91 +838,70 @@ def install_preset(body: InstallBody) -> JSONResponse:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"could not fetch preset detail: {exc}") from exc
 
-    # Disk pre-check (best-effort; RunPod knows volume size, Settings knows
-    # what we've already installed — see _compute_disk_budget).
-    budget = _compute_disk_budget()
-    need_gb = preset.get("disk_size_estimate_gb", 0)
-    free_est = budget.get("free_estimate_gb")
-    if free_est is not None and need_gb > free_est:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"insufficient disk: preset needs {need_gb} GB, "
-                f"~{free_est} GB free on the ComfyGen volume "
-                f"(total {budget['total_gb']} GB, est. used {budget['used_estimate_gb']} GB). "
-                "Uninstall presets or resize the volume."
-            ),
+    # Resolve which network volume the endpoint writes to. install-preset
+    # requires --volume-id; we derive it from the endpoint config rather
+    # than asking the user to type it again.
+    if ep.get("volume_id"):
+        volume_id = ep["volume_id"]
+    else:
+        # Fall back to the REST API — older endpoints persisted without
+        # volume_id in Settings.
+        try:
+            volume_id = _resolve_volume_for_endpoint(api_key, ep["endpoint_id"])
+        except HTTPException:
+            raise
+        except runpod_api.RunPodAPIError as exc:
+            raise HTTPException(status_code=502, detail=f"could not resolve network volume: {exc}") from exc
+
+    workflows = _fetch_workflows_for_preset(preset)
+    stored_blob = {
+        "workflows": workflows,
+        "recommendations": _extract_recommendations(preset),
+    }
+
+    # Compute canonical /runpod-volume paths from preset.models — the CLI
+    # writes each model to /runpod-volume/ComfyUI/models/<dest>; we need
+    # the full paths persisted so uninstall can pass them to
+    # `comfy-gen delete --batch`. The CLI's download_done.file event field
+    # is a display name only.
+    canonical_paths: list[str] = []
+    for m in preset.get("models", []) or []:
+        dest = m.get("dest") or ""
+        if "/" in dest:
+            subfolder, filename = dest.split("/", 1)
+        else:
+            subfolder, filename = "checkpoints", dest
+        canonical_paths.append(
+            f"/runpod-volume/ComfyUI/models/{subfolder}/{filename}"
         )
 
-    # Concurrency: one install at a time
     with _install_lock:
-        if _install_state["state"] in ("queued", "running"):
+        if _install_state["state"] in ("queued", "running", "cancelling"):
             raise HTTPException(
                 status_code=409,
                 detail=f"another install is in progress: {_install_state['preset_id']}",
             )
-        # Build the comfy-gen batch download spec from preset.models
-        batch_spec: list[dict[str, Any]] = []
-        for m in preset.get("models", []):
-            dest = m.get("dest", "")
-            # dest is in the form "subfolder/filename" — comfy-gen wants them
-            # split: --dest <subfolder>, --filename <filename>. Batch entries
-            # use the same {dest, filename} shape.
-            if "/" in dest:
-                subfolder, filename = dest.split("/", 1)
-            else:
-                subfolder, filename = "checkpoints", dest
-            entry = {
-                "source": m.get("source", "url") if m.get("source") in ("civitai", "url") else "url",
-                "url": m["url"],
-                "dest": subfolder,
-                "filename": filename,
-            }
-            # Forward the preset's expected sha256 so the worker's
-            # download_handler can do content-addressable dedup (skip aria2c
-            # when a file at the target path already hashes to this value).
-            if m.get("sha256"):
-                entry["sha256"] = m["sha256"]
-            # zr0: stash the expected byte size on the entry so the hash
-            # pre-flight can compute total_download_bytes for the UI. The
-            # underscore prefix marks it as not-for-the-CLI; _strip_internal_fields
-            # drops it before the spec is written.
-            size_gb = m.get("size_gb")
-            if size_gb is not None:
-                entry["_expected_bytes"] = int(float(size_gb) * (1024 ** 3))
-            batch_spec.append(entry)
-
-        # Fetch each workflow JSON (inline or URL) so they're cached locally
-        # for the ComfyGen block dropdown to apply later. Multiple workflows
-        # per preset is the canonical shape (sgs-ui-chf); the list keeps the
-        # author-supplied display names ('I2V', 'V2V', 'Default', etc.).
-        workflows = _fetch_workflows_for_preset(preset)
-        # sgs-ui-fmy: wrap workflows + author recommendations into a single
-        # blob so both land atomically in the same workflow_json column on
-        # install. The detail endpoint unpacks back into two fields.
-        stored_blob = {
-            "workflows": workflows,
-            "recommendations": _extract_recommendations(preset),
-        }
-
         _install_state.update({
             "state": "queued",
             "preset_id": body.preset_id,
             "started_at": _now_iso(),
             "completed_at": None,
-            "files_total": len(batch_spec),
+            # CLI's preflight_ok overwrites this with the authoritative count.
+            "files_total": len(preset.get("models", []) or []),
+            "files_done": 0,
             "error": None,
-            # sgs-ui-hh9: clear the rolling stderr tail so a prior install's
-            # log doesn't bleed into this run's /progress display.
             "log_tail": "",
             "cached_count": 0,
             "missing_count": 0,
             "stale_count": 0,
             "total_download_bytes": 0,
+            "files": [],
+            "pod_id": None,
         })
 
-    # Kick off the subprocess in a daemon thread so the HTTP response
-    # returns immediately.
+    civitai_token = settings_store.get_credential("civitai_token")
+    hf_token = settings_store.get_credential("hf_token")
+
     def _runner() -> None:
         _install_state["state"] = "running"
         _run_install_subprocess(
@@ -836,8 +909,10 @@ def install_preset(body: InstallBody) -> JSONResponse:
             version=preset.get("comfygen_min_version", "0.0.0"),
             disk_size_gb=preset.get("disk_size_estimate_gb", 0),
             workflow_json_str=json.dumps(stored_blob),
-            batch_spec=batch_spec,
-            endpoint_id=ep["endpoint_id"],
+            volume_id=volume_id,
+            canonical_paths=canonical_paths,
+            civitai_token=civitai_token,
+            hf_token=hf_token,
         )
 
     threading.Thread(target=_runner, daemon=True).start()
@@ -856,6 +931,42 @@ def install_preset(body: InstallBody) -> JSONResponse:
 @router.get("/api/presets/install/progress")
 def install_progress() -> JSONResponse:
     return JSONResponse(dict(_install_state))
+
+
+@router.post("/api/presets/install/cancel")
+def cancel_install() -> JSONResponse:
+    """sgs-ui-8ww: SIGINT the running `comfy-gen install-preset` subprocess.
+    The CLI catches SIGINT, calls /shutdown on the installer pod, and
+    exits cleanly. A 30-second watchdog SIGKILLs if it doesn't.
+
+    Returns 409 if no install is in flight."""
+    proc = _install_proc.get("proc")
+    current_state = _install_state["state"]
+    if proc is None or current_state not in ("queued", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"no install in progress (state={current_state})",
+        )
+    _install_state["state"] = "cancelling"
+    try:
+        proc.send_signal(signal.SIGINT)
+    except (ProcessLookupError, OSError):
+        pass  # Race: process already exited.
+
+    # Capture the specific proc this watchdog is responsible for. If a
+    # later install replaces _install_proc["proc"] before the timer
+    # fires, we must NOT kill the new one.
+    target = proc
+    def _watchdog() -> None:
+        time.sleep(30)
+        if target.poll() is None:
+            try:
+                target.kill()
+            except (ProcessLookupError, OSError):
+                pass
+    threading.Thread(target=_watchdog, daemon=True).start()
+
+    return JSONResponse({"ok": True, "state": "cancelling", "preset_id": _install_state["preset_id"]})
 
 
 def refresh_installed_presets() -> dict[str, Any]:

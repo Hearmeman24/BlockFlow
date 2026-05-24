@@ -93,6 +93,9 @@ def init_db() -> None:
                     disk_size_gb INTEGER,
                     workflow_json TEXT NOT NULL,
                     installed_paths TEXT,
+                    pod_id TEXT,
+                    install_mode TEXT,
+                    cost_per_hr_at_spawn REAL,
                     installed_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -110,6 +113,14 @@ def init_db() -> None:
             ip_cols = {row[1] for row in conn.execute("PRAGMA table_info(settings_installed_presets)").fetchall()}
             if "installed_paths" not in ip_cols:
                 conn.execute("ALTER TABLE settings_installed_presets ADD COLUMN installed_paths TEXT")
+            # sgs-ui-8ww: record which CPU pod ran the install + its hourly
+            # rate so the UI can show a post-install cost summary.
+            if "pod_id" not in ip_cols:
+                conn.execute("ALTER TABLE settings_installed_presets ADD COLUMN pod_id TEXT")
+            if "install_mode" not in ip_cols:
+                conn.execute("ALTER TABLE settings_installed_presets ADD COLUMN install_mode TEXT")
+            if "cost_per_hr_at_spawn" not in ip_cols:
+                conn.execute("ALTER TABLE settings_installed_presets ADD COLUMN cost_per_hr_at_spawn REAL")
             conn.commit()
         finally:
             conn.close()
@@ -313,12 +324,17 @@ def record_installed_preset(
     workflow_json: str,
     disk_size_gb: int | None = None,
     installed_paths: list[str] | None = None,
+    pod_id: str | None = None,
+    install_mode: str | None = None,
+    cost_per_hr_at_spawn: float | None = None,
 ) -> None:
     """Upsert an installed-preset row. workflow_json is stored as a string
     (the caller stringifies the dict) so the table stays opaque to schema
     drift in the preset spec. installed_paths is the canonical list of
     /runpod-volume paths created by this install — handed to `comfy-gen
-    delete` on uninstall."""
+    delete` on uninstall. pod_id / install_mode / cost_per_hr_at_spawn
+    (sgs-ui-8ww) capture which CPU installer pod did the work so the UI can
+    surface a post-install cost summary."""
     now = _now()
     paths_json = json.dumps(installed_paths) if installed_paths else None
     with _lock:
@@ -328,16 +344,21 @@ def record_installed_preset(
                 """
                 INSERT INTO settings_installed_presets
                     (preset_id, version, disk_size_gb, workflow_json,
-                     installed_paths, installed_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     installed_paths, pod_id, install_mode,
+                     cost_per_hr_at_spawn, installed_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(preset_id) DO UPDATE SET
                     version=excluded.version,
                     disk_size_gb=excluded.disk_size_gb,
                     workflow_json=excluded.workflow_json,
                     installed_paths=excluded.installed_paths,
+                    pod_id=excluded.pod_id,
+                    install_mode=excluded.install_mode,
+                    cost_per_hr_at_spawn=excluded.cost_per_hr_at_spawn,
                     updated_at=excluded.updated_at
                 """,
-                (preset_id, version, disk_size_gb, workflow_json, paths_json, now, now),
+                (preset_id, version, disk_size_gb, workflow_json, paths_json,
+                 pod_id, install_mode, cost_per_hr_at_spawn, now, now),
             )
             conn.commit()
         finally:
@@ -368,7 +389,8 @@ def get_installed_preset(preset_id: str) -> dict | None:
         row = conn.execute(
             """
             SELECT preset_id, version, disk_size_gb, workflow_json,
-                   installed_paths, installed_at, updated_at
+                   installed_paths, pod_id, install_mode,
+                   cost_per_hr_at_spawn, installed_at, updated_at
             FROM settings_installed_presets
             WHERE preset_id = ?
             """,

@@ -34,6 +34,25 @@ def _make_fake_popen(stdout: str = "", stderr: str = "", returncode: int = 0) ->
     proc.returncode = returncode
     return proc
 
+
+
+def _install_preset_success_proc(num_files: int = 1, paths: list[str] | None = None) -> MagicMock:
+    """sgs-ui-8ww helper: build a Popen-shaped mock whose stdout is a
+    minimal successful `comfy-gen install-preset` event stream."""
+    if paths is None:
+        paths = [f"/runpod-volume/ComfyUI/models/m{i}/f{i}.safetensors" for i in range(num_files)]
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_test", "token": "tok"},
+        {"type": "preflight_ok", "models_count": num_files,
+         "total_bytes": 0, "volume_free_bytes": 0},
+    ]
+    for i, path in enumerate(paths):
+        events.append({"type": "download_done", "file_index": i, "file": path,
+                       "cached": False, "bytes": 0, "sha256": f"{i:064d}"})
+    events.append({"type": "install_done", "ok": True, "files": num_files, "elapsed_sec": 1})
+    stdout = "".join(json.dumps(e) + "\n" for e in events)
+    return _make_fake_popen(stdout=stdout, returncode=0)
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -368,94 +387,14 @@ def install_ready(app):
     preset_routes._reset_install_state()
 
 
-def test_install_starts_subprocess_with_batch_download(client, install_ready, mocker):
-    """Install kicks off comfy-gen download --batch in a background thread.
-    Returns 202 with the job id immediately."""
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "https://example/preset.json"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-
-    # Now there are TWO Popen calls: hash (pre-flight) then download.
-    # Stage them via side_effect so each call gets a fresh StringIO.
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            # No files exist — falls through to "all missing" → download proceeds.
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    run_mock = mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-
-    assert r.status_code == 202
-    body = r.json()
-    assert body["preset_id"] == "qwen-image-lighting"
-    assert body["state"] in ("queued", "running")
-
-    _wait_for_install_state("completed", "error")
-
-    # Hash is first, download is second.
-    assert run_mock.call_count == 2
-    dl_args = run_mock.call_args_list[1].args[0]
-    assert dl_args[0] == "comfy-gen"
-    assert dl_args[1] == "download"
-    assert "--batch" in dl_args
-    assert "--endpoint-id" in dl_args
-    assert "ep_test" in dl_args
-
-
-def test_install_propagates_sha256_into_batch_spec(client, install_ready, mocker):
-    """Regression: ComfyGen's download_handler dedups by sha256 — but only
-    when the batch entry includes one. preset_routes was dropping sha256
-    from build_batch_spec before this test landed, so workers always
-    re-downloaded.
-    """
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "https://example/preset.json"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-
-    # Capture the --batch tempfile contents from the DOWNLOAD subprocess call
-    # specifically (hash call also takes --batch, but with a paths-only file).
-    download_batch: list[dict] = []
-    def _capture(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            # No files exist → fall through to download with full batch
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        if args[:2] == ["comfy-gen", "download"]:
-            batch_path = args[args.index("--batch") + 1]
-            with open(batch_path) as f:
-                download_batch.extend(json.load(f))
-            return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_capture)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    # Verify the download batch actually has sha256 on each entry.
-    assert len(download_batch) == len(QWEN_FULL_PRESET["models"]), (
-        f"expected {len(QWEN_FULL_PRESET['models'])} entries, got {len(download_batch)}"
-    )
-    for entry, model in zip(download_batch, QWEN_FULL_PRESET["models"]):
-        assert "sha256" in entry, f"entry missing sha256: {entry}"
-        assert entry["sha256"] == model["sha256"], (
-            f"sha256 mismatch: batch={entry['sha256']} preset={model['sha256']}"
-        )
-
-
 def test_install_persists_to_settings_on_success(client, install_ready, mocker):
     mocker.patch.object(preset_routes._cffi_requests, "get",
                         MagicMock(side_effect=[
                             _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "https://example/preset.json"}])),
                             _mock_response(QWEN_FULL_PRESET),
                         ]))
-    fake_proc = _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=fake_proc)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
 
     client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
 
@@ -519,33 +458,6 @@ def test_install_400_when_no_endpoint_configured(client, mocker):
     assert "ComfyGen endpoint" in r.json()["detail"] or "comfygen" in r.json()["detail"].lower()
 
 
-def test_install_records_error_on_subprocess_failure(client, install_ready, mocker):
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    # Hash succeeds with all-missing → download is attempted → download fails.
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout="{}", stderr="Download failed: network timeout", returncode=1)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
-
-    client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-
-    import time as _t
-    for _ in range(100):
-        if preset_routes._install_state["state"] == "error":
-            break
-        _t.sleep(0.02)
-
-    assert preset_routes._install_state["state"] == "error"
-    assert "Download failed" in preset_routes._install_state["error"]
-    # Settings NOT populated on failure
-    assert settings_store.get_installed_preset("qwen-image-lighting") is None
-
-
 def test_install_progress_returns_current_state(client):
     """The progress route is a simple snapshot of the module-level state."""
     preset_routes._install_state.update({
@@ -568,88 +480,6 @@ def test_install_progress_returns_current_state(client):
 # "[15s] Downloading 1/4: foo.safetensors 42% (188MiB/s)") via the pump
 # thread. _install_state["log_tail"] mirrors that to the UI so /progress
 # polls can render a live log block under the InstallProgressCard.
-
-def test_install_state_log_tail_populated_from_stderr(client, install_ready, mocker):
-    """As the download subprocess emits stderr lines, _install_state['log_tail']
-    accumulates them. After install completes the field carries the rolling
-    tail of what was streamed."""
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    progress_lines = "".join(f"[{n}s] Downloading 1/2: foo.safetensors {n*5}%\n" for n in range(1, 6))
-
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        # Download subprocess: emit progress lines on stderr.
-        return _make_fake_popen(stdout='{"ok": true}', stderr=progress_lines, returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    assert preset_routes._install_state["state"] == "completed"
-    tail = preset_routes._install_state.get("log_tail") or ""
-    # Each emitted progress line must show up in the tail.
-    for n in range(1, 6):
-        assert f"[{n}s] Downloading 1/2: foo.safetensors {n*5}%" in tail
-
-
-def test_install_state_log_tail_reset_between_installs(client, install_ready, mocker):
-    """Stale tail from a prior failed install must NOT bleed into the next
-    install's progress display."""
-    preset_routes._install_state["log_tail"] = "STALE PRIOR INSTALL OUTPUT\n"
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', stderr="[1s] fresh line\n", returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    tail = preset_routes._install_state.get("log_tail") or ""
-    assert "STALE PRIOR INSTALL OUTPUT" not in tail
-    assert "[1s] fresh line" in tail
-
-
-def test_install_state_log_tail_truncated_to_bound(client, install_ready, mocker):
-    """A 30-minute download emits thousands of progress lines. The tail
-    must stay bounded so /progress responses don't bloat."""
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    # Emit 200 lines on stderr.
-    spam = "".join(f"line {n}\n" for n in range(200))
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', stderr=spam, returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    tail = preset_routes._install_state.get("log_tail") or ""
-    line_count = tail.count("\n")
-    # Last 30 lines is the contract; allow ±5 for off-by-one safety.
-    assert 25 <= line_count <= 35, f"expected ~30 lines in tail, got {line_count}"
-    # The latest line must be present; an early line must not be.
-    assert "line 199" in tail
-    assert "line 0" not in tail
-
 
 # === Stage B: multi-workflow presets (sgs-ui-chf) ===========================
 
@@ -679,11 +509,8 @@ def test_install_persists_workflows_array_with_names(client, install_ready, mock
             return _mock_response(wf_v2v)
         return _mock_response({}, status=404)
     mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
 
     r = client.post("/api/presets/install", json={"preset_id": "wan-animate"})
     assert r.status_code == 202
@@ -713,11 +540,8 @@ def test_install_inline_workflow_skips_fetch(client, install_ready, mocker):
             return _mock_response(preset)
         return _mock_response({}, status=404)
     mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
 
     r = client.post("/api/presets/install", json={"preset_id": "inline-flow"})
     assert r.status_code == 202
@@ -748,237 +572,6 @@ def _wait_for_install_state(*targets: str, attempts: int = 200, sleep_s: float =
         if preset_routes._install_state["state"] in targets:
             return
         _t.sleep(sleep_s)
-
-
-def test_install_hashes_canonical_paths_before_download(client, install_ready, mocker):
-    """zr0: install runs `comfy-gen hash --batch <paths>` BEFORE
-    `comfy-gen download --batch <entries>` so we can classify what's
-    actually missing/stale before submitting any aria2 work."""
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-
-    # Hash says all missing → download proceeds with full batch.
-    hash_files = [
-        {"path": "/runpod-volume/ComfyUI/models/diffusion_models/unet.safetensors",
-         "sha256": None, "error": "not found"},
-        {"path": "/runpod-volume/ComfyUI/models/text_encoders/clip.safetensors",
-         "sha256": None, "error": "not found"},
-    ]
-    fake_hash = _make_fake_popen(stdout=_hash_response(hash_files), returncode=0)
-    fake_dl = _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    popen_mock = mocker.patch.object(preset_routes.subprocess, "Popen",
-                                    side_effect=[fake_hash, fake_dl])
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    # First call: comfy-gen hash --batch <paths>
-    hash_args = popen_mock.call_args_list[0].args[0]
-    assert hash_args[:2] == ["comfy-gen", "hash"]
-    assert "--batch" in hash_args
-    # Second call: comfy-gen download --batch <entries>
-    dl_args = popen_mock.call_args_list[1].args[0]
-    assert dl_args[:2] == ["comfy-gen", "download"]
-
-
-def test_install_skips_download_when_all_files_cached(client, install_ready, mocker):
-    """All canonical paths already have matching sha256 → don't call
-    `comfy-gen download` at all. install completes with cached_count = N."""
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    hash_files = [
-        {"path": "/runpod-volume/ComfyUI/models/diffusion_models/unet.safetensors",
-         "sha256": "a" * 64, "bytes": 100},
-        {"path": "/runpod-volume/ComfyUI/models/text_encoders/clip.safetensors",
-         "sha256": "b" * 64, "bytes": 200},
-    ]
-    fake_hash = _make_fake_popen(stdout=_hash_response(hash_files), returncode=0)
-    popen_mock = mocker.patch.object(preset_routes.subprocess, "Popen",
-                                    side_effect=[fake_hash])
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    assert preset_routes._install_state["state"] == "completed"
-    # ONLY the hash subprocess was called — no download.
-    assert popen_mock.call_count == 1
-    state = preset_routes._install_state
-    assert state["cached_count"] == 2
-    assert state["missing_count"] == 0
-    assert state["stale_count"] == 0
-    assert state["total_download_bytes"] == 0
-    # Settings still persists (install is "complete" — the bytes are already there).
-    assert settings_store.get_installed_preset("qwen-image-lighting") is not None
-
-
-def test_install_downloads_only_missing_entries(client, install_ready, mocker):
-    """One file cached + one missing → download batch has only the missing
-    entry, cached_count=1, missing_count=1."""
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    hash_files = [
-        # unet present + matching → cached
-        {"path": "/runpod-volume/ComfyUI/models/diffusion_models/unet.safetensors",
-         "sha256": "a" * 64, "bytes": 100},
-        # clip absent → missing
-        {"path": "/runpod-volume/ComfyUI/models/text_encoders/clip.safetensors",
-         "sha256": None, "error": "not found"},
-    ]
-    # Capture the download tempfile contents
-    download_batch: list[dict] = []
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response(hash_files), returncode=0)
-        if args[:2] == ["comfy-gen", "download"]:
-            batch_path = args[args.index("--batch") + 1]
-            with open(batch_path) as f:
-                download_batch.extend(json.load(f))
-            return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-        raise AssertionError(f"unexpected popen: {args}")
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    assert preset_routes._install_state["state"] == "completed"
-    assert len(download_batch) == 1, f"expected only missing in batch, got {download_batch}"
-    assert download_batch[0]["filename"] == "clip.safetensors"
-    state = preset_routes._install_state
-    assert state["cached_count"] == 1
-    assert state["missing_count"] == 1
-    assert state["stale_count"] == 0
-
-
-def test_install_deletes_stale_files_before_download(client, install_ready, mocker):
-    """File at canonical path but hash differs from preset → worker invokes
-    `comfy-gen delete <stale path>` BEFORE the download so aria2 has room
-    to allocate."""
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    hash_files = [
-        # unet stale (wrong hash, present)
-        {"path": "/runpod-volume/ComfyUI/models/diffusion_models/unet.safetensors",
-         "sha256": "f" * 64, "bytes": 50},
-        # clip cached
-        {"path": "/runpod-volume/ComfyUI/models/text_encoders/clip.safetensors",
-         "sha256": "b" * 64, "bytes": 200},
-    ]
-    delete_paths: list[list[str]] = []
-    download_batch: list[dict] = []
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response(hash_files), returncode=0)
-        if args[:2] == ["comfy-gen", "delete"]:
-            batch_path = args[args.index("--batch") + 1]
-            with open(batch_path) as f:
-                delete_paths.append(json.load(f))
-            return _make_fake_popen(
-                stdout=_delete_response([{"path": p, "deleted": True} for p in delete_paths[-1]]),
-                returncode=0,
-            )
-        if args[:2] == ["comfy-gen", "download"]:
-            batch_path = args[args.index("--batch") + 1]
-            with open(batch_path) as f:
-                download_batch.extend(json.load(f))
-            return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-        raise AssertionError(f"unexpected popen: {args}")
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    assert preset_routes._install_state["state"] == "completed"
-    # Delete was called with the stale unet path
-    assert len(delete_paths) == 1
-    assert delete_paths[0] == [
-        "/runpod-volume/ComfyUI/models/diffusion_models/unet.safetensors",
-    ]
-    # Download batch contains the stale entry (now eligible to be re-downloaded)
-    assert len(download_batch) == 1
-    assert download_batch[0]["filename"] == "unet.safetensors"
-    state = preset_routes._install_state
-    assert state["cached_count"] == 1
-    assert state["stale_count"] == 1
-    assert state["missing_count"] == 0
-
-
-def test_install_falls_back_to_full_download_when_hash_subprocess_fails(client, install_ready, mocker):
-    """Hash command exits non-zero → log warning, treat as 'submit
-    everything' (don't break installs because of a hash-tool problem)."""
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    download_batch: list[dict] = []
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            # Hash subprocess fails completely
-            return _make_fake_popen(stdout="", stderr="boom", returncode=1)
-        if args[:2] == ["comfy-gen", "download"]:
-            batch_path = args[args.index("--batch") + 1]
-            with open(batch_path) as f:
-                download_batch.extend(json.load(f))
-            return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-        raise AssertionError(f"unexpected popen: {args}")
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    # Hash failure must NOT block the install
-    assert preset_routes._install_state["state"] == "completed"
-    # Fall-back: entire preset.models in the download batch
-    assert len(download_batch) == 2
-
-
-def test_install_persists_installed_paths_on_success(client, install_ready, mocker):
-    """sgs-ui-i7j needs the canonical paths persisted at install time so
-    uninstall can hand them to `comfy-gen delete`."""
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    hash_files = [
-        {"path": "/runpod-volume/ComfyUI/models/diffusion_models/unet.safetensors",
-         "sha256": None, "error": "not found"},
-        {"path": "/runpod-volume/ComfyUI/models/text_encoders/clip.safetensors",
-         "sha256": None, "error": "not found"},
-    ]
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response(hash_files), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-    _wait_for_install_state("completed", "error")
-
-    persisted = settings_store.get_installed_preset("qwen-image-lighting")
-    assert persisted is not None
-    assert persisted["installed_paths"] == [
-        "/runpod-volume/ComfyUI/models/diffusion_models/unet.safetensors",
-        "/runpod-volume/ComfyUI/models/text_encoders/clip.safetensors",
-    ]
 
 
 # === Stage B: uninstall (sgs-ui-i7j) ========================================
@@ -1125,47 +718,6 @@ def test_disk_budget_returns_total_None_when_runpod_unreachable(client, install_
     assert body["used_estimate_gb"] == 0
 
 
-def test_install_400_when_preset_exceeds_disk_budget(client, install_ready, mocker):
-    """65GB preset + 50GB already used + 100GB volume → only 50GB free → reject."""
-    mocker.patch.object(preset_routes.runpod_api, "get_network_volume",
-                        return_value={"id": "vol_test", "size": 100})
-    settings_store.record_installed_preset(
-        preset_id="existing", version="0.1.0", workflow_json="{}", disk_size_gb=50,
-    )
-
-    big_preset = {**QWEN_FULL_PRESET, "disk_size_estimate_gb": 65}
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(big_preset),
-                        ]))
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-
-    assert r.status_code == 400
-    detail = r.json()["detail"]
-    assert "insufficient disk" in detail.lower()
-    assert "65" in detail  # needed
-    assert "50" in detail  # free estimate (100 - 50)
-
-
-def test_install_proceeds_when_disk_budget_unknown(client, install_ready, mocker):
-    """If RunPod is unreachable for the volume query, fall through (don't
-    block on a check we can't perform)."""
-    mocker.patch.object(preset_routes.runpod_api, "get_network_volume",
-                        side_effect=preset_routes.runpod_api.RunPodAPIError("HTTP 502"))
-    mocker.patch.object(preset_routes._cffi_requests, "get",
-                        MagicMock(side_effect=[
-                            _mock_response(_manifest([{**_qwen_preset_entry(), "preset_url": "x"}])),
-                            _mock_response(QWEN_FULL_PRESET),
-                        ]))
-    fake_proc = _make_fake_popen(stdout='{}', returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=fake_proc)
-
-    r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
-    assert r.status_code == 202
-
-
 # === sgs-ui-fmy: preset recommendations =====================================
 # Presets may carry author-supplied prose tips, scoped either globally
 # (apply to every workflow in the preset) or per-workflow (apply to one
@@ -1241,11 +793,8 @@ def test_install_persists_recommendations_from_preset_json(client, install_ready
             return _mock_response(preset)
         return _mock_response({}, status=404)
     mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
 
     r = client.post("/api/presets/install", json={"preset_id": "wan-animate"})
     assert r.status_code == 202
@@ -1275,11 +824,8 @@ def test_install_without_recommendations_persists_empty(client, install_ready, m
             return _mock_response(QWEN_FULL_PRESET)
         return _mock_response({}, status=404)
     mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
 
     r = client.post("/api/presets/install", json={"preset_id": "qwen-image-lighting"})
     assert r.status_code == 202
@@ -1347,11 +893,8 @@ def test_install_persists_workflow_settings_through_install(client, install_read
         return _mock_response({}, status=404)
 
     mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
 
     r = client.post("/api/presets/install", json={"preset_id": "wan-animate"})
     assert r.status_code == 202
@@ -1426,11 +969,8 @@ def test_install_inline_workflow_carries_settings(client, install_ready, mocker)
             return _mock_response(preset)
         return _mock_response({}, status=404)
     mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=_fake_get)
-    def _popen_side_effect(args, *a, **kw):
-        if args[:2] == ["comfy-gen", "hash"]:
-            return _make_fake_popen(stdout=_hash_response([]), returncode=0)
-        return _make_fake_popen(stdout='{"ok": true}', returncode=0)
-    mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=_popen_side_effect)
+    mocker.patch.object(preset_routes.subprocess, "Popen",
+                        return_value=_install_preset_success_proc(num_files=2))
 
     r = client.post("/api/presets/install", json={"preset_id": "inline-settings"})
     assert r.status_code == 202

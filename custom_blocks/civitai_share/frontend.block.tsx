@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { useSessionState } from '@/lib/use-session-state'
+import { pickFiles } from '@/lib/file-picker'
 import {
   PORT_IMAGE,
   PORT_METADATA,
@@ -104,7 +105,6 @@ function CivitAIShareBlock({
   const [tagging, setTagging] = useState(false)
   const [localFiles, setLocalFiles] = useState<Array<{ file: File; previewUrl: string; outputUrl?: string }>>([])
   const [isDragging, setIsDragging] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const dragCounterRef = useRef(0)
 
   const videoUrls = toMediaUrls(inputs.video)
@@ -150,8 +150,12 @@ function CivitAIShareBlock({
   const clearLocalFiles = useCallback(() => {
     localFiles.forEach((f) => URL.revokeObjectURL(f.previewUrl))
     setLocalFiles([])
-    if (fileInputRef.current) fileInputRef.current.value = ''
   }, [localFiles])
+
+  const openFilePicker = useCallback(async () => {
+    const files = await pickFiles({ slug: 'civitai_share', accept: 'image/*,video/*', multiple: true, description: 'Media' })
+    if (files) addFiles(files)
+  }, [addFiles])
 
   const validatePost = useCallback(async () => {
     const postId = parsePostId(editPostInput)
@@ -336,15 +340,6 @@ function CivitAIShareBlock({
 
   return (
     <div className="space-y-3">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*,video/*"
-        multiple
-        className="sr-only"
-        onChange={(e) => { addFiles(Array.from(e.target.files ?? [])); if (fileInputRef.current) fileInputRef.current.value = '' }}
-      />
-
       {/* Local file upload area */}
       {localFiles.length === 0 && upstreamUrls.length === 0 ? (
         <div
@@ -357,7 +352,7 @@ function CivitAIShareBlock({
           onDrop={handleDrop}
         >
           <div className="flex flex-col items-center gap-1 text-center px-4">
-            <Button type="button" variant="outline" size="sm" className="h-7 px-3 text-xs" onClick={() => fileInputRef.current?.click()}>
+            <Button type="button" variant="outline" size="sm" className="h-7 px-3 text-xs" onClick={() => openFilePicker()}>
               Load Media
             </Button>
             <p className="text-[9px] text-muted-foreground">or drag &amp; drop — or connect upstream</p>
@@ -376,7 +371,7 @@ function CivitAIShareBlock({
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-muted-foreground">{localFiles.length} file{localFiles.length === 1 ? '' : 's'} loaded</span>
             <div className="flex gap-1">
-              <button type="button" className="text-[9px] text-muted-foreground hover:text-foreground" onClick={() => fileInputRef.current?.click()}>Add</button>
+              <button type="button" className="text-[9px] text-muted-foreground hover:text-foreground" onClick={() => openFilePicker()}>Add</button>
               <button type="button" className="text-[9px] text-red-400 hover:text-red-300" onClick={clearLocalFiles}>Clear</button>
             </div>
           </div>

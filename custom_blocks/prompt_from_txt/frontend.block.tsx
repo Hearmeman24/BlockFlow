@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { useSessionState } from '@/lib/use-session-state'
+import { pickFiles } from '@/lib/file-picker'
 import {
   PORT_TEXT,
   type BlockDef,
@@ -15,7 +16,6 @@ function PromptFromTxtBlock({ blockId, setOutput, registerExecute, setStatusMess
   const [fileNames, setFileNames] = useSessionState<string[]>(`${prefix}file_names`, [])
   const [expanded, setExpanded] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const dragCounterRef = useRef(0)
 
   const parseFiles = useCallback(async (files: File[]) => {
@@ -38,8 +38,12 @@ function PromptFromTxtBlock({ blockId, setOutput, registerExecute, setStatusMess
   const clearAll = useCallback(() => {
     setPrompts([])
     setFileNames([])
-    if (fileInputRef.current) fileInputRef.current.value = ''
   }, [setPrompts, setFileNames])
+
+  const openFilePicker = useCallback(async () => {
+    const selected = await pickFiles({ slug: 'prompt_from_txt', accept: '.txt,text/plain', multiple: true, description: 'Text files' })
+    if (selected) parseFiles(selected)
+  }, [parseFiles])
 
   useEffect(() => {
     registerExecute(async () => {
@@ -76,19 +80,6 @@ function PromptFromTxtBlock({ blockId, setOutput, registerExecute, setStatusMess
 
   return (
     <div className="space-y-3">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".txt,text/plain"
-        multiple
-        className="sr-only"
-        onChange={(e) => {
-          const selected = Array.from(e.target.files ?? [])
-          parseFiles(selected)
-          if (fileInputRef.current) fileInputRef.current.value = ''
-        }}
-      />
-
       {prompts.length === 0 ? (
         <div
           className={`flex min-h-[140px] items-center justify-center rounded-md border border-dashed bg-muted/10 transition-colors ${
@@ -100,7 +91,7 @@ function PromptFromTxtBlock({ blockId, setOutput, registerExecute, setStatusMess
           onDrop={handleDrop}
         >
           <div className="flex flex-col items-center gap-2 text-center px-4">
-            <Button type="button" size="sm" className="h-8 px-4 text-xs" onClick={() => fileInputRef.current?.click()}>
+            <Button type="button" size="sm" className="h-8 px-4 text-xs" onClick={() => openFilePicker()}>
               Load .txt Files
             </Button>
             <p className="text-[10px] text-muted-foreground">
@@ -146,7 +137,7 @@ function PromptFromTxtBlock({ blockId, setOutput, registerExecute, setStatusMess
           </div>
 
           <div className="grid grid-cols-2 gap-2">
-            <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => fileInputRef.current?.click()}>
+            <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => openFilePicker()}>
               Add More
             </Button>
             <Button type="button" variant="destructive" size="sm" className="h-7 text-xs" onClick={clearAll}>

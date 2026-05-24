@@ -23,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useSessionState } from '@/lib/use-session-state'
+import { pickFiles } from '@/lib/file-picker'
 import type { Job } from '@/lib/types'
 import {
   getEndpoint,
@@ -640,8 +641,14 @@ function ComfyGenBlock({
       setOutputHint?.(outputType)
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
-  const workflowFileRef = useRef<HTMLInputElement | null>(null)
-  const pngFileRef = useRef<HTMLInputElement | null>(null)
+  const openWorkflowJson = async () => {
+    const files = await pickFiles({ slug: 'comfy_gen:workflow', accept: '.json,application/json', description: 'Workflow JSON' })
+    if (files?.[0]) handleWorkflowFile(files[0])
+  }
+  const openWorkflowPng = async () => {
+    const files = await pickFiles({ slug: 'comfy_gen:reference_png', accept: 'image/png', description: 'PNG with embedded workflow' })
+    if (files?.[0]) handlePngFile(files[0])
+  }
 
   // Load cached data and check CLI on mount
   useEffect(() => {
@@ -1845,26 +1852,6 @@ function ComfyGenBlock({
         {presetApplyError && (
           <p className="text-[10px] text-red-400">{presetApplyError}</p>
         )}
-        <input
-          ref={workflowFileRef}
-          type="file"
-          accept=".json"
-          className="sr-only"
-          onChange={(e) => {
-            const file = e.target.files?.[0]
-            if (file) handleWorkflowFile(file)
-          }}
-        />
-        <input
-          ref={pngFileRef}
-          type="file"
-          accept="image/png"
-          className="sr-only"
-          onChange={(e) => {
-            const file = e.target.files?.[0]
-            if (file) handlePngFile(file)
-          }}
-        />
         {/* sgs-ui-chf: Load JSON / From PNG are advanced-mode only — operators
             on a preset shouldn't see these. Auto button in the header is gated
             by the same flag (see setHeaderActions effect). */}
@@ -1875,7 +1862,7 @@ function ComfyGenBlock({
               variant="outline"
               size="sm"
               className="h-8 text-xs"
-              onClick={() => workflowFileRef.current?.click()}
+              onClick={openWorkflowJson}
             >
               Load JSON
             </Button>
@@ -1884,7 +1871,7 @@ function ComfyGenBlock({
               variant="outline"
               size="sm"
               className="h-8 text-xs"
-              onClick={() => pngFileRef.current?.click()}
+              onClick={openWorkflowPng}
             >
               From PNG
             </Button>
@@ -2075,7 +2062,7 @@ function ComfyGenBlock({
             return (
             <div key={ks.node_id} className="space-y-1">
               {ksamplers.length > 1 && (
-                <span className="text-[10px] text-muted-foreground">{ks.label || `#{ks.node_id} ${ks.class_type}`}</span>
+                <span className="text-[10px] text-muted-foreground">{ks.label || `#${ks.node_id} ${ks.class_type}`}</span>
               )}
               {numericFields.length > 0 && (
               <div className={`grid gap-2`} style={{ gridTemplateColumns: `repeat(${Math.min(numericFields.length, 3)}, 1fr)` }}>

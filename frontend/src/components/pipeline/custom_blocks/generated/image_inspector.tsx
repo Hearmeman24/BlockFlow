@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { useSessionState } from '@/lib/use-session-state'
+import { pickFiles } from '@/lib/file-picker'
 import {
   PORT_IMAGE,
   type BlockDef,
@@ -69,12 +70,16 @@ function ImageInspectorBlock({ blockId, setOutput, registerExecute, setStatusMes
   const [entries, setEntries] = useState<ImageEntry[]>([])
   const [currentIdx, setCurrentIdx] = useSessionState<number>(`${prefix}current_idx`, 0)
   const [isDragging, setIsDragging] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const dragCounterRef = useRef(0)
   const containerRef = useRef<HTMLDivElement | null>(null)
 
   const current = entries[currentIdx] || null
   const total = entries.length
+
+  const openFilePicker = async () => {
+    const files = await pickFiles({ slug: 'image_inspector', accept: 'image/*', multiple: true, description: 'Images' })
+    if (files) addFiles(files)
+  }
 
   const addFiles = useCallback(async (files: File[]) => {
     const imageFiles = files.filter((f) => f.type.startsWith('image/'))
@@ -191,18 +196,6 @@ function ImageInspectorBlock({ blockId, setOutput, registerExecute, setStatusMes
 
   return (
     <div ref={containerRef} tabIndex={0} className="space-y-2 outline-none">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        className="sr-only"
-        onChange={(e) => {
-          addFiles(Array.from(e.target.files ?? []))
-          if (fileInputRef.current) fileInputRef.current.value = ''
-        }}
-      />
-
       {total === 0 ? (
         <div
           className={`flex min-h-[200px] items-center justify-center rounded-md border border-dashed bg-muted/10 transition-colors ${
@@ -214,7 +207,7 @@ function ImageInspectorBlock({ blockId, setOutput, registerExecute, setStatusMes
           onDrop={handleDrop}
         >
           <div className="flex flex-col items-center gap-2 text-center px-4">
-            <Button type="button" size="sm" className="h-8 px-4 text-xs" onClick={() => fileInputRef.current?.click()}>
+            <Button type="button" size="sm" className="h-8 px-4 text-xs" onClick={() => openFilePicker()}>
               Load Images
             </Button>
             <p className="text-[10px] text-muted-foreground">
@@ -331,7 +324,7 @@ function ImageInspectorBlock({ blockId, setOutput, registerExecute, setStatusMes
 
           {/* Actions */}
           <div className="grid grid-cols-2 gap-2">
-            <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => fileInputRef.current?.click()}>
+            <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => openFilePicker()}>
               Add More
             </Button>
             <Button type="button" variant="destructive" size="sm" className="h-7 text-xs" onClick={clearAll}>

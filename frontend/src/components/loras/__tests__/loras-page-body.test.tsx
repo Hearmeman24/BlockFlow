@@ -56,6 +56,26 @@ const _listResponse = (loras: client.LoraRow[]): client.LorasListResponse => ({
   loras, pruned: [], fetched_at: Date.now() / 1000, stale: false,
 })
 
+/** Find a row by its checkbox aria-label, which still uses the full
+ *  filename even though the visible filename now renders as parsed chips. */
+function rowFor(filename: string): HTMLElement {
+  const checkbox = screen.getByRole('checkbox', {
+    name: new RegExp(`Select ${filename.replace(/\./g, '\\.')}`, 'i'),
+  })
+  const tr = checkbox.closest('tr')
+  if (!tr) throw new Error(`no row for ${filename}`)
+  return tr as HTMLElement
+}
+
+async function findRowFor(filename: string): Promise<HTMLElement> {
+  const checkbox = await screen.findByRole('checkbox', {
+    name: new RegExp(`Select ${filename.replace(/\./g, '\\.')}`, 'i'),
+  })
+  const tr = checkbox.closest('tr')
+  if (!tr) throw new Error(`no row for ${filename}`)
+  return tr as HTMLElement
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.spyOn(window, 'confirm').mockReturnValue(true)
@@ -92,8 +112,8 @@ describe('LorasPageBody — list rendering', () => {
 
     render(<LorasPageBody />)
 
-    const aRow = (await screen.findByText('a.safetensors')).closest('tr')!
-    const bRow = screen.getByText('b.safetensors').closest('tr')!
+    const aRow = await findRowFor('a.safetensors')
+    const bRow = rowFor('b.safetensors')
     expect(within(aRow).getByText('CivitAI')).toBeInTheDocument()
     expect(within(aRow).getByText('Flux.1 D')).toBeInTheDocument()
     expect(within(bRow).getByText('HuggingFace')).toBeInTheDocument()
@@ -108,7 +128,7 @@ describe('LorasPageBody — list rendering', () => {
 
     render(<LorasPageBody />)
 
-    await screen.findByText('known.safetensors')
+    await findRowFor('known.safetensors')
     const setSourceButtons = screen.getAllByRole('button', { name: /Set source/i })
     expect(setSourceButtons).toHaveLength(1)
   })
@@ -123,15 +143,15 @@ describe('LorasPageBody — filtering', () => {
     ]))
 
     render(<LorasPageBody />)
-    await screen.findByText('character_v2.safetensors')
+    await findRowFor('character_v2.safetensors')
 
     await userEvent.type(screen.getByLabelText(/Search LoRAs/i), 'style')
 
     await waitFor(() => {
-      expect(screen.queryByText('character_v2.safetensors')).not.toBeInTheDocument()
+      expect(screen.queryByRole('checkbox', { name: /Select character_v2/i })).not.toBeInTheDocument()
     })
-    expect(screen.getByText('style_filmgrain.safetensors')).toBeInTheDocument()
-    expect(screen.getByText('style_anime.safetensors')).toBeInTheDocument()
+    expect(rowFor('style_filmgrain.safetensors')).toBeInTheDocument()
+    expect(rowFor('style_anime.safetensors')).toBeInTheDocument()
   })
 
   test('base_model filter combines with search', async () => {
@@ -142,14 +162,14 @@ describe('LorasPageBody — filtering', () => {
     ]))
 
     render(<LorasPageBody />)
-    await screen.findByText('flux_a.safetensors')
+    await findRowFor('flux_a.safetensors')
 
     await userEvent.selectOptions(screen.getByLabelText(/Filter by base model/i), 'SDXL')
 
     await waitFor(() => {
-      expect(screen.queryByText('flux_a.safetensors')).not.toBeInTheDocument()
+      expect(screen.queryByRole('checkbox', { name: /Select flux_a/i })).not.toBeInTheDocument()
     })
-    expect(screen.getByText('sdxl_a.safetensors')).toBeInTheDocument()
+    expect(rowFor('sdxl_a.safetensors')).toBeInTheDocument()
   })
 })
 
@@ -168,7 +188,7 @@ describe('LorasPageBody — bulk delete', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     render(<LorasPageBody />)
-    await screen.findByText('a.safetensors')
+    await findRowFor('a.safetensors')
 
     await userEvent.click(screen.getByRole('checkbox', { name: /Select a\.safetensors/i }))
     await userEvent.click(screen.getByRole('checkbox', { name: /Select b\.safetensors/i }))
@@ -194,16 +214,16 @@ describe('LorasPageBody — bulk delete', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     render(<LorasPageBody />)
-    await screen.findByText('a.safetensors')
+    await findRowFor('a.safetensors')
 
     await userEvent.click(screen.getByRole('checkbox', { name: /Select a\.safetensors/i }))
     await userEvent.click(screen.getByRole('checkbox', { name: /Select b\.safetensors/i }))
     await userEvent.click(screen.getByRole('button', { name: /Delete 2 selected/i }))
 
     await waitFor(() => {
-      expect(screen.queryByText('a.safetensors')).not.toBeInTheDocument()
+      expect(screen.queryByRole('checkbox', { name: /Select a\.safetensors/i })).not.toBeInTheDocument()
     })
-    expect(screen.getByText('b.safetensors')).toBeInTheDocument()
+    expect(rowFor('b.safetensors')).toBeInTheDocument()
     expect(screen.getByText(/1 delete\(s\) failed/i)).toBeInTheDocument()
     expect(screen.getByText(/in use/)).toBeInTheDocument()
   })
@@ -310,7 +330,7 @@ describe('LorasPageBody — stale-cache UX', () => {
     )
 
     render(<LorasPageBody />)
-    await screen.findByText('a.safetensors')
+    await findRowFor('a.safetensors')
 
     // Banner is visible while the background sync is still in flight.
     expect(await screen.findByText(/Showing cached LoRA list/i)).toBeInTheDocument()
@@ -320,7 +340,7 @@ describe('LorasPageBody — stale-cache UX', () => {
       loras: [_row({ filename: 'fresh.safetensors' })],
       pruned: [], fetched_at: Date.now() / 1000, stale: false,
     })
-    await screen.findByText('fresh.safetensors')
+    await findRowFor('fresh.safetensors')
   })
 })
 
@@ -426,5 +446,162 @@ describe('LorasPageBody — async download progress (sgs-ui-eqc.5)', () => {
 
     expect(await within(dialog).findByRole('button', { name: /Close \(download continues\)/i }))
       .toBeInTheDocument()
+  })
+})
+
+describe('LorasPageBody — dashboard chip-row (sgs-ui-eqc.6)', () => {
+  test('renders Unknown chip with count when LoRAs have no classification', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'random_a.safetensors', source: 'unknown', base_model: null }),
+      _row({ filename: 'random_b.safetensors', source: 'unknown', base_model: null }),
+      _row({ filename: 'random_c.safetensors', source: 'unknown', base_model: null }),
+    ]))
+
+    render(<LorasPageBody />)
+    const unknownChip = await screen.findByRole('button', { name: /Unknown.*3/i })
+    expect(unknownChip).toBeInTheDocument()
+  })
+
+  test('renders a chip per detected base model with count', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'a.safetensors', base_model: 'Flux.1 D' }),
+      _row({ filename: 'b.safetensors', base_model: 'Flux.1 D' }),
+      _row({ filename: 'c.safetensors', base_model: 'SDXL' }),
+    ]))
+
+    render(<LorasPageBody />)
+    expect(await screen.findByRole('button', { name: /Flux\.1 D.*2/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /SDXL.*1/i })).toBeInTheDocument()
+  })
+
+  test('counts inferred-from-filename rows toward the chip', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'a_wan2.2_x.safetensors', base_model: null, source: 'unknown' }),
+      _row({ filename: 'b.safetensors', base_model: 'WAN 2.2' }),
+    ]))
+
+    render(<LorasPageBody />)
+    expect(await screen.findByRole('button', { name: /WAN 2\.2.*2/i })).toBeInTheDocument()
+  })
+
+  test('clicking a chip filters the table to that base model', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'flux.safetensors', base_model: 'Flux.1 D' }),
+      _row({ filename: 'sdxl.safetensors', base_model: 'SDXL' }),
+    ]))
+
+    render(<LorasPageBody />)
+    await findRowFor('flux.safetensors')
+    expect(rowFor('sdxl.safetensors')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /SDXL.*1/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: /Select flux\.safetensors/i })).not.toBeInTheDocument()
+    })
+    expect(rowFor('sdxl.safetensors')).toBeInTheDocument()
+  })
+
+  test('Unknown chip click filters to unclassified rows (no metadata, no hint)', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'mystery.safetensors', source: 'unknown', base_model: null }),
+      _row({ filename: 'known_flux.safetensors', base_model: 'Flux.1 D' }),
+    ]))
+
+    render(<LorasPageBody />)
+    await findRowFor('mystery.safetensors')
+
+    await userEvent.click(screen.getByRole('button', { name: /Unknown.*1/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: /Select known_flux/i })).not.toBeInTheDocument()
+    })
+    expect(rowFor('mystery.safetensors')).toBeInTheDocument()
+  })
+})
+
+describe('LorasPageBody — epoch grouping (sgs-ui-eqc.6)', () => {
+  test('collapses _epochN siblings into a single family row by default', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'character_epoch10.safetensors' }),
+      _row({ filename: 'character_epoch20.safetensors' }),
+      _row({ filename: 'character_epoch30.safetensors' }),
+    ]))
+
+    render(<LorasPageBody />)
+
+    // Only the latest member row should be discoverable until expansion.
+    expect(await screen.findByRole('button', {
+      name: /Expand 3 epochs of character/i,
+    })).toBeInTheDocument()
+
+    // Individual epoch rows are NOT visible until expansion.
+    expect(screen.queryByRole('checkbox', { name: /Select character_epoch10/i }))
+      .not.toBeInTheDocument()
+  })
+
+  test('chevron expands the family and reveals every member row', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'character_epoch10.safetensors' }),
+      _row({ filename: 'character_epoch20.safetensors' }),
+    ]))
+
+    render(<LorasPageBody />)
+    const chevron = await screen.findByRole('button', { name: /Expand 2 epochs/i })
+    await userEvent.click(chevron)
+
+    expect(rowFor('character_epoch10.safetensors')).toBeInTheDocument()
+    expect(rowFor('character_epoch20.safetensors')).toBeInTheDocument()
+  })
+
+  test('headline shows the highest epoch as latest', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'foo_epoch50.safetensors' }),
+      _row({ filename: 'foo_epoch10.safetensors' }),
+      _row({ filename: 'foo_epoch80.safetensors' }),
+    ]))
+
+    render(<LorasPageBody />)
+    expect(await screen.findByText(/3 epochs · latest 80/)).toBeInTheDocument()
+  })
+
+  test('singleton without _epoch suffix renders as a normal row, not a family', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'Becca01_HighNoise.safetensors' }),
+    ]))
+
+    render(<LorasPageBody />)
+    expect(await findRowFor('Becca01_HighNoise.safetensors')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Expand.*epochs/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('LorasPageBody — action hierarchy (sgs-ui-eqc.6)', () => {
+  test('per-row Delete moved behind overflow menu (not inline)', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'x.safetensors', source: 'civitai' }),
+    ]))
+
+    render(<LorasPageBody />)
+    await findRowFor('x.safetensors')
+
+    // No inline Delete button on the row by default.
+    expect(screen.queryByRole('button', { name: /^Delete$/i })).not.toBeInTheDocument()
+
+    // It lives behind the ⋯ overflow.
+    await userEvent.click(screen.getByRole('button', { name: /More actions for x\.safetensors/i }))
+    expect(screen.getByRole('menuitem', { name: /Delete/i })).toBeInTheDocument()
+  })
+
+  test('Set source remains the primary inline action while source is unknown', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'unknown.safetensors', source: 'unknown', source_id: null, base_model: null }),
+    ]))
+
+    render(<LorasPageBody />)
+    await findRowFor('unknown.safetensors')
+
+    // Set source is a primary inline button (not inside the overflow menu).
+    expect(screen.getByRole('button', { name: /Set source/i })).toBeInTheDocument()
   })
 })

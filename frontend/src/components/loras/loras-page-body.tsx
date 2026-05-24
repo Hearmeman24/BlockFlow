@@ -19,14 +19,33 @@ import {
   type LoraSource,
   type LorasListResponse,
 } from '@/lib/loras/client'
+import {
+  aggregateLibrary,
+  groupByEpochFamily,
+  parseLoraFilename,
+  type GroupedRow,
+} from '@/lib/loras/parse'
+
+// Sentinel filter value: rows with neither metadata base_model nor a parsed
+// filename hint. Drives the "Unknown N" dashboard chip.
+const UNKNOWN_BASE_MODEL = '__unknown__'
 
 type FilterState = {
   query: string
-  baseModel: string  // '' = all
+  baseModel: string  // '' = all, UNKNOWN_BASE_MODEL = no metadata + no hint
   source: '' | LoraSource
 }
 
 const INITIAL_FILTERS: FilterState = { query: '', baseModel: '', source: '' }
+
+/** True if the row matches the selected base-model filter (including the
+ *  UNKNOWN sentinel which falls back to the parsed filename hint). */
+function rowMatchesBaseModel(row: LoraRow, filter: string): boolean {
+  if (!filter) return true
+  const effective = row.base_model ?? parseLoraFilename(row.filename).baseModelHint
+  if (filter === UNKNOWN_BASE_MODEL) return effective === null
+  return effective === filter
+}
 
 export function LorasPageBody() {
   const [data, setData] = useState<LorasListResponse | null>(null)
@@ -135,17 +154,29 @@ export function LorasPageBody() {
     const q = filters.query.trim().toLowerCase()
     return data.loras.filter((l) => {
       if (q && !l.filename.toLowerCase().includes(q)) return false
-      if (filters.baseModel && (l.base_model ?? '') !== filters.baseModel) return false
+      if (!rowMatchesBaseModel(l, filters.baseModel)) return false
       if (filters.source && l.source !== filters.source) return false
       return true
     })
   }, [data, filters])
 
+  const grouped = useMemo<GroupedRow[]>(() => groupByEpochFamily(filtered), [filtered])
+
+  // Dashboard chip-row uses the unfiltered library so chip counts don't
+  // bounce around when the user is mid-filter.
+  const aggregate = useMemo(() => aggregateLibrary(data?.loras ?? []), [data])
+
+  // Base-model dropdown options: union of metadata values + parsed hints,
+  // so a row whose only classification comes from its filename can still be
+  // selected from the dropdown (not just from the chip).
   const baseModels = useMemo(() => {
     if (!data) return []
-    return Array.from(new Set(
-      data.loras.map((l) => l.base_model).filter((b): b is string => !!b)
-    )).sort()
+    const set = new Set<string>()
+    for (const l of data.loras) {
+      const effective = l.base_model ?? parseLoraFilename(l.filename).baseModelHint
+      if (effective) set.add(effective)
+    }
+    return Array.from(set).sort()
   }, [data])
 
   const allVisibleSelected = filtered.length > 0 && filtered.every((l) => selected.has(l.filename))
@@ -236,6 +267,15 @@ export function LorasPageBody() {
         </div>
       )}
 
+      <DashboardChipRow
+        aggregate={aggregate}
+        selected={filters.baseModel}
+        onSelect={(v) => setFilters((f) => ({
+          ...f,
+          baseModel: f.baseModel === v ? '' : v,
+        }))}
+      />
+
       <div className="flex flex-wrap gap-2 items-center">
         <input
           type="text"
@@ -255,6 +295,7 @@ export function LorasPageBody() {
           {baseModels.map((b) => (
             <option key={b} value={b}>{b}</option>
           ))}
+          <option value={UNKNOWN_BASE_MODEL}>Unknown</option>
         </select>
         <select
           value={filters.source}
@@ -301,22 +342,21 @@ export function LorasPageBody() {
                   aria-label={allVisibleSelected ? 'Deselect all visible' : 'Select all visible'}
                 />
               </th>
-              <th className="text-left p-2">Filename</th>
+              <th className="text-left p-2">Name</th>
               <th className="text-left p-2">Source</th>
-              <th className="text-left p-2">Base model</th>
               <th className="text-left p-2">Trigger words</th>
               <th className="text-left p-2">Size</th>
               <th className="text-right p-2 w-32">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((l) => (
-              <LoraRowView
-                key={l.filename}
-                row={l}
-                selected={selected.has(l.filename)}
-                onToggle={() => toggleOne(l.filename)}
-                onDelete={() => handleDelete([l.filename])}
+            {grouped.map((g) => (
+              <GroupedRowView
+                key={g.kind === 'family' ? `fam:${g.stem}` : `row:${g.row.filename}`}
+                group={g}
+                selected={selected}
+                onToggleRow={(fn) => toggleOne(fn)}
+                onDelete={(fns) => handleDelete(fns)}
                 onBackfilled={(updated) => {
                   setData((cur) => cur && {
                     ...cur,
@@ -343,8 +383,310 @@ export function LorasPageBody() {
   )
 }
 
+// ---- Dashboard chip-row ----
+
+function DashboardChipRow({
+  aggregate, selected, onSelect,
+}: {
+  aggregate: ReturnType<typeof aggregateLibrary>
+  selected: string
+  onSelect: (value: string) => void
+}) {
+  const familyChips = Object.entries(aggregate.byBaseModel).sort(
+    ([a], [b]) => a.localeCompare(b),
+  )
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <span className="text-foreground font-medium">{aggregate.totalCount} LoRAs</span>
+      {aggregate.totalBytes > 0 && (
+        <>
+          <Sep />
+          <span className="text-muted-foreground">{formatBytes(aggregate.totalBytes)}</span>
+        </>
+      )}
+      {familyChips.length > 0 && <Sep />}
+      {familyChips.map(([label, count]) => {
+        const inferred = aggregate.inferredCounts[label] ?? 0
+        const active = selected === label
+        return (
+          <Chip
+            key={label}
+            label={label}
+            count={count}
+            tone={baseModelTone(label)}
+            active={active}
+            note={inferred > 0 ? `${inferred} inferred from filename` : undefined}
+            onClick={() => onSelect(label)}
+          />
+        )
+      })}
+      {aggregate.unknownCount > 0 && (
+        <Chip
+          label="Unknown"
+          count={aggregate.unknownCount}
+          tone="muted"
+          active={selected === UNKNOWN_BASE_MODEL}
+          onClick={() => onSelect(UNKNOWN_BASE_MODEL)}
+          note="Rows with no metadata source and no recognized filename pattern. Click to filter, then 'Set source' on each."
+        />
+      )}
+    </div>
+  )
+}
+
+function Sep() {
+  return <span className="text-muted-foreground/50">·</span>
+}
+
+function Chip({
+  label, count, tone, active, onClick, note,
+}: {
+  label: string
+  count: number
+  tone: 'flux' | 'wan' | 'ltx' | 'qwen' | 'zimage' | 'sdxl' | 'muted' | 'default'
+  active: boolean
+  onClick: () => void
+  note?: string
+}) {
+  const toneClasses: Record<typeof tone, string> = {
+    flux:    'bg-purple-500/15 text-purple-300',
+    wan:     'bg-sky-500/15 text-sky-300',
+    ltx:     'bg-amber-500/15 text-amber-300',
+    qwen:    'bg-fuchsia-500/15 text-fuchsia-300',
+    zimage:  'bg-emerald-500/15 text-emerald-300',
+    sdxl:    'bg-rose-500/15 text-rose-300',
+    muted:   'bg-muted/30 text-muted-foreground',
+    default: 'bg-muted/30 text-muted-foreground',
+  }
+  const activeRing = active ? 'ring-2 ring-primary/60' : 'hover:ring-1 hover:ring-border'
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={note}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full transition-shadow ${toneClasses[tone]} ${activeRing}`}
+    >
+      <span>{label}</span>
+      <span className="text-[10px] font-mono opacity-75">{count}</span>
+    </button>
+  )
+}
+
+function baseModelTone(label: string): 'flux' | 'wan' | 'ltx' | 'qwen' | 'zimage' | 'sdxl' | 'default' {
+  const lower = label.toLowerCase()
+  if (lower.startsWith('flux')) return 'flux'
+  if (lower.startsWith('wan')) return 'wan'
+  if (lower.startsWith('ltx')) return 'ltx'
+  if (lower.startsWith('qwen')) return 'qwen'
+  if (lower.startsWith('z-image')) return 'zimage'
+  if (lower.startsWith('sdxl')) return 'sdxl'
+  return 'default'
+}
+
+// ---- Row rendering ----
+
+function GroupedRowView({
+  group, selected, onToggleRow, onDelete, onBackfilled, disabled,
+}: {
+  group: GroupedRow
+  selected: Set<string>
+  onToggleRow: (filename: string) => void
+  onDelete: (filenames: string[]) => void
+  onBackfilled: (updated: LoraRow) => void
+  disabled: boolean
+}) {
+  const [expanded, setExpanded] = useState(false)
+  if (group.kind === 'single') {
+    return (
+      <LoraRowView
+        row={group.row}
+        selected={selected.has(group.row.filename)}
+        onToggle={() => onToggleRow(group.row.filename)}
+        onDelete={() => onDelete([group.row.filename])}
+        onBackfilled={onBackfilled}
+        disabled={disabled}
+      />
+    )
+  }
+  // Family: render the latest as the headline row + chevron + member count.
+  const latest = group.latest
+  const memberFilenames = group.members.map((m) => m.filename)
+  const allSelected = memberFilenames.every((fn) => selected.has(fn))
+  const headline = (
+    <tr className="border-b border-border/20 hover:bg-accent/20">
+      <td className="p-2">
+        <input
+          type="checkbox"
+          checked={allSelected}
+          onChange={() => memberFilenames.forEach(onToggleRow)}
+          aria-label={`Select all ${group.members.length} epochs in ${group.stem}`}
+        />
+      </td>
+      <td className="p-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="flex items-center gap-1.5 text-left w-full"
+          aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${group.members.length} epochs of ${group.stem}`}
+        >
+          <span className="text-muted-foreground text-[10px]">{expanded ? '▾' : '▸'}</span>
+          <ParsedFilename filename={latest.filename} effectiveBaseModel={effectiveBaseModel(latest)} />
+          <span className="text-[10px] text-muted-foreground">
+            {group.members.length} epochs · latest {parseLoraFilename(latest.filename).epoch}
+          </span>
+        </button>
+      </td>
+      <td className="p-2"><SourceBadge source={latest.source} /></td>
+      <td className="p-2 max-w-[220px] truncate" title={latest.trigger_words.join(', ')}>
+        {latest.trigger_words.length > 0
+          ? latest.trigger_words.join(', ')
+          : <span className="text-muted-foreground">—</span>}
+      </td>
+      <td className="p-2 font-mono">{formatBytes(group.totalSize)}</td>
+      <td className="p-2 text-right">
+        <RowActions
+          row={latest}
+          disabled={disabled}
+          deleteLabel={`Delete all ${group.members.length}`}
+          deleteConfirmHint={`Delete all ${group.members.length} epochs of ${group.stem}?`}
+          onDelete={() => onDelete(memberFilenames)}
+          onBackfilled={onBackfilled}
+        />
+      </td>
+    </tr>
+  )
+  return (
+    <>
+      {headline}
+      {expanded && group.members.map((m) => (
+        <LoraRowView
+          key={m.filename}
+          row={m}
+          selected={selected.has(m.filename)}
+          onToggle={() => onToggleRow(m.filename)}
+          onDelete={() => onDelete([m.filename])}
+          onBackfilled={onBackfilled}
+          disabled={disabled}
+          indent
+        />
+      ))}
+    </>
+  )
+}
+
+function effectiveBaseModel(row: LoraRow): { label: string; inferred: boolean } | null {
+  if (row.base_model) return { label: row.base_model, inferred: false }
+  const hint = parseLoraFilename(row.filename).baseModelHint
+  if (hint) return { label: hint, inferred: true }
+  return null
+}
+
+function ParsedFilename({
+  filename, effectiveBaseModel,
+}: {
+  filename: string
+  effectiveBaseModel: { label: string; inferred: boolean } | null
+}) {
+  const parsed = parseLoraFilename(filename)
+  return (
+    <span className="flex items-baseline gap-1.5 min-w-0">
+      <span className="font-mono text-foreground truncate">{parsed.stem}</span>
+      {parsed.epoch !== null && (
+        <span className="text-[10px] font-mono text-muted-foreground">·epoch{parsed.epoch}</span>
+      )}
+      {parsed.extension && (
+        <span className="text-[10px] text-muted-foreground/60 font-mono">.{parsed.extension}</span>
+      )}
+      {effectiveBaseModel && (
+        <span
+          className={`text-[10px] px-1.5 py-0.5 rounded ${
+            baseModelTone(effectiveBaseModel.label) === 'flux'    ? 'bg-purple-500/15 text-purple-300' :
+            baseModelTone(effectiveBaseModel.label) === 'wan'     ? 'bg-sky-500/15 text-sky-300' :
+            baseModelTone(effectiveBaseModel.label) === 'ltx'     ? 'bg-amber-500/15 text-amber-300' :
+            baseModelTone(effectiveBaseModel.label) === 'qwen'    ? 'bg-fuchsia-500/15 text-fuchsia-300' :
+            baseModelTone(effectiveBaseModel.label) === 'zimage'  ? 'bg-emerald-500/15 text-emerald-300' :
+            baseModelTone(effectiveBaseModel.label) === 'sdxl'    ? 'bg-rose-500/15 text-rose-300' :
+                                                                     'bg-muted/30 text-muted-foreground'
+          } ${effectiveBaseModel.inferred ? 'border border-dashed border-current/30' : ''}`}
+          title={effectiveBaseModel.inferred ? 'Inferred from filename — confirm via Set source' : undefined}
+        >
+          {effectiveBaseModel.label}
+        </span>
+      )}
+    </span>
+  )
+}
+
+function RowActions({
+  row, disabled, onDelete, onBackfilled, deleteLabel = 'Delete', deleteConfirmHint,
+}: {
+  row: LoraRow
+  disabled: boolean
+  onDelete: () => void
+  onBackfilled: (updated: LoraRow) => void
+  deleteLabel?: string
+  deleteConfirmHint?: string
+}) {
+  const [showBackfill, setShowBackfill] = useState(false)
+  const [showOverflow, setShowOverflow] = useState(false)
+  return (
+    <div className="flex items-center justify-end gap-1 relative">
+      {row.source === 'unknown' && (
+        <button
+          type="button"
+          onClick={() => setShowBackfill((v) => !v)}
+          className="px-2 py-1 text-[10px] rounded bg-primary/90 text-primary-foreground hover:bg-primary"
+          aria-expanded={showBackfill}
+        >
+          Set source
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={() => setShowOverflow((v) => !v)}
+        className="px-1.5 py-1 text-[12px] rounded border border-transparent hover:border-border text-muted-foreground"
+        aria-label={`More actions for ${row.filename}`}
+        aria-expanded={showOverflow}
+        aria-haspopup="menu"
+      >
+        ⋯
+      </button>
+      {showOverflow && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full mt-1 z-10 min-w-[140px] rounded border border-border bg-card shadow"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setShowOverflow(false)
+              const prompt = deleteConfirmHint ?? `Delete ${row.filename}?`
+              if (confirm(prompt)) onDelete()
+            }}
+            disabled={disabled}
+            className="w-full text-left px-3 py-1.5 text-[11px] text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          >
+            {deleteLabel}
+          </button>
+        </div>
+      )}
+      {showBackfill && (
+        <div className="absolute right-0 top-full mt-1 z-10 w-[360px] rounded border border-border bg-card shadow p-2">
+          <SetSourceForm
+            filename={row.filename}
+            onCancel={() => setShowBackfill(false)}
+            onSaved={(updated) => { setShowBackfill(false); onBackfilled(updated) }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function LoraRowView({
-  row, selected, onToggle, onDelete, onBackfilled, disabled,
+  row, selected, onToggle, onDelete, onBackfilled, disabled, indent = false,
 }: {
   row: LoraRow
   selected: boolean
@@ -352,59 +694,37 @@ function LoraRowView({
   onDelete: () => void
   onBackfilled: (updated: LoraRow) => void
   disabled: boolean
+  indent?: boolean
 }) {
-  const [showBackfill, setShowBackfill] = useState(false)
   const triggers = row.trigger_words.length > 0 ? row.trigger_words.join(', ') : ''
+  const eff = effectiveBaseModel(row)
   return (
-    <>
-      <tr className="border-b border-border/20 hover:bg-accent/20">
-        <td className="p-2">
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={onToggle}
-            aria-label={`Select ${row.filename}`}
-          />
-        </td>
-        <td className="p-2 font-mono">{row.filename}</td>
-        <td className="p-2"><SourceBadge source={row.source} /></td>
-        <td className="p-2">{row.base_model ?? <span className="text-muted-foreground">—</span>}</td>
-        <td className="p-2 max-w-[220px] truncate" title={triggers}>
-          {triggers || <span className="text-muted-foreground">—</span>}
-        </td>
-        <td className="p-2 font-mono">{formatBytes(row.size_bytes)}</td>
-        <td className="p-2 text-right">
-          {row.source === 'unknown' && (
-            <button
-              type="button"
-              onClick={() => setShowBackfill(true)}
-              className="px-2 py-1 text-[10px] rounded border border-border mr-1"
-            >
-              Set source
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onDelete}
-            disabled={disabled}
-            className="px-2 py-1 text-[10px] rounded border border-destructive/50 text-destructive hover:bg-destructive/10 disabled:opacity-50"
-          >
-            Delete
-          </button>
-        </td>
-      </tr>
-      {showBackfill && (
-        <tr>
-          <td colSpan={7} className="bg-muted/10 px-2 py-2">
-            <SetSourceForm
-              filename={row.filename}
-              onCancel={() => setShowBackfill(false)}
-              onSaved={(updated) => { setShowBackfill(false); onBackfilled(updated) }}
-            />
-          </td>
-        </tr>
-      )}
-    </>
+    <tr className="border-b border-border/20 hover:bg-accent/20 group">
+      <td className="p-2">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={onToggle}
+          aria-label={`Select ${row.filename}`}
+        />
+      </td>
+      <td className={`p-2 ${indent ? 'pl-8' : ''}`}>
+        <ParsedFilename filename={row.filename} effectiveBaseModel={eff} />
+      </td>
+      <td className="p-2"><SourceBadge source={row.source} /></td>
+      <td className="p-2 max-w-[220px] truncate" title={triggers}>
+        {triggers || <span className="text-muted-foreground">—</span>}
+      </td>
+      <td className="p-2 font-mono">{formatBytes(row.size_bytes)}</td>
+      <td className="p-2 text-right">
+        <RowActions
+          row={row}
+          disabled={disabled}
+          onDelete={onDelete}
+          onBackfilled={onBackfilled}
+        />
+      </td>
+    </tr>
   )
 }
 

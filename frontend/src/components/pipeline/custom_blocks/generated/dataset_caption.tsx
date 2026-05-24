@@ -238,7 +238,7 @@ function DatasetCaptionBlock({ blockId, inputs, setOutput, registerExecute, setS
       <div className="space-y-1">
         <Label className="text-xs">Trigger word (prepended to every caption)</Label>
         <Input value={triggerWord} onChange={e => setTriggerWord(e.target.value)}
-          placeholder="e.g. Aviv01" className="h-8 text-xs font-mono" />
+          placeholder="e.g. mytrigger01" className="h-8 text-xs font-mono" />
       </div>
 
       <div className="space-y-1">

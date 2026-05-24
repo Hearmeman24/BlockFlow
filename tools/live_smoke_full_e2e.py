@@ -3,8 +3,9 @@
 
 Sequence (~20 min wall-clock, ~$0.50-1 GPU on the H100 performance tier):
 
-  1. Spin up a localhost HTTP server serving /Users/avivkaplan/comfy/blockflow-presets/
-     (the registry repo isn't pushed to GitHub yet; this is the standin).
+  1. Spin up a localhost HTTP server serving the blockflow-presets registry
+     checkout on disk (configurable via BLOCKFLOW_REGISTRY_DIR; defaults to
+     ../blockflow-presets relative to this repo).
   2. Override preset_routes._MANIFEST_URL to point at the local server +
      regenerate the manifest with localhost preset_url entries.
   3. Populate BlockFlow Settings (RunPod + S3 from ~/.comfy-gen/config.json).
@@ -44,7 +45,10 @@ from backend import (  # noqa: E402
     wizard_routes,
 )
 
-REGISTRY_DIR = Path("/Users/avivkaplan/comfy/blockflow-presets")
+REGISTRY_DIR = Path(
+    os.environ.get("BLOCKFLOW_REGISTRY_DIR")
+    or (ROOT.parent / "blockflow-presets")
+).expanduser().resolve()
 PRESET_ID = "qwen-image-lighting"
 API_KEY = os.environ.get("RUNPOD_API_KEY", "")
 SMOKE_TIER = os.environ.get("SMOKE_TIER", "performance")

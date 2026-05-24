@@ -74,7 +74,7 @@ function VideoViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
   if (displayUrls.length === 0) {
     return (
       <div className="h-full flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">Waiting for video input...</p>
+        <p className="text-sm text-muted-foreground">Waiting for video input…</p>
       </div>
     )
   }
@@ -122,7 +122,10 @@ function VideoViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
                     playsInline
                     preload="metadata"
                     className="w-full bg-black/30"
-                  />
+                    aria-label={`Video preview ${idx + 1}`}
+                  >
+                    <track kind="captions" />
+                  </video>
                   <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[10px] text-white">
                     {idx + 1}
                   </span>

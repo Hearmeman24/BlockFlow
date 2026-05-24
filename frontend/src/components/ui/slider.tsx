@@ -50,6 +50,7 @@ function Slider({
         />
       </SliderPrimitive.Track>
       {Array.from({ length: _values.length }, (_, index) => (
+        // Slider thumbs are positional and have no stable identity beyond index
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
           key={index}

@@ -393,7 +393,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
   return (
     <div className="space-y-3">
       {!hasApiKey && (
-        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
+        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing - configure it in your .env file</span>
       )}
 
       <div className="space-y-1.5">
@@ -468,7 +468,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
             System Prompt
             {activeSystemPrompt && !systemPromptOpen && (
               <span className="text-[10px] text-muted-foreground font-normal ml-1 truncate max-w-[180px]">
-                — {activeSystemPrompt.slice(0, 40)}{activeSystemPrompt.length > 40 ? '...' : ''}
+                - {activeSystemPrompt.slice(0, 40)}{activeSystemPrompt.length > 40 ? '...' : ''}
               </span>
             )}
           </CollapsibleTrigger>
@@ -527,6 +527,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
               <div className="max-h-[200px] overflow-y-auto space-y-0.5 rounded border border-border/50 p-1.5">
                 {extraUserPrompts.map((extra, idx) => (
                   editingPromptIdx === idx ? (
+                    // eslint-disable-next-line react/no-array-index-key -- extras are positional, no stable id
                     <div key={idx} className="space-y-1">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] text-muted-foreground">Prompt {idx + 2}</span>
@@ -536,7 +537,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
                               className="text-[10px] text-muted-foreground hover:text-foreground">Save</button>
                           )}
                           <PromptPickerDropdown prompts={userPrompts} onSelect={(content) => setExtraUserPrompts((prev) => { const arr = [...prev]; arr[idx] = content; return arr })} onDelete={deletePrompt} />
-                          <button type="button" className="text-[10px] text-blue-400" onClick={() => setEditingPromptIdx(null)}>Done</button>
+                          <button type="button" className="text-[10px] text-blue-400" onClick={() => setEditingPromptIdx(null)}>Finish editing</button>
                         </div>
                       </div>
                       <Textarea
@@ -547,6 +548,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
                       />
                     </div>
                   ) : (
+                    // eslint-disable-next-line react/no-array-index-key -- extras are positional, no stable id
                     <div key={idx} className="flex items-center gap-1.5 text-[10px] group">
                       <span className="text-muted-foreground/50 w-4 text-right shrink-0">{idx + 2}</span>
                       <span
@@ -580,7 +582,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
             className="flex items-center gap-1 text-[10px] text-amber-400 hover:text-amber-300"
             onClick={() => setIdeaGenOpen(!ideaGenOpen)}
           >
-            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+            <svg className="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
             Generate ideas
           </button>
         </div>

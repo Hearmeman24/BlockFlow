@@ -426,7 +426,7 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
                                 key={i}
                                 src={u}
                                 alt=""
-                                className="h-5 w-5 rounded-sm object-cover bg-muted/40"
+                                className="size-5 rounded-sm object-cover bg-muted/40"
                                 loading="lazy"
                               />
                             ))}
@@ -481,7 +481,7 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
 
       {/* Env health */}
       {health && !health.runpod_key_present && <p className="text-[10px] text-red-400">RUNPOD_API_KEY missing in .env</p>}
-      {health && !health.aws_creds_present && <p className="text-[10px] text-red-400">AWS S3 creds missing — required for dataset upload</p>}
+      {health && !health.aws_creds_present && <p className="text-[10px] text-red-400">AWS S3 creds missing: required for dataset upload</p>}
 
       {/* Live status */}
       {progress && (
@@ -600,9 +600,10 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
                     type="button"
                     onClick={() => setShowComfyGenSettings((v) => !v)}
                     title="ComfyGen upload settings"
-                    className="h-7 w-7 flex items-center justify-center rounded border border-border/60 text-muted-foreground hover:text-foreground"
+                    aria-label="Toggle ComfyGen upload settings"
+                    className="size-7 flex items-center justify-center rounded border border-border/60 text-muted-foreground hover:text-foreground"
                   >
-                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <svg className="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <circle cx="12" cy="12" r="3" />
                       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
                     </svg>
@@ -650,8 +651,8 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
               </div>
 
               {/* LoRA download links */}
-              {progress.results.map((r, i) => (
-                <a key={i} href={r.url} target="_blank" rel="noreferrer"
+              {progress.results.map((r) => (
+                <a key={r.filename} href={r.url} target="_blank" rel="noreferrer"
                   className="block text-[10px] text-blue-400 hover:text-blue-300 truncate">
                   ↓ {r.filename}{r.noise_variant ? ` (${r.noise_variant})` : ''}
                 </a>

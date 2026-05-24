@@ -65,14 +65,15 @@ function PipelineTabsContent() {
           />
         ))}
         <button
-          className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors shrink-0"
+          type="button"
+          className="flex items-center justify-center size-6 rounded text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors shrink-0"
           onClick={() => {
             const id = addTab()
             setActiveTabId(id)
           }}
           title="New tab"
         >
-          <Plus className="w-3.5 h-3.5" />
+          <Plus className="size-3.5" />
         </button>
       </div>
 
@@ -101,7 +102,7 @@ function PipelineTabsContent() {
 
       {/* Floating run pill */}
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40">
-        <div className="flex flex-col items-center gap-1.5 rounded-2xl border border-border/50 bg-card/80 backdrop-blur-md px-2 py-2 shadow-lg">
+        <div className="flex flex-col items-center gap-1.5 rounded-2xl border border-border/50 bg-card/80 backdrop-blur-md p-2 shadow-lg">
           <div className="flex items-center gap-1.5">
             <Button
               variant={mode === 'auto' ? 'default' : 'outline'}
@@ -131,7 +132,7 @@ function PipelineTabsContent() {
               onClick={() => cancelActivePipeline()}
               className="h-8 px-5 rounded-full bg-red-600 hover:bg-red-700 text-white text-sm font-medium gap-1.5"
             >
-              <Square className="w-3.5 h-3.5 fill-current" />
+              <Square className="size-3.5 fill-current" />
               {isActiveLooping ? `Stop Loop (${activeLoopIteration})` : 'Stop Pipeline'}
             </Button>
           ) : isActiveLooping ? (
@@ -139,7 +140,7 @@ function PipelineTabsContent() {
               onClick={() => stopLoop()}
               className="h-8 px-5 rounded-full bg-red-600 hover:bg-red-700 text-white text-sm font-medium gap-1.5"
             >
-              <Square className="w-3.5 h-3.5 fill-current" />
+              <Square className="size-3.5 fill-current" />
               Stop Loop ({activeLoopIteration})
             </Button>
           ) : (
@@ -149,7 +150,7 @@ function PipelineTabsContent() {
                   onClick={() => continueActivePipeline()}
                   className="h-8 px-5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium gap-1.5"
                 >
-                  <FastForward className="w-3.5 h-3.5" />
+                  <FastForward className="size-3.5" />
                   Continue
                 </Button>
               )}
@@ -157,7 +158,7 @@ function PipelineTabsContent() {
                 onClick={() => runActivePipeline()}
                 className="h-8 px-5 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium gap-1.5"
               >
-                <Play className="w-3.5 h-3.5 fill-current" />
+                <Play className="size-3.5 fill-current" />
                 Run Pipeline
               </Button>
               <Button
@@ -165,7 +166,7 @@ function PipelineTabsContent() {
                 className="h-8 px-5 rounded-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium gap-1.5"
                 title="Run pipeline in a loop until stopped"
               >
-                <Repeat className="w-3.5 h-3.5" />
+                <Repeat className="size-3.5" />
                 Loop
               </Button>
             </div>
@@ -235,6 +236,7 @@ function TabButton({
     return (
       <input
         ref={inputRef}
+        aria-label="Tab name"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
@@ -250,6 +252,7 @@ function TabButton({
   return (
     <div className="relative">
       <button
+        type="button"
         className={`group flex items-center gap-1 h-7 px-2.5 rounded-t text-xs font-medium transition-colors whitespace-nowrap ${
           active
             ? 'bg-background text-foreground border border-b-0 border-border -mb-px'
@@ -266,13 +269,13 @@ function TabButton({
         }}
       >
         {isLooping && (
-          <Repeat className="w-3 h-3 shrink-0 text-violet-400" />
+          <Repeat className="size-3 shrink-0 text-violet-400" />
         )}
         {!isLooping && runState === 'running' && (
-          <Loader2 className="w-3 h-3 shrink-0 animate-spin text-blue-400" />
+          <Loader2 className="size-3 shrink-0 animate-spin text-blue-400" />
         )}
         {!isLooping && runState === 'done' && (
-          <Check className="w-3 h-3 shrink-0 text-emerald-400" />
+          <Check className="size-3 shrink-0 text-emerald-400" />
         )}
         <span className="truncate max-w-[120px]">{label}</span>
         {canClose && (
@@ -283,7 +286,7 @@ function TabButton({
               onClose()
             }}
           >
-            <X className="w-3 h-3" />
+            <X className="size-3" />
           </span>
         )}
       </button>
@@ -293,14 +296,14 @@ function TabButton({
           className="fixed z-50 min-w-[140px] rounded-md border border-border bg-popover shadow-md py-1"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
-          <button className="w-full px-3 py-1.5 text-xs text-left hover:bg-accent" onClick={() => { setContextMenu(null); setDraft(label); setEditing(true) }}>
+          <button type="button" className="w-full px-3 py-1.5 text-xs text-left hover:bg-accent" onClick={() => { setContextMenu(null); setDraft(label); setEditing(true) }}>
             Rename
           </button>
-          <button className="w-full px-3 py-1.5 text-xs text-left hover:bg-accent" onClick={() => { setContextMenu(null); onDuplicate() }}>
+          <button type="button" className="w-full px-3 py-1.5 text-xs text-left hover:bg-accent" onClick={() => { setContextMenu(null); onDuplicate() }}>
             Duplicate
           </button>
           {canClose && (
-            <button className="w-full px-3 py-1.5 text-xs text-left hover:bg-accent text-red-400" onClick={() => { setContextMenu(null); onClose() }}>
+            <button type="button" className="w-full px-3 py-1.5 text-xs text-left hover:bg-accent text-red-400" onClick={() => { setContextMenu(null); onClose() }}>
               Close
             </button>
           )}

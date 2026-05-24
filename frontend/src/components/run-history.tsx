@@ -172,7 +172,7 @@ export function RunHistory() {
         className={`h-8 px-3 text-xs gap-1.5 ${favoritesOnly ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30' : ''}`}
         onClick={toggleFavorites}
       >
-        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={favoritesOnly ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg className="size-3.5" viewBox="0 0 24 24" fill={favoritesOnly ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
         </svg>
         Favorites
@@ -202,7 +202,7 @@ export function RunHistory() {
 
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
-          <p className="text-sm text-muted-foreground">Loading history...</p>
+          <p className="text-sm text-muted-foreground">Loading history…</p>
         </div>
       ) : runs.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 space-y-2">
@@ -211,7 +211,7 @@ export function RunHistory() {
           </p>
           <p className="text-sm text-muted-foreground/70">
             {hasFilters
-              ? <button className="underline hover:text-foreground" onClick={clearAll}>Clear filters</button>
+              ? <button type="button" className="underline hover:text-foreground" onClick={clearAll}>Clear filters</button>
               : 'Run a pipeline from the Generate page to see results here.'}
           </p>
         </div>

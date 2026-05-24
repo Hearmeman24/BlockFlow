@@ -208,7 +208,9 @@ function VideoLoaderBlock({
       ) : (
         <div className="space-y-2 rounded-md border border-border/60 p-2">
           <div className="relative">
-            <video src={`${previewUrl}#t=0.1`} controls className="w-full rounded" />
+            <video src={`${previewUrl}#t=0.1`} controls className="w-full rounded" aria-label="Selected video preview">
+              <track kind="captions" />
+            </video>
             {hasMeta && (
               <span className="absolute top-1.5 right-1.5 bg-emerald-600/90 text-white text-[9px] font-medium px-1.5 py-0.5 rounded">
                 META

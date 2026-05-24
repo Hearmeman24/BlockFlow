@@ -175,7 +175,7 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
                     <img
                       src={e.url}
                       alt={e.filename}
-                      className="h-10 w-10 rounded object-cover bg-muted/30 shrink-0"
+                      className="size-10 rounded object-cover bg-muted/30 shrink-0"
                       loading="lazy"
                     />
                     <div className="min-w-0 flex-1">
@@ -196,21 +196,21 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
           <Button
             variant="ghost"
             size="icon"
-            className={`h-7 w-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
+            className={`size-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
             onClick={handleToggleFavorite}
           >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="size-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
             </svg>
           </Button>
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-red-400"
+            className="size-7 text-muted-foreground hover:text-red-400"
             onClick={handleDelete}
             disabled={deleting}
           >
-            <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
+            <svg className="size-3" viewBox="0 0 12 12" fill="currentColor">
               <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" />
             </svg>
           </Button>

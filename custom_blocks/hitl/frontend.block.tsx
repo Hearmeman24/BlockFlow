@@ -117,7 +117,7 @@ function HumanInTheLoopBlock({ blockId, inputs, setOutput, registerExecute, setS
             className="h-8 text-xs"
             disabled={!isWaiting}
           >
-            Continue
+            Continue pipeline
           </Button>
           <Button
             type="button"

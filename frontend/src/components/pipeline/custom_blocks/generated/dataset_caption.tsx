@@ -264,7 +264,7 @@ function DatasetCaptionBlock({ blockId, inputs, setOutput, registerExecute, setS
                         {thumbs.length > 0 && (
                           <div className="flex gap-0.5 shrink-0">
                             {thumbs.slice(0, 4).map((u, i) => (
-                              <img key={i} src={u} alt="" className="h-5 w-5 rounded-sm object-cover bg-muted/40" loading="lazy" />
+                              <img key={i} src={u} alt="" className="size-5 rounded-sm object-cover bg-muted/40" loading="lazy" />
                             ))}
                           </div>
                         )}

@@ -355,7 +355,7 @@ function CivitAIShareBlock({
             <Button type="button" variant="outline" size="sm" className="h-7 px-3 text-xs" onClick={() => openFilePicker()}>
               Load Media
             </Button>
-            <p className="text-[9px] text-muted-foreground">or drag &amp; drop — or connect upstream</p>
+            <p className="text-[9px] text-muted-foreground">or drag &amp; drop - or connect upstream</p>
           </div>
         </div>
       ) : localFiles.length > 0 ? (
@@ -401,7 +401,7 @@ function CivitAIShareBlock({
       </div>
 
       {!token && (
-        <span className="text-xs text-yellow-500">CIVITAI_API_KEY missing — configure it in your .env file or enter below</span>
+        <span className="text-xs text-yellow-500">CIVITAI_API_KEY missing - configure it in your .env file or enter below</span>
       )}
       <div className="space-y-1">
         <Label className="text-xs">CivitAI API Key</Label>
@@ -532,6 +532,7 @@ function CivitAIShareBlock({
         <p className="text-[11px] text-muted-foreground">
           {status.split(/(https?:\/\/\S+)/g).map((part, i) =>
             /^https?:\/\//.test(part) ? (
+              // eslint-disable-next-line react/no-array-index-key -- split fragments are positional, no stable id
               <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="underline text-blue-400 hover:text-blue-300">{part}</a>
             ) : part
           )}

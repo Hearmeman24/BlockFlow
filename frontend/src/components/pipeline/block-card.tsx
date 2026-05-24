@@ -200,7 +200,7 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
           }
           {blockIterState && (
             <span className="inline-flex items-center gap-1 rounded bg-purple-500/20 border border-purple-500/30 px-1.5 py-0 text-[10px] text-purple-400 font-medium">
-              <svg className="w-2.5 h-2.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg className="size-2.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="8" cy="8" r="6" strokeOpacity="0.3" />
                 <path d="M8 2a6 6 0 0 1 6 6" strokeLinecap="round" />
               </svg>
@@ -212,19 +212,19 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6"
+            className="size-6"
             onClick={() => toggleBlockDisabled(block.id)}
             disabled={isRunning}
             title={isDisabled ? 'Enable block' : 'Disable block'}
           >
             {isDisabled ? (
-              <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <svg className="size-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M2 8s3-5 6-5 6 5 6 5-3 5-6 5-6-5-6-5z" />
                 <circle cx="8" cy="8" r="2" />
                 <line x1="2" y1="14" x2="14" y2="2" />
               </svg>
             ) : (
-              <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <svg className="size-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
                 <path d="M2 8s3-5 6-5 6 5 6 5-3 5-6 5-6-5-6-5z" />
                 <circle cx="8" cy="8" r="2" />
               </svg>
@@ -233,11 +233,11 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6"
+            className="size-6"
             onClick={() => removeBlock(block.id)}
             disabled={isRunning}
           >
-            <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
+            <svg className="size-3" viewBox="0 0 12 12" fill="currentColor">
               <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" />
             </svg>
           </Button>
@@ -247,7 +247,7 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
       {/* Disabled blocks show nothing below the header */}
       {isDisabled ? (
         <div className="px-4 pb-3">
-          <p className="text-xs text-muted-foreground/60 italic">Block disabled — will be skipped during execution</p>
+          <p className="text-xs text-muted-foreground/60 italic">Block disabled, will be skipped during execution</p>
         </div>
       ) : (
         <>
@@ -314,8 +314,8 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
                   return (
                     <div className="space-y-1">
                       <p className="text-xs text-red-400 font-medium">Missing models on endpoint:</p>
-                      {models.map((name, i) => (
-                        <p key={i} className="text-[11px] text-red-400/80 pl-2">• {name}</p>
+                      {models.map((name) => (
+                        <p key={name} className="text-[11px] text-red-400/80 pl-2">• {name}</p>
                       ))}
                     </div>
                   )
@@ -455,6 +455,7 @@ function EditableTitle({
     return (
       <input
         ref={inputRef}
+        aria-label="Block name"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}

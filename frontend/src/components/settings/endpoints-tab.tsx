@@ -158,7 +158,7 @@ function TeardownConfirmDialog({
           onClick={onComplete}
           className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground"
         >
-          Done
+          Close teardown
         </button>
       </Modal>
     )

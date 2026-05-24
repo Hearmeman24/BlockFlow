@@ -120,7 +120,7 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
   if (displayUrls.length === 0) {
     return (
       <div className="h-full flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">Waiting for image or dataset input...</p>
+        <p className="text-sm text-muted-foreground">Waiting for image or dataset input…</p>
       </div>
     )
   }
@@ -204,7 +204,7 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
                 >
                   <img
                     src={url}
-                    alt={`Image ${idx + 1}`}
+                    alt={`Variant ${idx + 1}`}
                     className="w-full bg-black/30"
                   />
                   <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[10px] text-white">

@@ -29,8 +29,8 @@ function Section({ heading, items }: { heading: string; items: string[] }) {
         {heading}
       </div>
       <ul className="mt-0.5 space-y-0.5 text-[12px] leading-snug">
-        {items.map((item, i) => (
-          <li key={i} className="flex gap-1.5">
+        {items.map((item) => (
+          <li key={item} className="flex gap-1.5">
             <span aria-hidden className="text-muted-foreground">•</span>
             <span>{item}</span>
           </li>
@@ -74,7 +74,7 @@ export function PresetRecommendationsTooltip({
           aria-label="Preset recommendations"
           className="inline-flex items-center justify-center rounded p-0.5 text-amber-400/80 hover:text-amber-300 hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/60"
         >
-          <Lightbulb className="h-3.5 w-3.5" />
+          <Lightbulb className="size-3.5" />
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" className="max-w-xs space-y-2 text-left">

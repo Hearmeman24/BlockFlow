@@ -43,7 +43,7 @@ export function DirectorPromptLengthStepper({ value, onChange, fallbackFrames }:
           type="button"
           onClick={dec}
           disabled={!isSet}
-          className="h-4 w-4 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
+          className="size-4 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
           title="Decrease length"
         >
           ▼
@@ -52,7 +52,7 @@ export function DirectorPromptLengthStepper({ value, onChange, fallbackFrames }:
           type="button"
           onClick={inc}
           disabled={isSet && (value as number) >= DIRECTOR_LENGTH_MAX}
-          className="h-4 w-4 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
+          className="size-4 text-[10px] leading-none text-muted-foreground hover:text-foreground disabled:opacity-30"
           title="Increase length"
         >
           ▲

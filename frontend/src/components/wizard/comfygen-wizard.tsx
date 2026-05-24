@@ -244,7 +244,7 @@ export function ComfyGenWizard({ onClose, onSuccess }: Props) {
                 onClick={onClose}
                 className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground"
               >
-                Done
+                Close wizard
               </button>
             </div>
           )}

@@ -273,7 +273,7 @@ function AutoNumericInput({
     <div className="space-y-1">
       <div className="flex items-center gap-1">
         <Input value={value} onChange={(e) => onChange(e.target.value)} {...inputProps} className={`${inputProps.className || ''} flex-1`} />
-        <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0 text-amber-400 hover:text-amber-300 text-sm font-bold" onClick={addValue}>+</Button>
+        <Button type="button" variant="ghost" size="icon" className="size-7 shrink-0 text-amber-400 hover:text-amber-300 text-sm font-bold" onClick={addValue}>+</Button>
       </div>
       {multiValues.length > 0 && (
         <div className="flex flex-wrap gap-1">
@@ -331,7 +331,7 @@ function AutoSelectMulti({
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" className={`${triggerClassName || 'h-7 text-xs'} w-full justify-between font-normal`}>
             <span className="truncate">{selectedValues.length > 0 ? `${selectedValues.length} selected` : (placeholder || 'Select...')}</span>
-            <svg className="w-3 h-3 ml-1 shrink-0 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
+            <svg className="size-3 ml-1 shrink-0 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent className="max-h-[200px] overflow-y-auto" onCloseAutoFocus={(e) => e.preventDefault()}>
@@ -812,7 +812,7 @@ function ComfyGenBlock({
           onClick={toggleAdvancedMode}
           title={advancedMode ? 'Advanced mode on — click to hide power-user controls' : 'Show advanced controls (endpoint override, Load JSON / From PNG, parameter sweep)'}
         >
-          <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <svg className="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </Button>
       </>
     )
@@ -1380,6 +1380,10 @@ function ComfyGenBlock({
     return { fileInputs, overrides: merged, bypassLoras }
   }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, visibleWorkflowSettings, workflowSettingsOverrides])
 
+  // Timers/listeners live inside registerExecute's closure and are cleared
+  // on AbortSignal (see onAbort handlers below) — react-doctor's
+  // effect-needs-cleanup rule doesn't trace through closures.
+  // react-doctor-disable-next-line react-doctor/effect-needs-cleanup
   useEffect(() => {
     registerExecute(async (freshInputs, signal) => {
       if (!workflowJson.trim()) throw new Error('No workflow loaded')
@@ -1474,6 +1478,7 @@ function ComfyGenBlock({
 
         // Cancel all in-flight on abort
         const onAbort = () => {
+          if (batchUpdateTimer) { clearTimeout(batchUpdateTimer); batchUpdateTimer = null }
           for (const jid of activeJobIds) {
             fetch(`${CANCEL_ENDPOINT}/${encodeURIComponent(jid)}`, { method: 'POST' }).catch(() => {})
           }
@@ -1702,6 +1707,10 @@ function ComfyGenBlock({
       setStatusMessage('Done')
       setExecutionStatus?.('completed')
     })
+    return () => {
+      // Unregister on unmount/re-run so a stale closure can't be invoked
+      registerExecute(async () => {})
+    }
   })
 
   // Group text overrides by their label (node title) for collapsible sections
@@ -1717,7 +1726,7 @@ function ComfyGenBlock({
       {/* Automation combination counter */}
       {automateEnabled && automationAxes.length > 0 && (
         <div className="flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-1.5">
-          <svg className="w-3.5 h-3.5 text-amber-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+          <svg className="size-3.5 text-amber-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
           <span className="text-[11px] text-amber-400 font-medium">
             {combinationCount} combo{combinationCount !== 1 ? 's' : ''}
           </span>
@@ -1725,7 +1734,7 @@ function ComfyGenBlock({
             ({automationAxes.map((a) => `${a.values.length} ${a.label}`).join(' x ')})
           </span>
           <span className="flex items-center gap-1 text-[10px] text-muted-foreground shrink-0">
-            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
+            <svg className="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 18l6-6-6-6"/><path d="M8 6l-6 6 6 6"/></svg>
             <select
               className="bg-transparent border border-amber-500/30 rounded px-1 py-0 text-[10px] text-amber-400 h-5"
               value={maxParallel}
@@ -1787,8 +1796,8 @@ function ComfyGenBlock({
         <div className="rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 space-y-2">
           <p className="text-xs text-red-400 font-medium">Missing models on endpoint:</p>
           <div className="space-y-0.5">
-            {missingModels.map((m, i) => (
-              <div key={i} className="flex items-center gap-2 text-[11px]">
+            {missingModels.map((m) => (
+              <div key={m.filename} className="flex items-center gap-2 text-[11px]">
                 <span className={`w-2 h-2 rounded-full shrink-0 ${m.download_url ? 'bg-green-500' : 'bg-red-500'}`} />
                 <span className="text-muted-foreground truncate">{m.filename}</span>
                 <span className="text-muted-foreground/50 text-[10px] shrink-0">({m.class_type})</span>
@@ -1812,13 +1821,13 @@ function ComfyGenBlock({
                 )}
                 {downloadRunning && (
                   <div className="flex items-center gap-2 text-[11px] text-amber-400 animate-pulse">
-                    <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                    <svg className="size-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
                     {downloadStatus}
                   </div>
                 )}
                 {!downloadRunning && downloadStatus.startsWith('Downloaded') && (
                   <p className="text-[11px] text-green-400">
-                    {downloadStatus} — run pipeline again
+                    {downloadStatus}; run pipeline again
                   </p>
                 )}
                 {downloadError && (
@@ -1826,7 +1835,7 @@ function ComfyGenBlock({
                 )}
                 {notDownloadable.length > 0 && (
                   <p className="text-[10px] text-muted-foreground">
-                    {notDownloadable.length} model{notDownloadable.length !== 1 ? 's' : ''} cannot be auto-downloaded — install manually:
+                    {notDownloadable.length} model{notDownloadable.length !== 1 ? 's' : ''} cannot be auto-downloaded; install manually:
                     {notDownloadable.map((m) => ` ${m.filename}`).join(',')}
                   </p>
                 )}
@@ -1895,7 +1904,7 @@ function ComfyGenBlock({
                 className="h-6 px-2 text-[10px]"
                 onClick={() => setEndpointEditing(false)}
               >
-                Done
+                Save endpoint
               </Button>
             </>
           ) : (
@@ -1937,7 +1946,7 @@ function ComfyGenBlock({
                 {installedPresets.flatMap((p) =>
                   (p.workflows && p.workflows.length > 0 ? p.workflows : [{ name: 'Default' }]).map((w, i) => (
                     <SelectItem
-                      key={`${p.preset_id}::${i}`}
+                      key={`${p.preset_id}::${w.name}`}
                       value={`${p.preset_id}::${i}`}
                       className="text-xs"
                     >
@@ -2210,7 +2219,7 @@ function ComfyGenBlock({
           })}
           {ksamplers.length > 3 && (
             <p className="text-[10px] text-yellow-500">
-              {ksamplers.length} KSamplers detected — only showing first 3
+              {ksamplers.length} KSamplers detected; only showing first 3
             </p>
           )}
         </CollapsibleSection>
@@ -2266,6 +2275,7 @@ function ComfyGenBlock({
                 </div>
                 <button
                   type="button"
+                  aria-label={isEnabled ? `Disable LoRA ${ln.label}` : `Enable LoRA ${ln.label}`}
                   onClick={() => setLoraOverrides((prev) => ({
                     ...prev,
                     [ln.node_id]: { ...prev[ln.node_id], enabled: !isEnabled },
@@ -2451,9 +2461,10 @@ function ComfyGenBlock({
                 {s.type === 'bool' ? (
                   <input
                     type="checkbox"
+                    aria-label={s.label}
                     checked={hasOverride ? raw === 'true' : defaultVal === 'true'}
                     onChange={(e) => setWorkflowSettingsOverride(key, e.target.checked ? 'true' : 'false')}
-                    className="h-4 w-4 accent-blue-600"
+                    className="size-4 accent-blue-600"
                   />
                 ) : s.type === 'combo' ? (
                   <Select
@@ -2533,7 +2544,7 @@ function ComfyGenBlock({
               {usesUpstream ? (
                 <div className="min-h-[60px] max-h-[120px] rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 overflow-y-auto">
                   <div className="flex items-center gap-1.5 mb-1">
-                    <svg className="w-3 h-3 text-blue-400 shrink-0" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <svg className="size-3 text-blue-400 shrink-0" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
                       <path d="M2 6h8M7 3l3 3-3 3" />
                     </svg>
                     <span className="text-[10px] text-blue-400 font-medium">
@@ -2555,6 +2566,7 @@ function ComfyGenBlock({
                     className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto"
                   />
                   {/* Extra prompt textareas in automation mode */}
+                  {/* Prompt variants have no stable id; values can be empty/duplicate so index is the only viable key. */}
                   {automateEnabled && (autoText[key] || []).map((extraVal, idx) => (
                     <div key={idx} className="relative">
                       <Textarea

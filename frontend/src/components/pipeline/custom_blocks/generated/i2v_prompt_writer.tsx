@@ -342,7 +342,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   return (
     <div className="space-y-3">
       {!hasApiKey && (
-        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
+        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing - configure it in your .env file</span>
       )}
 
       <div className="space-y-1.5">
@@ -390,6 +390,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
               All upstream images{inputImages.length > 0 ? ` (${inputImages.length})` : ''}
             </SelectItem>
             {inputImages.map((_url, i) => (
+              // eslint-disable-next-line react/no-array-index-key -- images are positional, no stable id
               <SelectItem key={i} value={String(i)} className="text-xs">
                 Image {i + 1}
               </SelectItem>
@@ -433,7 +434,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
             System Prompt
             {activeSystemPrompt && !systemPromptOpen && (
               <span className="text-[10px] text-muted-foreground font-normal ml-1 truncate max-w-[180px]">
-                — {activeSystemPrompt.slice(0, 40)}{activeSystemPrompt.length > 40 ? '...' : ''}
+                - {activeSystemPrompt.slice(0, 40)}{activeSystemPrompt.length > 40 ? '...' : ''}
               </span>
             )}
           </CollapsibleTrigger>

@@ -280,8 +280,8 @@ describe('EndpointsTab — rendering', () => {
 
     await waitFor(() => expect(client.wizardTeardown).toHaveBeenCalled())
 
-    // Click Done on success step → wizard opens
-    await user.click(await screen.findByRole('button', { name: /^Done$/ }))
+    // Click Close teardown on success step → wizard opens
+    await user.click(await screen.findByRole('button', { name: /^Close teardown$/ }))
 
     expect(await screen.findByRole('heading', { name: /Set up ComfyGen endpoint/i })).toBeInTheDocument()
   })

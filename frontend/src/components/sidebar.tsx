@@ -27,7 +27,7 @@ export function Sidebar() {
               <TooltipTrigger asChild>
                 <Link
                   href={item.href}
-                  className={`flex items-center justify-center w-9 h-9 rounded-lg transition-all ${
+                  className={`flex items-center justify-center size-9 rounded-lg transition-all ${
                     active
                       ? 'bg-primary text-primary-foreground shadow-sm'
                       : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'

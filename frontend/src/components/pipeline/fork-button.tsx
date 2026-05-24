@@ -14,12 +14,12 @@ export function ForkButton({ onFork, disabled }: ForkButtonProps) {
     <Button
       variant="outline"
       size="icon"
-      className="rounded-full w-8 h-8 border-dashed shrink-0 panningDisabled"
+      className="rounded-full size-8 border-dashed shrink-0 panningDisabled"
       title="Add branch"
       onClick={onFork}
       disabled={disabled}
     >
-      <GitBranch className="w-3.5 h-3.5" />
+      <GitBranch className="size-3.5" />
     </Button>
   )
 }

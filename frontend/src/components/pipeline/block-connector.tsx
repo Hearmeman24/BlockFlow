@@ -14,7 +14,7 @@ export function BlockConnector({ end }: { end?: boolean } = {}) {
       <div className="w-10 h-[2px] bg-muted-foreground/25" />
       {end && (
         <svg
-          className="w-2.5 h-2.5 text-muted-foreground/40 -ml-[3px]"
+          className="size-2.5 text-muted-foreground/40 -ml-[3px]"
           viewBox="0 0 10 10"
           fill="none"
           stroke="currentColor"
@@ -63,10 +63,11 @@ export function InsertBlockConnector({
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
-              className="w-5 h-5 rounded-full border border-dashed border-muted-foreground/30 bg-background flex items-center justify-center hover:border-muted-foreground/60 transition-colors duration-150"
+              type="button"
+              className="size-5 rounded-full border border-dashed border-muted-foreground/30 bg-background flex items-center justify-center hover:border-muted-foreground/60 transition-colors duration-150"
               aria-label="Insert block"
             >
-              <svg className="w-2.5 h-2.5 text-muted-foreground" viewBox="0 0 16 16" fill="none">
+              <svg className="size-2.5 text-muted-foreground" viewBox="0 0 16 16" fill="none">
                 <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" />
               </svg>
             </button>
@@ -97,7 +98,7 @@ export function InsertBlockConnector({
 export function PipelineStartDot() {
   return (
     <div className="flex items-center shrink-0">
-      <div className="w-2.5 h-2.5 rounded-full bg-muted-foreground/30" />
+      <div className="size-2.5 rounded-full bg-muted-foreground/30" />
     </div>
   )
 }

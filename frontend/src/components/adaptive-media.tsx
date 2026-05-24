@@ -39,18 +39,21 @@ export function AdaptiveVideoFrame({
 
   return (
     <div
-      className="relative w-full rounded overflow-hidden bg-black"
+      className="relative w-full rounded overflow-hidden bg-neutral-950"
       style={{ aspectRatio }}
     >
       <video
         src={src}
         controls={controls}
+        aria-label="Generated video"
         className={className}
         preload="metadata"
         onLoadedMetadata={(event) => {
           setFromDimensions(event.currentTarget.videoWidth, event.currentTarget.videoHeight)
         }}
-      />
+      >
+        <track kind="captions" />
+      </video>
     </div>
   )
 }
@@ -70,7 +73,7 @@ export function AdaptiveImageFrame({
 
   return (
     <div
-      className="relative w-full rounded overflow-hidden bg-black"
+      className="relative w-full rounded overflow-hidden bg-neutral-950"
       style={{ aspectRatio }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- dynamic output URLs */}

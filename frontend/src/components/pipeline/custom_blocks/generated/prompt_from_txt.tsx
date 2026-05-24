@@ -97,7 +97,7 @@ function PromptFromTxtBlock({ blockId, setOutput, registerExecute, setStatusMess
               Load .txt Files
             </Button>
             <p className="text-[10px] text-muted-foreground">
-              or drag &amp; drop — one prompt per line
+              or drag &amp; drop - one prompt per line
             </p>
           </div>
         </div>
@@ -122,6 +122,7 @@ function PromptFromTxtBlock({ blockId, setOutput, registerExecute, setStatusMess
 
           <div className="space-y-0.5">
             {prompts.slice(0, expanded ? undefined : PREVIEW_COUNT).map((p, i) => (
+              // eslint-disable-next-line react/no-array-index-key -- prompts are positional lines, no stable id
               <p key={i} className="text-[10px] text-muted-foreground truncate" title={p}>
                 <span className="text-[9px] text-muted-foreground/50 mr-1">{i + 1}.</span>
                 {p}

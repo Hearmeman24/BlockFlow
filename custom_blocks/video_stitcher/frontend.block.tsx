@@ -191,7 +191,10 @@ function VideoStitcherBlock({
           controls
           loop
           muted
-        />
+          aria-label="Stitched video output"
+        >
+          <track kind="captions" />
+        </video>
       )}
     </div>
   )

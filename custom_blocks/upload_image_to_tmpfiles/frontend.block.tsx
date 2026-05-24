@@ -434,7 +434,7 @@ function UploadImageBlock({
                   </div>
                   <button
                     type="button"
-                    className="absolute top-0.5 right-0.5 hidden group-hover:flex h-4 w-4 items-center justify-center rounded-full bg-black/70 text-white text-[9px] leading-none"
+                    className="absolute top-0.5 right-0.5 hidden group-hover:flex size-4 items-center justify-center rounded-full bg-black/70 text-white text-[9px] leading-none"
                     onClick={() => removeFile(idx)}
                   >
                     ×

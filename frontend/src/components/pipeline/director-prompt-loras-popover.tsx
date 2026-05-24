@@ -68,8 +68,8 @@ function LoraRow({ options, entry, onChange, onRemove }: RowProps) {
             ))}
           </SelectContent>
         </Select>
-        <Button variant="ghost" size="icon" onClick={onRemove} className="shrink-0 h-7 w-7">
-          <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
+        <Button variant="ghost" size="icon" onClick={onRemove} className="shrink-0 size-7">
+          <svg className="size-3" viewBox="0 0 12 12" fill="currentColor">
             <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" />
           </svg>
         </Button>
@@ -132,7 +132,7 @@ export function DirectorPromptLorasPopover({ promptIndex, value, onChange }: Pro
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-sm">Per-prompt LoRAs — shot {promptIndex + 1}</DialogTitle>
+            <DialogTitle className="text-sm">Per-prompt LoRAs: shot {promptIndex + 1}</DialogTitle>
           </DialogHeader>
           <p className="text-[11px] text-muted-foreground">
             Added on top of block-level LoRAs for this prompt only.
@@ -141,6 +141,7 @@ export function DirectorPromptLorasPopover({ promptIndex, value, onChange }: Pro
             <Label className="text-xs font-medium">High Noise</Label>
             <div className="space-y-1.5">
               {highEntries.map((entry, i) => (
+                // LoraEntry has no stable id; index is the only available key
                 <LoraRow
                   key={`h-${i}`}
                   options={data.high}
@@ -158,6 +159,7 @@ export function DirectorPromptLorasPopover({ promptIndex, value, onChange }: Pro
             <Label className="text-xs font-medium">Low Noise</Label>
             <div className="space-y-1.5">
               {lowEntries.map((entry, i) => (
+                // LoraEntry has no stable id; index is the only available key
                 <LoraRow
                   key={`l-${i}`}
                   options={data.low}

@@ -158,7 +158,9 @@ function UrlArtifact({ url }: { url: string }) {
   if (type === 'audio') {
     return (
       <div className="rounded border border-border/50 p-2">
-        <audio src={url} controls className="w-full" preload="metadata" />
+        <audio src={url} controls aria-label="Audio artifact" className="w-full" preload="metadata">
+          <track kind="captions" />
+        </audio>
       </div>
     )
   }
@@ -447,11 +449,14 @@ function ArtifactPreview({ kind, value, galleryIndex, onGalleryIndexChange, sibl
       if (!isTrained) {
         return (
           <div className="flex flex-wrap gap-1">
-            {loras.map((l: { name?: string }, i: number) => (
-              <Badge key={i} variant="secondary" className="text-[10px]">
-                {String(l?.name ?? 'LoRA').replace('.safetensors', '')}
-              </Badge>
-            ))}
+            {loras.map((l: { name?: string }, i: number) => {
+              const badgeName = String(l?.name ?? `lora_${i + 1}`)
+              return (
+                <Badge key={badgeName} variant="secondary" className="text-[10px]">
+                  {badgeName.replace('.safetensors', '')}
+                </Badge>
+              )
+            })}
           </div>
         )
       }
@@ -476,9 +481,9 @@ function ArtifactPreview({ kind, value, galleryIndex, onGalleryIndexChange, sibl
         <div className="rounded border border-violet-500/30 bg-violet-500/5 p-2 space-y-2">
           <div className="flex items-center gap-2">
             {dsThumb ? (
-              <img src={dsThumb} alt="" className="h-12 w-12 rounded object-cover bg-muted/40 shrink-0" loading="lazy" />
+              <img src={dsThumb} alt="" className="size-12 rounded object-cover bg-muted/40 shrink-0" loading="lazy" />
             ) : (
-              <div className="h-12 w-12 rounded bg-violet-500/10 flex items-center justify-center shrink-0">
+              <div className="size-12 rounded bg-violet-500/10 flex items-center justify-center shrink-0">
                 <span className="text-[9px] text-violet-300 font-mono">LoRA</span>
               </div>
             )}
@@ -504,12 +509,12 @@ function ArtifactPreview({ kind, value, galleryIndex, onGalleryIndexChange, sibl
               const url = String(l?.url ?? '')
               const variant = l?.noise_variant ? ` (${l.noise_variant})` : ''
               return url ? (
-                <a key={i} href={url} target="_blank" rel="noreferrer"
+                <a key={fn} href={url} target="_blank" rel="noreferrer"
                   className="block text-[10px] text-blue-400 hover:text-blue-300 truncate font-mono">
                   ↓ {fn}{variant}
                 </a>
               ) : (
-                <p key={i} className="text-[10px] text-muted-foreground truncate font-mono">
+                <p key={fn} className="text-[10px] text-muted-foreground truncate font-mono">
                   {fn}{variant}
                 </p>
               )
@@ -624,8 +629,8 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
           if (presetLabels.length === 0) return null
           return (
             <div className="space-y-0.5 text-[10px] text-muted-foreground">
-              {presetLabels.map((label, i) => (
-                <div key={i} className="truncate">
+              {presetLabels.map((label) => (
+                <div key={label} className="truncate">
                   <span className="font-medium text-foreground/80">Preset:</span>{' '}
                   {label}
                 </div>
@@ -665,7 +670,7 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
                     return (
                       <details className="rounded border border-border/50">
                         <summary className="flex items-center gap-2 px-2 py-1.5 cursor-pointer text-[10px] text-muted-foreground hover:text-foreground">
-                          <svg className="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             {isVideo ? (
                               <><rect x="2" y="2" width="20" height="20" rx="2"/><polygon points="10 8 16 12 10 16 10 8"/></>
                             ) : (
@@ -714,21 +719,21 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
           <Button
             variant="ghost"
             size="icon"
-            className={`h-7 w-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
+            className={`size-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
             onClick={handleToggleFavorite}
           >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="size-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
             </svg>
           </Button>
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-red-400"
+            className="size-7 text-muted-foreground hover:text-red-400"
             onClick={handleDelete}
             disabled={deleting}
           >
-            <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
+            <svg className="size-3" viewBox="0 0 12 12" fill="currentColor">
               <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" />
             </svg>
           </Button>

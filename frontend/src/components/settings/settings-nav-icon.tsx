@@ -24,7 +24,7 @@ export function SettingsNavIcon() {
           : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
       }`}
     >
-      <SettingsIcon className="w-4 h-4" />
+      <SettingsIcon className="size-4" />
       <span className="sr-only">Settings</span>
     </Link>
   )

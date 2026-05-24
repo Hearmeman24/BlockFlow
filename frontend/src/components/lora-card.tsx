@@ -100,13 +100,13 @@ export function LoraCard({ run, loras, siblings, onDeleted, onFavoriteToggled }:
               const variant = l?.noise_variant ? ` (${l.noise_variant})` : ''
               return url ? (
                 <a
-                  key={i}
+                  key={fn}
                   href={url}
                   target="_blank"
                   rel="noreferrer"
                   className="flex items-center gap-2 rounded border border-border/50 px-2 py-1.5 text-[11px] font-mono hover:bg-foreground/5 hover:border-foreground/30 transition-colors"
                 >
-                  <svg className="w-3 h-3 shrink-0 text-blue-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg className="size-3 shrink-0 text-blue-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                     <polyline points="7 10 12 15 17 10"/>
                     <line x1="12" y1="15" x2="12" y2="3"/>
@@ -114,7 +114,7 @@ export function LoraCard({ run, loras, siblings, onDeleted, onFavoriteToggled }:
                   <span className="truncate">{fn}{variant}</span>
                 </a>
               ) : (
-                <p key={i} className="text-[11px] text-muted-foreground truncate font-mono px-2 py-1.5">
+                <p key={fn} className="text-[11px] text-muted-foreground truncate font-mono px-2 py-1.5">
                   {fn}{variant}
                 </p>
               )
@@ -143,21 +143,21 @@ export function LoraCard({ run, loras, siblings, onDeleted, onFavoriteToggled }:
           <Button
             variant="ghost"
             size="icon"
-            className={`h-7 w-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
+            className={`size-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
             onClick={handleToggleFavorite}
           >
-            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="size-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
             </svg>
           </Button>
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-red-400"
+            className="size-7 text-muted-foreground hover:text-red-400"
             onClick={handleDelete}
             disabled={deleting}
           >
-            <svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor">
+            <svg className="size-3" viewBox="0 0 12 12" fill="currentColor">
               <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" />
             </svg>
           </Button>

@@ -206,12 +206,13 @@ function ForkLanes({
               ancestors={ancestors}
             />
             <button
-              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground/30 hover:text-red-400 transition-colors shrink-0 ml-2"
+              type="button"
+              className="flex items-center justify-center size-6 rounded text-muted-foreground/30 hover:text-red-400 transition-colors shrink-0 ml-2"
               onClick={() => removeBranch(forkBlock.id, 0)}
               disabled={isRunning}
               title="Remove branch"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="size-3.5" />
             </button>
           </div>
         </>
@@ -253,12 +254,13 @@ function ForkLanes({
               ancestors={ancestors}
             />
             <button
-              className="flex items-center justify-center w-6 h-6 rounded text-muted-foreground/30 hover:text-red-400 transition-colors shrink-0 ml-2"
+              type="button"
+              className="flex items-center justify-center size-6 rounded text-muted-foreground/30 hover:text-red-400 transition-colors shrink-0 ml-2"
               onClick={() => removeBranch(forkBlock.id, 1)}
               disabled={isRunning}
               title="Remove branch"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="size-3.5" />
             </button>
           </div>
         </>

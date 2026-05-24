@@ -40,7 +40,7 @@ export function PipelineView() {
 
   return (
     <PannableCanvas>
-      <div className="flex items-center gap-0 px-8 py-8 min-w-max">
+      <div className="flex items-center gap-0 p-8 min-w-max">
         <PipelineStartDot />
         <ChainRenderer
           chain={blocks}

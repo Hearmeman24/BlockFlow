@@ -30,10 +30,10 @@ export function JobManager() {
           className="flex items-center justify-between w-full px-3 py-2 text-xs font-medium text-foreground hover:bg-accent/30 transition-colors"
         >
           <span className="flex items-center gap-1.5">
-            <Layers className="w-3.5 h-3.5 text-blue-400" />
+            <Layers className="size-3.5 text-blue-400" />
             {runningTabs.length} pipelines running
           </span>
-          {collapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+          {collapsed ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
         </button>
 
         {/* Entries */}
@@ -49,7 +49,7 @@ export function JobManager() {
                     isActive ? 'bg-accent/20' : 'hover:bg-accent/10'
                   }`}
                 >
-                  <Loader2 className="w-3 h-3 shrink-0 animate-spin text-blue-400" />
+                  <Loader2 className="size-3 shrink-0 animate-spin text-blue-400" />
                   <button
                     type="button"
                     onClick={() => setActiveTabId(tab.id)}
@@ -69,7 +69,7 @@ export function JobManager() {
                     className="shrink-0 p-0.5 rounded hover:bg-red-500/20 text-muted-foreground hover:text-red-400 transition-colors"
                     title={`Stop ${tab.label}`}
                   >
-                    <Square className="w-3 h-3 fill-current" />
+                    <Square className="size-3 fill-current" />
                   </button>
                 </div>
               )

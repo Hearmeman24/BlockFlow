@@ -22,7 +22,7 @@ export function PresetsNavIcon() {
           : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
       }`}
     >
-      <PackageIcon className="w-4 h-4" />
+      <PackageIcon className="size-4" />
       <span className="sr-only">Presets</span>
     </Link>
   )

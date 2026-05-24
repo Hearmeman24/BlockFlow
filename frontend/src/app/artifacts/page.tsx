@@ -1,20 +1,12 @@
-'use client'
+import type { Metadata } from 'next'
 
-import { Suspense } from 'react'
-import { RunHistory } from '@/components/run-history'
+import { ArtifactsClient } from './artifacts-client'
 
-function ArtifactsInner() {
-  return (
-    <main className="mx-auto max-w-6xl px-4 pt-20 pb-6">
-      <RunHistory />
-    </main>
-  )
+export const metadata: Metadata = {
+  title: 'Artifacts',
+  description: 'Browse generated runs, images, videos, datasets, and LoRAs.',
 }
 
 export default function ArtifactsPage() {
-  return (
-    <Suspense>
-      <ArtifactsInner />
-    </Suspense>
-  )
+  return <ArtifactsClient />
 }

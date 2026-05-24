@@ -45,9 +45,9 @@ export function AddBlockButton({ validTypes, onAdd, upstreamType }: AddBlockButt
           <Button
             variant="outline"
             size="icon"
-            className="rounded-full w-10 h-10 border-dashed"
+            className="rounded-full size-10 border-dashed"
           >
-            <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
+            <svg className="size-4" viewBox="0 0 16 16" fill="currentColor">
               <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.5" fill="none" />
             </svg>
           </Button>

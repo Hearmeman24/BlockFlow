@@ -209,7 +209,7 @@ function ImageInspectorBlock({ blockId, setOutput, registerExecute, setStatusMes
               Load Images
             </Button>
             <p className="text-[10px] text-muted-foreground">
-              or drag &amp; drop — metadata will be read automatically
+              or drag &amp; drop - metadata will be read automatically
             </p>
           </div>
         </div>
@@ -234,14 +234,14 @@ function ImageInspectorBlock({ blockId, setOutput, registerExecute, setStatusMes
               <>
                 <button
                   type="button"
-                  className="absolute left-1 top-1/2 -translate-y-1/2 h-7 w-7 flex items-center justify-center rounded-full bg-black/60 text-white text-sm hover:bg-black/80 transition-colors"
+                  className="absolute left-1 top-1/2 -translate-y-1/2 size-7 flex items-center justify-center rounded-full bg-black/60 text-white text-sm hover:bg-black/80 transition-colors"
                   onClick={() => goTo(currentIdx - 1)}
                 >
                   ‹
                 </button>
                 <button
                   type="button"
-                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 flex items-center justify-center rounded-full bg-black/60 text-white text-sm hover:bg-black/80 transition-colors"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 size-7 flex items-center justify-center rounded-full bg-black/60 text-white text-sm hover:bg-black/80 transition-colors"
                   onClick={() => goTo(currentIdx + 1)}
                 >
                   ›
@@ -257,7 +257,7 @@ function ImageInspectorBlock({ blockId, setOutput, registerExecute, setStatusMes
           {current && (
             <div className="space-y-1 text-[10px]">
               {current.metaLoading && (
-                <p className="text-muted-foreground">Loading metadata...</p>
+                <p className="text-muted-foreground">Loading metadata…</p>
               )}
               {current.meta === null && !current.metaLoading && (
                 <p className="text-muted-foreground">No embedded metadata found</p>

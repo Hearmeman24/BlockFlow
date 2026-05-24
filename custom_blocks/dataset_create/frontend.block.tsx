@@ -186,7 +186,11 @@ function DatasetCreateBlock({
     .reduce((sum, p) => sum + p.prompt_count, 0)
   + (customPrompt.trim() ? customPrompt.split('\n').filter((l) => l.trim()).length : 0)
 
-  // Pipeline execution
+  // Pipeline execution.
+  // The addEventListener inside registerExecute is removed in the matching
+  // finally block; react-doctor's effect-needs-cleanup rule doesn't trace
+  // through async closures so it false-positives here.
+  // react-doctor-disable-next-line react-doctor/effect-needs-cleanup
   useEffect(() => {
     registerExecute(async (freshInputs, signal) => {
       const refs = toReferenceUrls(freshInputs.image)
@@ -293,6 +297,11 @@ function DatasetCreateBlock({
         signal.removeEventListener('abort', abortHandler)
       }
     })
+    return () => {
+      // Mark cancel so any in-flight poll loop bails out on unmount and
+      // doesn't keep firing setState after the component is gone.
+      cancelRequestedRef.current = true
+    }
   })
 
   return (
@@ -348,7 +357,7 @@ function DatasetCreateBlock({
           <p className="text-[11px]">
             <span className="font-medium">{derivedImageCount}</span>
             <span className="text-muted-foreground">
-              {' image'}{derivedImageCount === 1 ? '' : 's'} — one per prompt
+              {' image'}{derivedImageCount === 1 ? '' : 's'}: one per prompt
               {upstreamSynced ? ` (${upstreamPromptCount} upstream${customPromptCount > 0 ? ` + ${customPromptCount} custom` : ''})` : ` (${customPromptCount} custom)`}
             </span>
           </p>
@@ -417,7 +426,7 @@ function DatasetCreateBlock({
             <p className="text-[10px] text-muted-foreground">
               {useUpstreamPrompts
                 ? `Using ${upstreamPromptCount} prompt${upstreamPromptCount === 1 ? '' : 's'} from upstream (one per line).`
-                : `${upstreamPromptCount} upstream prompt${upstreamPromptCount === 1 ? '' : 's'} available — enable toggle to use.`}
+                : `${upstreamPromptCount} upstream prompt${upstreamPromptCount === 1 ? '' : 's'} available, enable toggle to use.`}
             </p>
           ) : (
             <p className="text-[10px] text-muted-foreground italic">
@@ -438,13 +447,14 @@ function DatasetCreateBlock({
             <span className="text-[10px]">{customPromptsOpen ? '▾' : '▸'}</span>
             <span className="font-medium">Custom prompts</span>
             {customPromptCount > 0 && (
-              <span className="text-[10px] text-muted-foreground">— {customPromptCount} line{customPromptCount === 1 ? '' : 's'}</span>
+              <span className="text-[10px] text-muted-foreground">: {customPromptCount} line{customPromptCount === 1 ? '' : 's'}</span>
             )}
           </span>
         </button>
         {customPromptsOpen && (
           <textarea
             id={`${blockId}-custom`}
+            aria-label="Custom prompts (one per line)"
             value={customPrompt}
             onChange={(e) => setCustomPrompt(e.target.value)}
             placeholder="Add ad-hoc prompts here, one per line..."
@@ -479,7 +489,7 @@ function DatasetCreateBlock({
       <div className="space-y-1">
         <Label className="text-[11px]">RunPod API key</Label>
         {health == null ? (
-          <p className="text-[10px] text-muted-foreground">Checking environment...</p>
+          <p className="text-[10px] text-muted-foreground">Checking environment…</p>
         ) : health.runpod_key_present && !overrideKey ? (
           <div className="flex items-center justify-between rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5">
             <span className="text-[11px] text-emerald-300">✓ Loaded from .env</span>
@@ -534,10 +544,11 @@ function DatasetCreateBlock({
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{previewPack?.id} — {previewPack?.prompts.length} prompts</DialogTitle>
+            <DialogTitle>{previewPack?.id}: {previewPack?.prompts.length} prompts</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
             {previewPack?.prompts.map((p, i) => (
+              // Prompts are plain strings with no stable id; index is fine for a static preview list.
               <div key={i} className="text-xs leading-relaxed rounded border border-border/40 p-2">
                 <span className="text-muted-foreground mr-2">#{i + 1}</span>{p}
               </div>

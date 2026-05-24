@@ -96,6 +96,7 @@ export function CredentialInput({ name, label, validator, hint }: Props) {
         />
         <button
           type="button"
+          aria-label={showSecret ? 'Hide secret' : 'Show secret'}
           onClick={() => setShowSecret((s) => !s)}
           className="px-3 py-1.5 text-xs rounded border border-border hover:bg-accent/50"
         >

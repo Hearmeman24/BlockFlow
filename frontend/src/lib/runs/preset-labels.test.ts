@@ -26,19 +26,32 @@ describe('extractComfyGenPresetLabels', () => {
   })
 
   test('returns workflow_name from each comfy_gen block in tree order', () => {
+    // Saved flow snapshots use the camelCase registry id 'comfyGen' (the
+    // snake_case directory name 'comfy_gen' is what the source files use).
     const snapshot = {
       name: 'x',
       version: 1,
       created_at: '',
       blocks: [
-        { type: 'comfy_gen', config: { workflow_name: 'wan-animate · Replace Face' } },
+        { type: 'comfyGen', config: { workflow_name: 'wan-animate · Replace Face' } },
         { type: 'upscale', config: {} },
-        { type: 'comfy_gen', config: { workflow_name: 'qwen-image-lighting · Default' } },
+        { type: 'comfyGen', config: { workflow_name: 'qwen-image-lighting · Default' } },
       ],
     }
     expect(extractComfyGenPresetLabels(snapshot)).toEqual([
       'wan-animate · Replace Face',
       'qwen-image-lighting · Default',
+    ])
+  })
+
+  test('also accepts the snake_case type for forward compatibility', () => {
+    const snapshot = {
+      blocks: [
+        { type: 'comfy_gen', config: { workflow_name: 'snake · case' } },
+      ],
+    }
+    expect(extractComfyGenPresetLabels(snapshot as Record<string, unknown>)).toEqual([
+      'snake · case',
     ])
   })
 
@@ -52,10 +65,10 @@ describe('extractComfyGenPresetLabels', () => {
         {
           type: 'fork',
           branches: [
-            [{ type: 'comfy_gen', config: { workflow_name: 'preset-A · v1' } }],
+            [{ type: 'comfyGen', config: { workflow_name: 'preset-A · v1' } }],
             [
               { type: 'hitl' },
-              { type: 'comfy_gen', config: { workflow_name: 'preset-B · v2' } },
+              { type: 'comfyGen', config: { workflow_name: 'preset-B · v2' } },
             ],
           ],
         },
@@ -73,9 +86,9 @@ describe('extractComfyGenPresetLabels', () => {
       version: 1,
       created_at: '',
       blocks: [
-        { type: 'comfy_gen', config: {} },
-        { type: 'comfy_gen', config: { workflow_name: '' } },
-        { type: 'comfy_gen', config: { workflow_name: 'kept · entry' } },
+        { type: 'comfyGen', config: {} },
+        { type: 'comfyGen', config: { workflow_name: '' } },
+        { type: 'comfyGen', config: { workflow_name: 'kept · entry' } },
       ],
     }
     expect(extractComfyGenPresetLabels(snapshot)).toEqual(['kept · entry'])
@@ -90,8 +103,8 @@ describe('extractComfyGenPresetLabels', () => {
   test('coerces non-string workflow_name to nothing (defensive)', () => {
     const snapshot = {
       blocks: [
-        { type: 'comfy_gen', config: { workflow_name: 123 } },
-        { type: 'comfy_gen', config: { workflow_name: { wrong: 'shape' } } },
+        { type: 'comfyGen', config: { workflow_name: 123 } },
+        { type: 'comfyGen', config: { workflow_name: { wrong: 'shape' } } },
       ],
     }
     expect(extractComfyGenPresetLabels(snapshot as Record<string, unknown>)).toEqual([])

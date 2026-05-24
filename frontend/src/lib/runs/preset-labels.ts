@@ -24,7 +24,9 @@ export function extractComfyGenPresetLabels(snapshot: Snapshot | null | undefine
     for (const raw of list) {
       const b = raw as MaybeSavedBlock
       if (b && typeof b === 'object') {
-        if (b.type === 'comfy_gen') {
+        // Saved snapshots use the camelCase registry id 'comfyGen'; accept
+        // the snake_case source-dir name 'comfy_gen' defensively.
+        if (b.type === 'comfyGen' || b.type === 'comfy_gen') {
           const cfg = b.config as { workflow_name?: unknown } | undefined
           const name = cfg?.workflow_name
           if (typeof name === 'string' && name.length > 0) {

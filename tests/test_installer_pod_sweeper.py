@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import sys
 import threading
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -27,7 +26,6 @@ from backend import (  # noqa: E402
     runpod_api,
     settings_store,
 )
-
 
 # === fixtures ===============================================================
 

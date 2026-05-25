@@ -29,6 +29,10 @@ const eslintConfig = defineConfig([
     // without blocking merges. Tracked under sgs-ui-wisp-las.13 follow-up.
     rules: {
       "react-hooks/set-state-in-effect": "warn",
+      // Lazy-init pattern: useState(() => ref.current.x) is a legitimate
+      // way to seed state from a session-restored runtime snapshot.
+      // Tracked under sgs-ui-wisp-las.13 follow-up alongside set-state-in-effect.
+      "react-hooks/refs": "warn",
     },
   },
 ]);

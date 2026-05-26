@@ -38,7 +38,7 @@ import tempfile
 import threading
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -242,7 +242,18 @@ _install_state: dict[str, Any] = {
     # stdout carries structured events, so this tail is primarily for
     # diagnostic stderr noise from the CLI itself.
     "log_tail": "",
+    # sgs-ui-6ag: when state ends in error/cancelled, the pod is kept alive
+    # for INSTALL_FAILURE_POD_GRACE_SEC so the user can view logs / SSH in.
+    # ISO timestamp of the scheduled DELETE; null on success or when no
+    # pod was ever spawned.
+    "pod_delete_at": None,
 }
+
+# sgs-ui-6ag: how long to keep the installer pod alive after a failed
+# install before tearing it down. 90s is enough to click "View pod logs",
+# inspect them in the RunPod console, copy out the stack trace, etc.
+# Success path stays immediate (no debugging window needed).
+INSTALL_FAILURE_POD_GRACE_SEC = 90
 _install_lock = threading.Lock()
 # sgs-ui-8ww: handle on the running `comfy-gen install-preset` subprocess
 # so the cancel route can SIGINT it. None when no install is in flight.
@@ -276,10 +287,40 @@ def _reset_install_state() -> None:
         "total_download_bytes": 0,
         "files": [],
         "pod_id": None,
+        "pod_delete_at": None,
         "log_tail": "",
     })
     _install_proc["proc"] = None
     _volume_cache.clear()
+
+
+def _schedule_delayed_pod_delete(
+    pod_id: str | None,
+    delay_sec: int = INSTALL_FAILURE_POD_GRACE_SEC,
+) -> None:
+    """sgs-ui-6ag: keep the installer pod alive for `delay_sec` after a
+    failed install so the user can view RunPod logs / SSH in. Stashes
+    pod_delete_at on _install_state for the UI to display, then spawns
+    a daemon thread that sleeps and DELETEs.
+
+    No-op when pod_id is falsy (install failed before pod_spawned).
+    The installer_pod_sweeper Rule B catches the pod at the 5min orphan
+    mark if BlockFlow dies before the timer fires.
+    """
+    if not pod_id:
+        return
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=delay_sec)
+    _install_state["pod_delete_at"] = deadline.isoformat()
+
+    def _go() -> None:
+        time.sleep(delay_sec)
+        try:
+            from backend import installer_pod_sweeper as _sweeper
+            _sweeper.delete_pod_post_install(pod_id)
+        except Exception as exc:
+            print(f"[preset-install] delayed pod delete failed: {exc}")
+
+    threading.Thread(target=_go, daemon=True, name="installer-pod-grace").start()
 
 
 def _now_iso() -> str:
@@ -658,6 +699,11 @@ def _process_install_event(evt: dict) -> dict | None:
     elif etype == "download_done":
         i = int(evt.get("file_index") or 0)
         files = _install_state["files"]
+        # sgs-ui-kqr: dedupe by file_index. The installer agent has
+        # observed paths (already-on-disk-skip + retry) that emit
+        # download_done twice for the same index. Without this gate,
+        # files_done overshoots files_total ("10/8 files").
+        was_done = bool(0 <= i < len(files) and files[i]["status"] == "done")
         if 0 <= i < len(files):
             files[i]["status"] = "done"
             files[i]["percent"] = 100.0
@@ -666,11 +712,12 @@ def _process_install_event(evt: dict) -> dict | None:
             files[i]["cached"] = bool(evt.get("cached"))
             files[i]["bytes"] = evt.get("bytes")
             files[i]["sha256"] = evt.get("sha256")
-        if evt.get("cached"):
-            _install_state["cached_count"] += 1
-        else:
-            _install_state["missing_count"] += 1
-        _install_state["files_done"] += 1
+        if not was_done:
+            if evt.get("cached"):
+                _install_state["cached_count"] += 1
+            else:
+                _install_state["missing_count"] += 1
+            _install_state["files_done"] += 1
         _recompute_bytes_done()
     elif etype in ("install_done", "install_error", "preflight_fail"):
         return evt
@@ -1022,12 +1069,16 @@ def _run_install_subprocess(
             "error": err[:3000],
             "error_kind": _classify_error_kind(err),
         })
-        # sgs-ui-515: pod does NOT self-clean — symmetric with success branch.
+        # sgs-ui-6ag: keep pod alive for INSTALL_FAILURE_POD_GRACE_SEC so
+        # the user can grab logs / SSH in. Replaces the immediate delete
+        # added by sgs-ui-515 — installer_pod_sweeper Rule B remains the
+        # 5-min backstop if BlockFlow dies before the grace timer fires.
+        # try/except: scheduling failure must not mask the original install
+        # error (the outer except would otherwise overwrite _install_state).
         try:
-            from backend import installer_pod_sweeper as _sweeper
-            _sweeper.delete_pod_post_install(_install_state.get("pod_id"))
+            _schedule_delayed_pod_delete(_install_state.get("pod_id"))
         except Exception as exc:
-            print(f"[preset-install] post-error pod delete failed: {exc}")
+            print(f"[preset-install] failed to schedule grace delete: {exc}")
 
     except Exception as exc:
         msg = str(exc)[:2000]
@@ -1037,12 +1088,11 @@ def _run_install_subprocess(
             "error": msg,
             "error_kind": _classify_error_kind(msg),
         })
-        # sgs-ui-515: same leak guard for unexpected exceptions.
+        # sgs-ui-6ag: same grace window for unexpected exceptions.
         try:
-            from backend import installer_pod_sweeper as _sweeper
-            _sweeper.delete_pod_post_install(_install_state.get("pod_id"))
+            _schedule_delayed_pod_delete(_install_state.get("pod_id"))
         except Exception as exc2:
-            print(f"[preset-install] post-exception pod delete failed: {exc2}")
+            print(f"[preset-install] failed to schedule grace delete: {exc2}")
     finally:
         log_fp.write(
             f"\n=== {_now_iso()} preset={preset_id} "

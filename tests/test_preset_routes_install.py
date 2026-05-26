@@ -530,17 +530,145 @@ def test_install_env_forwards_path(client, mocker):
     assert "PATH" in env and env["PATH"], "env=dict dropped PATH"
 
 
+# --- sgs-ui-6ag: 90s pod-delete grace on install failure -------------------
+# Gives the user a window to view pod logs / SSH in before the pod
+# disappears. Success path stays immediate (no debugging window needed).
+
+def test_install_error_schedules_delayed_delete_not_immediate(client, mocker):
+    """install_error → delete_pod_post_install NOT called synchronously.
+    The grace-period scheduler is called instead."""
+    from backend import installer_pod_sweeper
+    delete_mock = mocker.patch.object(
+        installer_pod_sweeper, "delete_pod_post_install", return_value=True,
+    )
+    schedule_spy = mocker.patch.object(
+        preset_routes, "_schedule_delayed_pod_delete",
+    )
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_grace1", "token": "tok"},
+        {"type": "install_error", "stage": "download", "reason": "boom"},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=1)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    assert delete_mock.call_count == 0  # immediate delete must NOT fire
+    schedule_spy.assert_called_once_with("pod_grace1")
+
+
+def test_schedule_delayed_delete_sets_pod_delete_at_in_future(mocker):
+    """Unit test on the helper itself: stashes a future pod_delete_at on
+    _install_state. We patch threading.Thread so we don't actually wait."""
+    from datetime import datetime, timezone
+    import threading as _t
+    preset_routes._reset_install_state()
+
+    class _FakeThread:
+        def __init__(self, *_a, **_kw): pass
+        def start(self): pass
+    mocker.patch.object(_t, "Thread", _FakeThread)
+
+    preset_routes._schedule_delayed_pod_delete("pod_x", delay_sec=90)
+
+    s = preset_routes._install_state
+    assert s.get("pod_delete_at") is not None
+    deadline = datetime.fromisoformat(s["pod_delete_at"])
+    now = datetime.now(timezone.utc)
+    delta = (deadline - now).total_seconds()
+    assert 60 < delta <= 90, f"pod_delete_at ≈90s in future; got {delta}s"
+
+
+def test_install_success_keeps_immediate_pod_delete(client, mocker):
+    """Regression: success path must still tear down the pod immediately."""
+    from backend import installer_pod_sweeper
+    delete_mock = mocker.patch.object(
+        installer_pod_sweeper, "delete_pod_post_install", return_value=True,
+    )
+    schedule_spy = mocker.patch.object(
+        preset_routes, "_schedule_delayed_pod_delete",
+    )
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_ok", "token": "t"},
+        {"type": "install_done", "ok": True, "files": 0, "elapsed_sec": 1},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("completed", "error", "cancelled")
+
+    delete_mock.assert_called_once_with("pod_ok")
+    assert schedule_spy.call_count == 0
+
+
+def test_schedule_delayed_delete_no_op_when_pod_id_missing():
+    """Defensive: helper does nothing when there's no pod_id (e.g. install
+    failed before pod_spawned)."""
+    preset_routes._reset_install_state()
+    preset_routes._schedule_delayed_pod_delete(None)
+    assert preset_routes._install_state.get("pod_delete_at") is None
+
+
+# --- sgs-ui-kqr: download_done is idempotent per file_index ----------------
+# Without dedupe, a duplicate event (already-on-disk skip emits a synthetic
+# download_done, retries re-emit) pushes files_done past files_total.
+
+def test_duplicate_download_done_increments_counts_only_once():
+    """Two download_done events for the same file_index should produce
+    cached_count=1 and files_done=1, not 2 each."""
+    preset_routes._reset_install_state()
+    preset_routes._process_install_event(
+        {"type": "preflight_ok", "models_count": 2,
+         "total_bytes": 0, "volume_free_bytes": 0}
+    )
+    evt = {"type": "download_done", "file_index": 0, "file": "a",
+           "cached": True, "bytes": 1, "sha256": "x"}
+    preset_routes._process_install_event(evt)
+    preset_routes._process_install_event(evt)  # duplicate
+
+    s = preset_routes._install_state
+    assert s["files_done"] == 1, s
+    assert s["cached_count"] == 1, s
+    assert s["missing_count"] == 0, s
+
+
+def test_distinct_download_dones_still_aggregate():
+    """Defensive: dedupe must not break the normal flow — distinct file
+    indices still each contribute +1."""
+    preset_routes._reset_install_state()
+    preset_routes._process_install_event(
+        {"type": "preflight_ok", "models_count": 3,
+         "total_bytes": 0, "volume_free_bytes": 0}
+    )
+    for i in range(3):
+        preset_routes._process_install_event(
+            {"type": "download_done", "file_index": i, "file": f"f{i}",
+             "cached": False, "bytes": 1, "sha256": "x"}
+        )
+
+    s = preset_routes._install_state
+    assert s["files_done"] == 3
+    assert s["missing_count"] == 3
+    assert s["cached_count"] == 0
+
+
 # --- sgs-ui-515: pod must be DELETEd on every install failure path ---------
 # Pods do not self-clean — without this, the pod leaks at $0.06/hr until the
 # installer_pod_sweeper Rule B (5min orphan) or Rule C (60min stuck) catches
 # it. Symmetric with the success branch at preset_routes.py:926-930.
 
-def test_install_error_deletes_pod(client, mocker):
-    """install_error terminal → delete_pod_post_install called once with the
-    pod_id from pod_spawned, even though no settings row is written."""
-    from backend import installer_pod_sweeper
-    delete_mock = mocker.patch.object(
-        installer_pod_sweeper, "delete_pod_post_install", return_value=True,
+def test_install_error_schedules_pod_delete(client, mocker):
+    """install_error terminal → delete is SCHEDULED for ~90s out, not
+    immediate (sgs-ui-6ag superseded sgs-ui-515's immediate-delete).
+    Settings row still not written; pod_id preserved for the logs link."""
+    schedule_spy = mocker.patch.object(
+        preset_routes, "_schedule_delayed_pod_delete",
     )
     preset = _full_preset(n_models=1)
     _mock_registry_fetches(mocker, preset)
@@ -555,14 +683,14 @@ def test_install_error_deletes_pod(client, mocker):
     _wait_for_install_state("error", "completed", "cancelled")
 
     assert preset_routes._install_state["state"] == "error"
-    delete_mock.assert_called_once_with("pod_err1")
+    schedule_spy.assert_called_once_with("pod_err1")
 
 
-def test_no_terminal_event_deletes_pod(client, mocker):
-    """Subprocess exits non-zero with no terminal event → still DELETE the pod."""
-    from backend import installer_pod_sweeper
-    delete_mock = mocker.patch.object(
-        installer_pod_sweeper, "delete_pod_post_install", return_value=True,
+def test_no_terminal_event_schedules_pod_delete(client, mocker):
+    """Subprocess exits non-zero with no terminal event → grace-period
+    schedule, not immediate delete."""
+    schedule_spy = mocker.patch.object(
+        preset_routes, "_schedule_delayed_pod_delete",
     )
     preset = _full_preset(n_models=1)
     _mock_registry_fetches(mocker, preset)
@@ -577,15 +705,14 @@ def test_no_terminal_event_deletes_pod(client, mocker):
     _wait_for_install_state("error", "completed", "cancelled")
 
     assert preset_routes._install_state["state"] == "error"
-    delete_mock.assert_called_once_with("pod_nt")
+    schedule_spy.assert_called_once_with("pod_nt")
 
 
-def test_outer_exception_deletes_pod(client, mocker):
-    """proc.wait() raises after pod_spawned → outer except path must still
-    DELETE the pod_id captured from the event stream."""
-    from backend import installer_pod_sweeper
-    delete_mock = mocker.patch.object(
-        installer_pod_sweeper, "delete_pod_post_install", return_value=True,
+def test_outer_exception_schedules_pod_delete(client, mocker):
+    """proc.wait() raises after pod_spawned → outer except path still
+    schedules the pod delete with grace."""
+    schedule_spy = mocker.patch.object(
+        preset_routes, "_schedule_delayed_pod_delete",
     )
     preset = _full_preset(n_models=1)
     _mock_registry_fetches(mocker, preset)
@@ -601,15 +728,14 @@ def test_outer_exception_deletes_pod(client, mocker):
 
     assert preset_routes._install_state["state"] == "error"
     assert "wait blew up" in preset_routes._install_state["error"]
-    delete_mock.assert_called_once_with("pod_exc")
+    schedule_spy.assert_called_once_with("pod_exc")
 
 
 def test_delete_failure_does_not_mask_install_error(client, mocker):
-    """If delete_pod_post_install itself raises, the original install error
-    message must still be preserved on _install_state."""
-    from backend import installer_pod_sweeper
+    """If the scheduler / underlying DELETE itself fails, the original
+    install error message must still be preserved on _install_state."""
     mocker.patch.object(
-        installer_pod_sweeper, "delete_pod_post_install",
+        preset_routes, "_schedule_delayed_pod_delete",
         side_effect=RuntimeError("runpod 500"),
     )
     preset = _full_preset(n_models=1)

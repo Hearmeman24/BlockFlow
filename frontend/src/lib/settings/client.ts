@@ -483,6 +483,11 @@ export type InstallProgress = {
   // sgs-ui-5k7: running bytes downloaded so far. Used as numerator for
   // the aggregate progress bar; total_download_bytes is the denominator.
   bytes_done?: number
+  // sgs-ui-6ag: ISO timestamp at which the installer pod will be DELETEd
+  // after a failed install. Null on success (pod is deleted immediately)
+  // or when no pod was ever spawned. UI uses this to render a debugging
+  // countdown next to "View pod logs ↗".
+  pod_delete_at?: string | null
 }
 
 export async function getPresetDetail(presetId: string): Promise<PresetDetail> {

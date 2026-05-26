@@ -341,7 +341,7 @@ function InstallProgressCard({
         )
       )}
       {progress.state === 'error' && progress.pod_id && (
-        <p className="text-xs">
+        <p className="text-xs flex flex-wrap items-baseline gap-x-3">
           <a
             href={`https://console.runpod.io/pods?id=${progress.pod_id}`}
             target="_blank"
@@ -350,6 +350,9 @@ function InstallProgressCard({
           >
             View pod logs ↗
           </a>
+          {progress.pod_delete_at && (
+            <PodDebugCountdown deleteAt={progress.pod_delete_at} />
+          )}
         </p>
       )}
     </article>
@@ -436,5 +439,29 @@ function Detail({ label, value }: { label: string; value: string }) {
       <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
       <dd className="font-mono text-xs">{value}</dd>
     </div>
+  )
+}
+
+// sgs-ui-6ag: tiny countdown for the install-failure debugging window.
+// Re-renders every second so the user can see when the installer pod
+// is about to be torn down.
+function PodDebugCountdown({ deleteAt }: { deleteAt: string }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const remaining = Math.max(0, Math.round((new Date(deleteAt).getTime() - now) / 1000))
+  if (remaining <= 0) {
+    return (
+      <span className="text-[10px] text-muted-foreground" data-testid="pod-debug-countdown">
+        pod scheduled for cleanup
+      </span>
+    )
+  }
+  return (
+    <span className="text-[10px] text-muted-foreground" data-testid="pod-debug-countdown">
+      pod kept alive for debugging — {remaining}s left
+    </span>
   )
 }

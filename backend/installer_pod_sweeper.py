@@ -1,10 +1,12 @@
 """sgs-ui-c7n: installer-pod sweeper.
 
-Defense in depth on top of sgs-ui-8ww. The `comfy-gen install-preset` CLI
-DELETEs the pod itself on a clean exit, but cannot run that cleanup when
-the BlockFlow backend gets SIGKILL'd, the user force-closes the browser,
-the subprocess hangs, or the CLI's own DELETE racey-fails. A pod we forget
-about bills $0.06/hr until somebody notices.
+Defense in depth on top of sgs-ui-8ww. Pods do not self-clean — BlockFlow
+calls `delete_pod_post_install` on both the success and failure paths of
+`_run_install_subprocess` (sgs-ui-515 made the failure branches symmetric).
+The sweeper catches the cases where BlockFlow can't run that cleanup at
+all: the BlockFlow backend gets SIGKILL'd, the user force-closes the
+browser, the subprocess hangs, or the DELETE itself racey-fails. A pod we
+forget about bills $0.06/hr until somebody notices.
 
 The sweeper runs every `INSTALLER_SWEEP_INTERVAL_SEC` seconds (default 60),
 lists every pod the configured RunPod API key can see, filters to those
@@ -226,9 +228,11 @@ def start_in_background() -> threading.Thread:
 
 
 def delete_pod_post_install(pod_id: str | None) -> bool:
-    """sgs-ui-c7n trigger #2: called from _run_install_subprocess after
-    install_done.ok=true. Belt on top of the CLI's own DELETE; the call is
-    idempotent (404 = success in `delete_pod`).
+    """sgs-ui-c7n trigger #2: called from _run_install_subprocess at every
+    terminal state — success (install_done.ok=true), failure (preflight_fail,
+    install_error, no-terminal-event), and outer exception. Pods do not
+    self-clean; this is the primary cleanup, the sweeper is the backstop.
+    Idempotent (404 = success in `delete_pod`).
 
     Returns True on success/404, False if no api_key or pod_id, or on error.
     """

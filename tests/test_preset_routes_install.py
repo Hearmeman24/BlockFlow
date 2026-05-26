@@ -203,6 +203,105 @@ def test_install_error_event_marks_failed_and_keeps_pod_id(client, mocker):
     assert settings_store.get_installed_preset(preset["id"]) is None
 
 
+# --- sgs-ui-515: pod must be DELETEd on every install failure path ---------
+# Pods do not self-clean — without this, the pod leaks at $0.06/hr until the
+# installer_pod_sweeper Rule B (5min orphan) or Rule C (60min stuck) catches
+# it. Symmetric with the success branch at preset_routes.py:926-930.
+
+def test_install_error_deletes_pod(client, mocker):
+    """install_error terminal → delete_pod_post_install called once with the
+    pod_id from pod_spawned, even though no settings row is written."""
+    from backend import installer_pod_sweeper
+    delete_mock = mocker.patch.object(
+        installer_pod_sweeper, "delete_pod_post_install", return_value=True,
+    )
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_err1", "token": "tok"},
+        {"type": "install_error", "stage": "download", "reason": "boom"},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=1)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    assert preset_routes._install_state["state"] == "error"
+    delete_mock.assert_called_once_with("pod_err1")
+
+
+def test_no_terminal_event_deletes_pod(client, mocker):
+    """Subprocess exits non-zero with no terminal event → still DELETE the pod."""
+    from backend import installer_pod_sweeper
+    delete_mock = mocker.patch.object(
+        installer_pod_sweeper, "delete_pod_post_install", return_value=True,
+    )
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    proc = _make_proc(
+        stdout=_events_to_stdout([{"type": "pod_spawned", "pod_id": "pod_nt", "token": "t"}]),
+        stderr="crash\n",
+        returncode=1,
+    )
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    assert preset_routes._install_state["state"] == "error"
+    delete_mock.assert_called_once_with("pod_nt")
+
+
+def test_outer_exception_deletes_pod(client, mocker):
+    """proc.wait() raises after pod_spawned → outer except path must still
+    DELETE the pod_id captured from the event stream."""
+    from backend import installer_pod_sweeper
+    delete_mock = mocker.patch.object(
+        installer_pod_sweeper, "delete_pod_post_install", return_value=True,
+    )
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    proc = _make_proc(
+        stdout=_events_to_stdout([{"type": "pod_spawned", "pod_id": "pod_exc", "token": "t"}]),
+        returncode=0,
+    )
+    proc.wait.side_effect = RuntimeError("wait blew up")
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    assert preset_routes._install_state["state"] == "error"
+    assert "wait blew up" in preset_routes._install_state["error"]
+    delete_mock.assert_called_once_with("pod_exc")
+
+
+def test_delete_failure_does_not_mask_install_error(client, mocker):
+    """If delete_pod_post_install itself raises, the original install error
+    message must still be preserved on _install_state."""
+    from backend import installer_pod_sweeper
+    mocker.patch.object(
+        installer_pod_sweeper, "delete_pod_post_install",
+        side_effect=RuntimeError("runpod 500"),
+    )
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_leak", "token": "tok"},
+        {"type": "install_error", "stage": "download", "reason": "the real cause"},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=1)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    s = preset_routes._install_state
+    assert s["state"] == "error"
+    assert "the real cause" in s["error"]
+
+
 def test_preflight_fail_marks_failed_without_downloads(client, mocker):
     """preflight_fail terminal → state=error, no download_* events ever
     recorded → cached/missing counts stay zero."""

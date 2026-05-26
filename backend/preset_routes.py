@@ -1181,6 +1181,40 @@ def _normalize_stored_recommendations(raw: str | None) -> dict:
     }
 
 
+def _model_uses_civitai(model: dict) -> bool:
+    """sgs-ui-41c: detect CivitAI dependencies for the preflight credential
+    gate. Trust an explicit source==civitai; otherwise fall back to URL
+    hostname match (some legacy preset entries omit `source`)."""
+    if (model.get("source") or "").lower() == "civitai":
+        return True
+    url = (model.get("url") or "").lower()
+    return "civitai.com" in url
+
+
+def _require_credentials_for_preset(preset: dict) -> None:
+    """sgs-ui-41c: scan preset.models for sources that require auth, and
+    raise a structured 400 if the matching credential is missing. CivitAI
+    only for now — HF gating needs a schema-level `gated` flag on models
+    (filed as sgs-ui-XXX follow-up) to avoid false positives on the many
+    public HF repos referenced by mainstream presets."""
+    models = preset.get("models") or []
+    needs_civitai = any(_model_uses_civitai(m) for m in models)
+    if needs_civitai and not settings_store.get_credential("civitai_api_key"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_kind": "missing_credential",
+                "credential": "civitai_api_key",
+                "preset_id": preset.get("id"),
+                "reason": (
+                    "This preset downloads from CivitAI which requires "
+                    "authentication. Add a CivitAI API Key in Settings → "
+                    "Credentials before installing."
+                ),
+            },
+        )
+
+
 @router.post("/api/presets/install")
 def install_preset(body: InstallBody, mode: str = "cpu") -> JSONResponse:
     """sgs-ui-8ww: shell out to `comfy-gen install-preset` which spawns a
@@ -1243,6 +1277,13 @@ def install_preset(body: InstallBody, mode: str = "cpu") -> JSONResponse:
         "workflows": workflows,
         "recommendations": _extract_recommendations(preset),
     }
+
+    # sgs-ui-41c: refuse the install at submit time if the preset pulls
+    # from CivitAI but no civitai_api_key is configured. Otherwise the CLI
+    # spawns a pod, runs preflight, fails on the first 401 ~3-5 min later,
+    # and the user has paid ~2¢ + lost five minutes for a credential gap
+    # we could've caught in 0ms here.
+    _require_credentials_for_preset(preset)
 
     # Compute canonical /runpod-volume paths from preset.models — the CLI
     # writes each model to /runpod-volume/ComfyUI/models/<dest>; we need

@@ -30,6 +30,8 @@ import {
   wizardProvision,
   wizardTeardown,
   wizardTiers,
+  installPreset,
+  InstallRefusedError,
 } from './client'
 
 type MockResponse = {
@@ -723,5 +725,62 @@ describe('getInstalledPreset', () => {
       global: ['Pairs best with a character LoRA'],
       workflows: { 'Replace Face': ['Bump mask coverage for tight crops'] },
     })
+  })
+})
+
+describe('installPreset (sgs-ui-41c structured refusal)', () => {
+  test('throws InstallRefusedError on 400 with missing_credential detail', async () => {
+    const fetchMock = mockFetch([{
+      status: 400,
+      body: JSON.stringify({
+        detail: {
+          error_kind: 'missing_credential',
+          credential: 'civitai_api_key',
+          preset_id: 'civitai-pack',
+          reason: 'This preset downloads from CivitAI which requires authentication.',
+        },
+      }),
+    }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(installPreset('civitai-pack')).rejects.toMatchObject({
+      name: 'InstallRefusedError',
+      credential: 'civitai_api_key',
+      presetId: 'civitai-pack',
+    })
+  })
+
+  test('InstallRefusedError carries the human-readable reason on .message', async () => {
+    const fetchMock = mockFetch([{
+      status: 400,
+      body: JSON.stringify({
+        detail: {
+          error_kind: 'missing_credential',
+          credential: 'civitai_api_key',
+          preset_id: 'p',
+          reason: 'GO SET THE TOKEN',
+        },
+      }),
+    }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    try {
+      await installPreset('p')
+      throw new Error('expected InstallRefusedError')
+    } catch (err) {
+      expect(err).toBeInstanceOf(InstallRefusedError)
+      expect((err as Error).message).toBe('GO SET THE TOKEN')
+    }
+  })
+
+  test('non-structured 400 still surfaces as a regular Error', async () => {
+    const fetchMock = mockFetch([{
+      status: 400,
+      body: JSON.stringify({ detail: 'plain string error' }),
+    }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(installPreset('x')).rejects.toThrow('plain string error')
+    await expect(installPreset('x')).rejects.not.toBeInstanceOf(InstallRefusedError)
   })
 })

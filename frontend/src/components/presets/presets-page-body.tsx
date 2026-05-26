@@ -7,6 +7,7 @@ import {
   getInstallProgress,
   getPresetManifest,
   installPreset,
+  InstallRefusedError,
   listInstalledPresets,
   refreshInstalledPresets,
   uninstallPreset,
@@ -24,6 +25,9 @@ export function PresetsPageBody() {
   const [installed, setInstalled] = useState<InstalledPresetSummary[]>([])
   const [progress, setProgress] = useState<InstallProgress | null>(null)
   const [actionErr, setActionErr] = useState<string | null>(null)
+  // sgs-ui-41c: separate structured-refusal state so the UI can render a
+  // banner linking the user straight to Settings → Credentials.
+  const [refused, setRefused] = useState<InstallRefusedError | null>(null)
 
   const refresh = useCallback(async (opts?: { syncInstalled?: boolean }) => {
     setManifestErr(null)
@@ -76,6 +80,7 @@ export function PresetsPageBody() {
 
   const handleInstall = async (presetId: string, mode: 'cpu' | 'gpu' = 'cpu') => {
     setActionErr(null)
+    setRefused(null)
     try {
       const result = await installPreset(presetId, { mode })
       setProgress({
@@ -87,7 +92,11 @@ export function PresetsPageBody() {
         error: null,
       })
     } catch (err) {
-      setActionErr(err instanceof Error ? err.message : String(err))
+      if (err instanceof InstallRefusedError) {
+        setRefused(err)
+      } else {
+        setActionErr(err instanceof Error ? err.message : String(err))
+      }
     }
   }
 
@@ -156,6 +165,24 @@ export function PresetsPageBody() {
         />
       )}
 
+      {refused && (
+        <div
+          className="border border-amber-500/40 bg-amber-500/10 rounded p-3 text-sm space-y-1.5"
+          data-testid="install-refused-banner"
+        >
+          <p className="font-semibold text-amber-200">Missing credential</p>
+          <p className="text-amber-100/90">{refused.reason}</p>
+          <p>
+            <a
+              href={`/settings?tab=credentials&focus=${encodeURIComponent(refused.credential)}`}
+              className="text-amber-200 underline hover:text-amber-100"
+            >
+              Open Settings → Credentials →{' '}
+              <span className="font-mono">{refused.credential}</span>
+            </a>
+          </p>
+        </div>
+      )}
       {actionErr && (
         <div className="border border-destructive/40 bg-destructive/10 rounded p-3 text-sm">
           {actionErr}

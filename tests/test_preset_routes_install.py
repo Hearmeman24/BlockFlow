@@ -123,6 +123,92 @@ def _mock_registry_fetches(mocker, preset: dict):
     )
 
 
+# === sgs-ui-41c: preflight refuse when CivitAI-source preset has no token ===
+# The CLI fails ~3-5 minutes into the install (pod spawn + preflight + first
+# 401 from CivitAI) without a token. Catch it at submit time instead.
+
+def _civitai_preset(preset_id: str = "civitai-pack") -> dict:
+    return {
+        "id": preset_id,
+        "name": preset_id,
+        "comfygen_min_version": "0.2.0",
+        "disk_size_estimate_gb": 10,
+        "workflows": [{"name": "Default", "json": {"3": {}}}],
+        "models": [{
+            "source": "civitai",
+            "url": "https://civitai.com/api/download/models/123456",
+            "dest": "loras/style.safetensors",
+            "sha256": "0" * 64,
+            "size_gb": 1.0,
+        }],
+    }
+
+
+def test_install_refused_when_civitai_preset_has_no_credential(client, mocker):
+    """source=='civitai' + no civitai_api_key in settings → 400 with a
+    structured detail that the UI can render as a 'go set the credential'
+    banner. install_state untouched; Popen NOT called."""
+    preset = _civitai_preset()
+    _mock_registry_fetches(mocker, preset)
+    popen = mocker.patch.object(preset_routes.subprocess, "Popen")
+
+    r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    assert r.status_code == 400, r.json()
+    detail = r.json()["detail"]
+    assert isinstance(detail, dict), detail
+    assert detail.get("error_kind") == "missing_credential"
+    assert detail.get("credential") == "civitai_api_key"
+    assert detail.get("preset_id") == preset["id"]
+    assert popen.call_count == 0
+    assert preset_routes._install_state["state"] == "idle"
+
+
+def test_install_allowed_when_civitai_preset_has_credential(client, mocker):
+    """Credential present → request proceeds as normal."""
+    settings_store.set_credential("civitai_api_key", "ck_present")
+    preset = _civitai_preset()
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_ok", "token": "t"},
+        {"type": "install_done", "ok": True, "files": 0, "elapsed_sec": 1},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    assert r.status_code == 202
+
+
+def test_install_detects_civitai_by_url_when_source_field_missing(client, mocker):
+    """Defensive: some presets only set the URL (source omitted). If the
+    URL hostname is civitai.com, the gate still fires."""
+    preset = _civitai_preset()
+    preset["models"][0].pop("source", None)
+    _mock_registry_fetches(mocker, preset)
+    popen = mocker.patch.object(preset_routes.subprocess, "Popen")
+
+    r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    assert r.status_code == 400
+    assert r.json()["detail"]["credential"] == "civitai_api_key"
+    assert popen.call_count == 0
+
+
+def test_install_allows_non_civitai_preset_without_civitai_credential(client, mocker):
+    """HF-only preset without a CivitAI credential set → 202 (no false
+    positive). The civitai gate must only fire when civitai sources exist."""
+    preset = _full_preset(n_models=1)  # _full_preset uses huggingface
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_hf", "token": "t"},
+        {"type": "install_done", "ok": True, "files": 0, "elapsed_sec": 1},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    assert r.status_code == 202
+
+
 # === sgs-ui-5k7: phase + bytes_done for milestone UI ========================
 # The UI renders a milestone list (pod_spawn → preflight → download →
 # finalize → done|error) and a bytes-based progress bar. _install_state
@@ -898,6 +984,8 @@ def test_install_mode_gpu_batch_spec_runs_through_canonical_translator(
       into subfolder + filename (without this the worker raises
       'version_id required for civitai source')
     """
+    # sgs-ui-41c: civitai-source model requires civitai_api_key now.
+    settings_store.set_credential("civitai_api_key", "ck_for_translator_test")
     preset = _full_preset(n_models=1)
     preset["models"] = [
         {

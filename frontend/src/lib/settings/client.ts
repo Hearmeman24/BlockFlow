@@ -497,6 +497,26 @@ export async function getDiskBudget(): Promise<DiskBudget> {
   return (await res.json()) as DiskBudget
 }
 
+// sgs-ui-41c: structured preflight refusal — callers can catch this
+// specifically and link the user to Settings → Credentials.
+export class InstallRefusedError extends Error {
+  readonly kind = 'missing_credential' as const
+  readonly credential: string
+  readonly presetId: string | null
+  readonly reason: string
+  constructor(detail: {
+    credential: string
+    preset_id?: string | null
+    reason: string
+  }) {
+    super(detail.reason)
+    this.name = 'InstallRefusedError'
+    this.credential = detail.credential
+    this.presetId = detail.preset_id ?? null
+    this.reason = detail.reason
+  }
+}
+
 // sgs-ui-wx0: mode='gpu' triggers the pre-8ww `comfy-gen download --batch`
 // fallback against the configured ComfyGen serverless endpoint. Used when
 // RunPod CPU pod capacity is exhausted. Default 'cpu' = install-preset CLI.
@@ -513,6 +533,29 @@ export async function installPreset(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ preset_id: presetId }),
   })
+  // sgs-ui-41c: 400 with structured `detail.error_kind=='missing_credential'`
+  // → throw the typed error so the UI can render an actionable banner with
+  // a link to Settings instead of a generic "[object Object]" string.
+  if (res.status === 400) {
+    try {
+      const body = await res.clone().json()
+      const detail = body?.detail
+      if (
+        detail && typeof detail === 'object'
+        && detail.error_kind === 'missing_credential'
+        && typeof detail.credential === 'string'
+      ) {
+        throw new InstallRefusedError({
+          credential: detail.credential,
+          preset_id: detail.preset_id ?? null,
+          reason: detail.reason ?? 'Missing credential',
+        })
+      }
+    } catch (err) {
+      if (err instanceof InstallRefusedError) throw err
+      // Falls through to _throwIfNonOk for non-structured 400s.
+    }
+  }
   await _throwIfNonOk(res)
   return res.json()
 }

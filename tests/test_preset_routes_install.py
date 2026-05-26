@@ -203,6 +203,102 @@ def test_install_error_event_marks_failed_and_keeps_pod_id(client, mocker):
     assert settings_store.get_installed_preset(preset["id"]) is None
 
 
+# --- sgs-ui-h1c.1.4 / sgs-ui-8ef: tokens via env, not argv -----------------
+# BlockFlow must (a) read the CivitAI token under the 'civitai_api_key' key
+# (UI + every other reader uses that), and (b) pass it to the comfy-gen
+# subprocess as COMFY_GEN_CIVITAI_TOKEN on env= rather than --civitai-token
+# on argv (so the token doesn't show up in `ps`). Same for HF.
+
+def test_install_passes_civitai_token_via_env_not_argv(client, mocker):
+    """Credential set as 'civitai_api_key' → Popen called with
+    COMFY_GEN_CIVITAI_TOKEN in env; argv MUST NOT contain --civitai-token
+    or the token value."""
+    settings_store.set_credential("civitai_api_key", "ck_secret_xyz")
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_t", "token": "tok"},
+        {"type": "install_done", "ok": True, "files": 0, "elapsed_sec": 1},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=0)
+    popen = mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error", "cancelled")
+
+    call = popen.call_args
+    argv = call.args[0]
+    env = call.kwargs.get("env") or {}
+
+    assert "--civitai-token" not in argv, f"token leaked onto argv: {argv}"
+    assert "ck_secret_xyz" not in argv, f"token value leaked onto argv: {argv}"
+    assert env.get("COMFY_GEN_CIVITAI_TOKEN") == "ck_secret_xyz", env
+
+
+def test_install_passes_hf_token_via_env_not_argv(client, mocker):
+    """HF token reaches the subprocess as COMFY_GEN_HF_TOKEN; never on argv."""
+    settings_store.set_credential("hf_token", "hf_secret_abc")
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_h", "token": "tok"},
+        {"type": "install_done", "ok": True, "files": 0, "elapsed_sec": 1},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=0)
+    popen = mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("completed", "error", "cancelled")
+
+    call = popen.call_args
+    argv = call.args[0]
+    env = call.kwargs.get("env") or {}
+    assert "--hf-token" not in argv
+    assert "hf_secret_abc" not in argv
+    assert env.get("COMFY_GEN_HF_TOKEN") == "hf_secret_abc"
+
+
+def test_install_omits_token_env_when_not_configured(client, mocker):
+    """No credential set → env keys absent (not empty-string) so the CLI's
+    env-first fallback doesn't see a spurious empty value."""
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_n", "token": "tok"},
+        {"type": "install_done", "ok": True, "files": 0, "elapsed_sec": 1},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=0)
+    popen = mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("completed", "error", "cancelled")
+
+    env = popen.call_args.kwargs.get("env") or {}
+    assert "COMFY_GEN_CIVITAI_TOKEN" not in env
+    assert "COMFY_GEN_HF_TOKEN" not in env
+
+
+def test_install_env_forwards_path(client, mocker):
+    """env= replaces the inherited environment entirely, so we MUST forward
+    PATH explicitly — otherwise `comfy-gen` won't resolve on the subprocess."""
+    settings_store.set_credential("civitai_api_key", "ck_x")
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_p", "token": "tok"},
+        {"type": "install_done", "ok": True, "files": 0, "elapsed_sec": 1},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=0)
+    popen = mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("completed", "error", "cancelled")
+
+    env = popen.call_args.kwargs.get("env") or {}
+    assert "PATH" in env and env["PATH"], "env=dict dropped PATH"
+
+
 # --- sgs-ui-515: pod must be DELETEd on every install failure path ---------
 # Pods do not self-clean — without this, the pod leaks at $0.06/hr until the
 # installer_pod_sweeper Rule B (5min orphan) or Rule C (60min stuck) catches

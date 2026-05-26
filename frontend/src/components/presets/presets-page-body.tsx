@@ -16,6 +16,7 @@ import {
   type PresetManifestEntry,
 } from '@/lib/settings/client'
 import { classifyInstallErrorKind } from '@/lib/install-error-kind'
+import { InstallMilestones } from './install-milestones'
 
 export function PresetsPageBody() {
   const [manifest, setManifest] = useState<PresetManifest | null>(null)
@@ -198,13 +199,6 @@ function InstallProgressCard({
   onRetryCpu: () => void
   onUseGpu: () => void
 }) {
-  const cached = progress.cached_count ?? 0
-  const missing = progress.missing_count ?? 0
-  const downloadGB = progress.total_download_bytes
-    ? (progress.total_download_bytes / 1024 ** 3).toFixed(1)
-    : null
-  const filesDone = progress.files_done ?? 0
-  const filesTotal = progress.files_total
   const files = progress.files ?? []
   const isActive = progress.state === 'queued' || progress.state === 'running'
   const cancelling = progress.state === 'cancelling'
@@ -227,66 +221,60 @@ function InstallProgressCard({
     : `Installing ${progress.preset_id}…`
 
   return (
-    <article className="rounded border border-primary/30 bg-primary/5 p-4 space-y-2">
+    <article className="rounded border border-primary/30 bg-primary/5 p-4 space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">{headline}</h2>
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-mono text-muted-foreground">{progress.state}</span>
-          {isActive && (
-            <button
-              type="button"
-              onClick={onCancel}
-              className="rounded border border-destructive/50 px-2 py-0.5 text-[10px] font-mono uppercase text-destructive hover:bg-destructive/10"
-            >
-              cancel
-            </button>
-          )}
-        </div>
+        {isActive && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded border border-destructive/50 px-2 py-0.5 text-[10px] font-mono uppercase text-destructive hover:bg-destructive/10"
+          >
+            cancel
+          </button>
+        )}
       </div>
-      <p className="text-xs text-muted-foreground">
-        {filesDone}/{filesTotal} file(s) · started {progress.started_at}
-      </p>
-      {(cached > 0 || missing > 0 || downloadGB) && (
-        <p className="text-xs text-muted-foreground">
-          {cached > 0 && `${cached} cached`}
-          {missing > 0 && `${cached > 0 ? ' · ' : ''}${missing} downloading`}
-          {downloadGB && ` · ~${downloadGB} GB total`}
-        </p>
-      )}
+      {/* sgs-ui-5k7: milestone narration + bytes-based progress bar. */}
+      <InstallMilestones progress={progress} />
       {files.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {files.map((f) => (
-            <li key={f.index} className="space-y-0.5">
-              <div className="flex items-center justify-between gap-2 text-[11px] font-mono">
-                <span className="truncate text-muted-foreground" title={f.path ?? ''}>
-                  {f.path ? f.path.split('/').slice(-2).join('/') : `file ${f.index}`}
-                </span>
-                <span className="shrink-0 text-muted-foreground">
-                  {f.cached ? (
-                    <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-500">cached</span>
-                  ) : f.status === 'done' ? (
-                    <span className="text-emerald-500">100%</span>
-                  ) : f.status === 'downloading' ? (
-                    <span>
-                      {f.percent.toFixed(0)}%
-                      {f.speed && <span className="ml-1 text-muted-foreground/70">{f.speed}</span>}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground/50">queued</span>
-                  )}
-                </span>
-              </div>
-              {!f.cached && f.status !== 'pending' && (
-                <div className="h-1 w-full overflow-hidden rounded bg-muted">
-                  <div
-                    className="h-full bg-primary transition-all"
-                    style={{ width: `${Math.min(100, Math.max(0, f.percent))}%` }}
-                  />
+        <details className="text-[11px]">
+          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+            Show files ({files.length})
+          </summary>
+          <ul className="mt-2 space-y-1">
+            {files.map((f) => (
+              <li key={f.index} className="space-y-0.5">
+                <div className="flex items-center justify-between gap-2 font-mono">
+                  <span className="truncate text-muted-foreground" title={f.path ?? ''}>
+                    {f.path ? f.path.split('/').slice(-2).join('/') : `file ${f.index}`}
+                  </span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {f.cached ? (
+                      <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-500">cached</span>
+                    ) : f.status === 'done' ? (
+                      <span className="text-emerald-500">100%</span>
+                    ) : f.status === 'downloading' ? (
+                      <span>
+                        {f.percent.toFixed(0)}%
+                        {f.speed && <span className="ml-1 text-muted-foreground/70">{f.speed}</span>}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground/50">queued</span>
+                    )}
+                  </span>
                 </div>
-              )}
-            </li>
-          ))}
-        </ul>
+                {!f.cached && f.status !== 'pending' && (
+                  <div className="h-1 w-full overflow-hidden rounded bg-muted">
+                    <div
+                      className="h-full bg-primary transition-all"
+                      style={{ width: `${Math.min(100, Math.max(0, f.percent))}%` }}
+                    />
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {progress.log_tail && progress.state !== 'completed' && (
         <pre className="mt-1 max-h-32 overflow-y-auto rounded bg-muted/30 px-2 py-1.5 font-mono text-[10px] leading-snug text-muted-foreground whitespace-pre-wrap break-all">

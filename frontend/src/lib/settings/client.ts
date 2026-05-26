@@ -472,6 +472,17 @@ export type InstallProgress = {
   error_kind?: 'supply_constraint' | 'unknown' | null
   // sgs-ui-wx0: 'cpu' (install-preset CLI) or 'gpu' (pre-8ww fallback).
   install_mode?: 'cpu' | 'gpu' | null
+  // sgs-ui-5k7: milestone phase, narrower than `state`. Drives the install
+  // card's narration. 'pod_spawn' (CPU only, before pod is up) → 'preflight'
+  // (after pod_spawned) → 'download' (after preflight_ok) → 'finalize'
+  // (writing settings, deleting pod) → 'done' | 'error' | 'cancelled'.
+  // phase is purely positional; `state` carries the error/cancelled
+  // status so the UI can render ✗ on the specific milestone that failed.
+  phase?:
+    | 'idle' | 'pod_spawn' | 'preflight' | 'download' | 'finalize' | 'done'
+  // sgs-ui-5k7: running bytes downloaded so far. Used as numerator for
+  // the aggregate progress bar; total_download_bytes is the denominator.
+  bytes_done?: number
 }
 
 export async function getPresetDetail(presetId: string): Promise<PresetDetail> {

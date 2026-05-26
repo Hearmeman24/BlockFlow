@@ -191,11 +191,28 @@ _install_state: dict[str, Any] = {
     # "idle" | "queued" | "running" | "completed" | "error"
     #   | "cancelling" | "cancelled"
     "state": "idle",
+    # sgs-ui-5k7: UI milestone phase, narrower than `state`. Drives the
+    # milestone list in the install card.
+    #   "idle"      — nothing in flight
+    #   "pod_spawn" — POST accepted, pod not yet up (CPU mode only)
+    #   "preflight" — pod_spawned, agent validating preset + disk
+    #   "download"  — preflight_ok received, downloads underway
+    #   "finalize"  — install_done received, writing settings + tearing down
+    #   "done"      — settings written, pod deleted
+    #   "error"     — any terminal failure (preflight_fail/install_error/etc.)
+    #   "cancelled" — user pressed cancel before terminal event
+    "phase": "idle",
     "preset_id": None,
     "started_at": None,
     "completed_at": None,
     "files_total": 0,
     "files_done": 0,
+    # sgs-ui-5k7: running total of bytes downloaded so far, used as the
+    # progress bar numerator. Completed files contribute their actual
+    # download_done.bytes; in-flight files contribute (avg_size * percent),
+    # where avg_size = total_download_bytes / files_total. Falls back to
+    # sum-of-completed when total_download_bytes is unknown.
+    "bytes_done": 0,
     "error": None,
     # sgs-ui-wx0: classified failure mode. 'supply_constraint' when RunPod
     # is out of CPU capacity (the only case the UI offers a GPU-fallback
@@ -243,11 +260,13 @@ def _reset_install_state() -> None:
     """Test helper."""
     _install_state.update({
         "state": "idle",
+        "phase": "idle",
         "preset_id": None,
         "started_at": None,
         "completed_at": None,
         "files_total": 0,
         "files_done": 0,
+        "bytes_done": 0,
         "error": None,
         "error_kind": None,
         "install_mode": None,
@@ -602,6 +621,8 @@ def _process_install_event(evt: dict) -> dict | None:
     etype = evt.get("type")
     if etype == "pod_spawned":
         _install_state["pod_id"] = evt.get("pod_id")
+        # sgs-ui-5k7: pod is up; agent now runs preflight.
+        _install_state["phase"] = "preflight"
     elif etype == "preflight_ok":
         total = int(evt.get("models_count") or 0)
         _install_state["files_total"] = total
@@ -612,6 +633,8 @@ def _process_install_event(evt: dict) -> dict | None:
              "bytes": None, "sha256": None}
             for i in range(total)
         ]
+        # sgs-ui-5k7: preflight complete, downloads begin.
+        _install_state["phase"] = "download"
     elif etype == "download_start":
         i = int(evt.get("file_index") or 0)
         files = _install_state["files"]
@@ -626,6 +649,12 @@ def _process_install_event(evt: dict) -> dict | None:
             files[i]["speed"] = evt.get("speed")
             if evt.get("file"):
                 files[i]["path"] = evt["file"]
+            # sgs-ui-5k7: defensive — progress arriving before download_start
+            # (event reordering, dropped packets) should still flip status so
+            # the milestone UI and bytes_done estimator see it as in flight.
+            if files[i]["status"] == "pending":
+                files[i]["status"] = "downloading"
+        _recompute_bytes_done()
     elif etype == "download_done":
         i = int(evt.get("file_index") or 0)
         files = _install_state["files"]
@@ -642,9 +671,35 @@ def _process_install_event(evt: dict) -> dict | None:
         else:
             _install_state["missing_count"] += 1
         _install_state["files_done"] += 1
+        _recompute_bytes_done()
     elif etype in ("install_done", "install_error", "preflight_fail"):
         return evt
     return None
+
+
+def _recompute_bytes_done() -> None:
+    """sgs-ui-5k7: derive _install_state['bytes_done'] from files[].
+
+    Completed files contribute their actual download_done.bytes. In-flight
+    files contribute (avg_size * percent/100), where avg_size = total /
+    files_total. When total_download_bytes is unknown (preflight_ok with
+    total_bytes=0), in-flight files contribute nothing — the bar is
+    chunky but accurate.
+    """
+    files = _install_state["files"]
+    if not files:
+        _install_state["bytes_done"] = 0
+        return
+    total = int(_install_state.get("total_download_bytes") or 0)
+    n = len(files)
+    avg = (total / n) if (total > 0 and n > 0) else 0
+    acc = 0.0
+    for f in files:
+        if f["status"] == "done" and f.get("bytes"):
+            acc += int(f["bytes"])
+        elif f["status"] == "downloading" and avg:
+            acc += avg * (float(f.get("percent") or 0.0) / 100.0)
+    _install_state["bytes_done"] = int(acc)
 
 
 
@@ -764,6 +819,7 @@ def _run_gpu_install_subprocess(
             })
             return
 
+        _install_state["phase"] = "finalize"
         settings_store.record_installed_preset(
             preset_id=preset_id,
             version=version,
@@ -776,6 +832,7 @@ def _run_gpu_install_subprocess(
         )
         _install_state.update({
             "state": "completed",
+            "phase": "done",
             "completed_at": _now_iso(),
             "error": None,
             "error_kind": None,
@@ -896,6 +953,9 @@ def _run_install_subprocess(
         # may have emitted install_error("cancelled") just before exit, but
         # the state machine should reflect "cancelled" specifically.
         if _install_state["state"] == "cancelling":
+            # sgs-ui-5k7: keep `phase` at whatever step we were on so the
+            # milestone UI can mark THAT step as cancelled (drives the ✗
+            # placement). `state` carries the lifecycle status.
             _install_state.update({
                 "state": "cancelled",
                 "completed_at": _now_iso(),
@@ -904,6 +964,9 @@ def _run_install_subprocess(
             return
 
         if terminal.get("type") == "install_done" and terminal.get("ok"):
+            # sgs-ui-5k7: writing settings + tearing down the pod takes a
+            # second or two; surface it as 'finalize' for the milestone UI.
+            _install_state["phase"] = "finalize"
             # The CLI's download_done.file is a basename / partial path; we
             # persist the full canonical paths computed from preset.models
             # so uninstall can hand them to `comfy-gen delete`.
@@ -920,6 +983,7 @@ def _run_install_subprocess(
             )
             _install_state.update({
                 "state": "completed",
+                "phase": "done",
                 "completed_at": _now_iso(),
                 "error": None,
                 "error_kind": None,
@@ -950,6 +1014,8 @@ def _run_install_subprocess(
             err = f"subprocess exited rc={rc} with no terminal event"
             if tail_hint:
                 err += f" — stderr tail: {tail_hint}"
+        # sgs-ui-5k7: leave `phase` unchanged so the UI can show ✗ on the
+        # specific milestone where the error happened (preflight vs download).
         _install_state.update({
             "state": "error",
             "completed_at": _now_iso(),
@@ -1216,8 +1282,13 @@ def install_preset(body: InstallBody, mode: str = "cpu") -> JSONResponse:
             "missing_count": 0,
             "stale_count": 0,
             "total_download_bytes": 0,
+            "bytes_done": 0,
             "files": [],
             "pod_id": None,
+            # sgs-ui-5k7: UI milestone. CPU mode begins at pod_spawn (we
+            # haven't shelled out to comfy-gen yet); GPU mode skips pod
+            # spawn entirely so it begins at download.
+            "phase": "download" if mode == "gpu" else "pod_spawn",
         })
 
     # sgs-ui-8ef: UI + every other reader (wizard_routes, settings_validators,

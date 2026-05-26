@@ -123,6 +123,151 @@ def _mock_registry_fetches(mocker, preset: dict):
     )
 
 
+# === sgs-ui-5k7: phase + bytes_done for milestone UI ========================
+# The UI renders a milestone list (pod_spawn → preflight → download →
+# finalize → done|error) and a bytes-based progress bar. _install_state
+# must expose `phase` and `bytes_done` so the frontend doesn't have to
+# re-derive them from `files[]`.
+
+def test_initial_install_state_has_phase_idle_and_bytes_done_zero():
+    """Fresh state after _reset_install_state."""
+    preset_routes._reset_install_state()
+    s = preset_routes._install_state
+    assert s["phase"] == "idle"
+    assert s["bytes_done"] == 0
+
+
+def test_process_event_pod_spawned_sets_phase_preflight():
+    """pod_spawned → pod is up, agent is starting preflight."""
+    preset_routes._reset_install_state()
+    preset_routes._process_install_event(
+        {"type": "pod_spawned", "pod_id": "p1", "token": "t"}
+    )
+    assert preset_routes._install_state["phase"] == "preflight"
+    assert preset_routes._install_state["pod_id"] == "p1"
+
+
+def test_process_event_preflight_ok_sets_phase_download():
+    """preflight_ok → we now know totals; downloads start next."""
+    preset_routes._reset_install_state()
+    preset_routes._process_install_event(
+        {"type": "preflight_ok", "preset_id": "x", "models_count": 4,
+         "total_bytes": 40_000_000_000, "volume_free_bytes": 0}
+    )
+    assert preset_routes._install_state["phase"] == "download"
+    assert preset_routes._install_state["total_download_bytes"] == 40_000_000_000
+
+
+def test_bytes_done_uses_average_estimate_for_in_flight_files():
+    """download_progress 50% on file 0 of 4 (total=40GB) → bytes_done is
+    ~5GB (avg 10GB per file × 50%)."""
+    preset_routes._reset_install_state()
+    preset_routes._process_install_event(
+        {"type": "preflight_ok", "models_count": 4,
+         "total_bytes": 40_000_000_000, "volume_free_bytes": 0}
+    )
+    preset_routes._process_install_event(
+        {"type": "download_start", "file_index": 0, "file": "a"}
+    )
+    preset_routes._process_install_event(
+        {"type": "download_progress", "file_index": 0, "file": "a",
+         "percent": 50.0, "speed": "100MB"}
+    )
+    assert preset_routes._install_state["bytes_done"] == 5_000_000_000
+
+
+def test_bytes_done_sums_completed_and_in_flight():
+    """1 file done (12GB actual) + 1 in flight at 25% of avg(10GB) → 14.5GB."""
+    preset_routes._reset_install_state()
+    preset_routes._process_install_event(
+        {"type": "preflight_ok", "models_count": 4,
+         "total_bytes": 40_000_000_000, "volume_free_bytes": 0}
+    )
+    preset_routes._process_install_event(
+        {"type": "download_done", "file_index": 0, "file": "a",
+         "cached": False, "bytes": 12_000_000_000, "sha256": "x"}
+    )
+    preset_routes._process_install_event(
+        {"type": "download_progress", "file_index": 1, "file": "b",
+         "percent": 25.0, "speed": ""}
+    )
+    s = preset_routes._install_state
+    # 12e9 done + 0.25 * (40e9/4) = 12e9 + 2.5e9 = 14.5e9
+    assert s["bytes_done"] == 14_500_000_000
+
+
+def test_bytes_done_falls_back_to_completed_sum_when_no_total():
+    """preflight_ok absent or total_bytes=0 → bytes_done = sum of done bytes only."""
+    preset_routes._reset_install_state()
+    # Simulate files[] from preflight_ok with no total_bytes
+    preset_routes._process_install_event(
+        {"type": "preflight_ok", "models_count": 2,
+         "total_bytes": 0, "volume_free_bytes": 0}
+    )
+    preset_routes._process_install_event(
+        {"type": "download_done", "file_index": 0, "file": "a",
+         "cached": False, "bytes": 7_000_000_000, "sha256": "x"}
+    )
+    preset_routes._process_install_event(
+        {"type": "download_progress", "file_index": 1, "file": "b",
+         "percent": 50.0, "speed": ""}
+    )
+    # No estimate possible for in-flight → only completed bytes count.
+    assert preset_routes._install_state["bytes_done"] == 7_000_000_000
+
+
+def test_install_state_transitions_through_all_phases(client, mocker):
+    """End-to-end: phase goes idle → pod_spawn → preflight → download → finalize → done."""
+    preset = _full_preset(n_models=2)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_z", "token": "tok"},
+        {"type": "preflight_ok", "preset_id": preset["id"], "models_count": 2,
+         "total_bytes": 20_000_000_000, "volume_free_bytes": 0},
+        {"type": "download_start", "file_index": 0, "file": "/x/a"},
+        {"type": "download_done", "file_index": 0, "file": "/x/a",
+         "cached": False, "bytes": 10_000_000_000, "sha256": "0"*64},
+        {"type": "download_start", "file_index": 1, "file": "/x/b"},
+        {"type": "download_done", "file_index": 1, "file": "/x/b",
+         "cached": False, "bytes": 10_000_000_000, "sha256": "1"*64},
+        {"type": "install_done", "ok": True, "files": 2, "elapsed_sec": 60},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=0)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("completed", "error", "cancelled")
+
+    s = preset_routes._install_state
+    assert s["state"] == "completed"
+    assert s["phase"] == "done"
+    assert s["bytes_done"] == 20_000_000_000
+
+
+def test_install_error_keeps_phase_at_failure_point(client, mocker):
+    """sgs-ui-5k7: when state flips to 'error', `phase` should stay at the
+    step that was active when failure happened — so the UI can mark that
+    specific milestone with ✗. install_error mid-download → phase='download'."""
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_e", "token": "tok"},
+        {"type": "preflight_ok", "preset_id": preset["id"], "models_count": 1,
+         "total_bytes": 1_000_000, "volume_free_bytes": 0},
+        {"type": "install_error", "stage": "download", "reason": "boom"},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=1)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    s = preset_routes._install_state
+    assert s["state"] == "error"
+    # phase NOT 'error' — UI derives error placement from (phase, state).
+    assert s["phase"] == "download"
+
+
 # === Task 1: backend wiring =================================================
 
 def test_install_drives_state_through_full_event_stream(client, mocker):

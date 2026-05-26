@@ -30,7 +30,8 @@ export function CredentialsTab() {
         <CredentialInput
           name="civitai_api_key"
           label="CivitAI API Key"
-          hint="Required for the civitai_share block."
+          validator="civitai"
+          hint="Required for the civitai_share block and CivitAI-hosted presets."
         />
       </Section>
 

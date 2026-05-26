@@ -32,6 +32,13 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_store, "DB_PATH", db_path)
     settings_store.init_db()
 
+    # sgs-ui-5nn: quickstart-preset reads the preset registry cache. Isolate
+    # it per test so cross-test bleed (or a leftover file in the dev env)
+    # doesn't confuse fallback assertions.
+    from backend import preset_routes
+    monkeypatch.setattr(preset_routes, "_CACHE_PATH", tmp_path / "preset_manifest_cache.json")
+    preset_routes._cache_reset()
+
     fastapi_app = FastAPI()
     fastapi_app.include_router(wizard_routes.router)
     return fastapi_app
@@ -52,6 +59,21 @@ def all_creds_configured():
     settings_store.set_credential("r2_bucket", "my-bucket")
 
 
+@pytest.fixture
+def all_creds_validated(all_creds_configured):
+    """sgs-ui-5nn: provision/attach also check that creds were validated
+    within the TTL. Tests that mutate Settings before posting need fresh
+    validation rows; this fixture stamps them."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    settings_store.set_credential_validation(
+        "runpod", {"ok": True, "error": None, "validated_at": now}
+    )
+    settings_store.set_credential_validation(
+        "r2", {"ok": True, "error": None, "validated_at": now}
+    )
+
+
 # === preflight ==============================================================
 
 def test_preflight_reports_all_credentials_missing(client):
@@ -68,27 +90,32 @@ def test_preflight_reports_all_credentials_missing(client):
     assert "r2_bucket" in body["missing"]
 
 
-def test_preflight_ready_with_empty_endpoint_url_for_aws_s3(client):
+def test_preflight_missing_empty_with_empty_endpoint_url_for_aws_s3(client):
     """Users on AWS S3 (not Cloudflare R2) leave r2_endpoint_url empty —
-    boto3 defaults to the AWS endpoint. Preflight must accept that."""
+    boto3 defaults to the AWS endpoint. Preflight must NOT report r2_endpoint_url
+    as missing.
+
+    sgs-ui-5nn note: ready=True now also requires validation, so this test
+    only asserts the `missing` field. Validation-gated readiness is covered
+    in test_preflight_ready_when_required_services_validated_within_ttl.
+    """
     settings_store.set_credential("runpod_api_key", "rpa")
     settings_store.set_credential("r2_access_key_id", "AKIA_aws")
     settings_store.set_credential("r2_secret_access_key", "secret_aws")
     settings_store.set_credential("r2_bucket", "hearmeman-loras")
     # r2_endpoint_url deliberately not set
 
-    r = client.get("/api/wizard/comfygen/preflight")
-    body = r.json()
-    assert body["ready"] is True
+    body = client.get("/api/wizard/comfygen/preflight").json()
     assert body["missing"] == []
 
 
-def test_preflight_reports_ready_when_all_present(client, all_creds_configured):
-    r = client.get("/api/wizard/comfygen/preflight")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ready"] is True
+def test_preflight_no_missing_when_all_present(client, all_creds_configured):
+    """sgs-ui-5nn: presence of creds no longer implies ready=True; only
+    `missing` is empty. ready=True needs validation (separate test)."""
+    body = client.get("/api/wizard/comfygen/preflight").json()
     assert body["missing"] == []
+    assert body["services"]["runpod"]["status"] == "unvalidated"
+    assert body["services"]["r2"]["status"] == "unvalidated"
 
 
 def test_preflight_lists_only_actually_missing_creds(client):
@@ -102,6 +129,135 @@ def test_preflight_lists_only_actually_missing_creds(client):
     assert "runpod_api_key" not in body["missing"]
     assert "r2_endpoint_url" not in body["missing"]
     assert "r2_access_key_id" in body["missing"]
+
+
+# === sgs-ui-5nn: preflight validation gating ================================
+#
+# Old behavior: ready = True iff all required credentials are non-empty.
+# New behavior: ready = True iff all required credentials are present AND
+# validated successfully within the TTL window. Preflight is a pure reader;
+# the UI calls /api/settings/validate/{service} to refresh stale validations.
+
+def _stamp_validation(service: str, ok: bool, validated_at: str, error: str | None = None) -> None:
+    settings_store.set_credential_validation(
+        service,
+        {"ok": ok, "error": error, "validated_at": validated_at},
+    )
+
+
+def _iso(seconds_ago: int = 0) -> str:
+    from datetime import datetime, timedelta, timezone
+    t = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    return t.isoformat(timespec="seconds")
+
+
+def test_preflight_not_ready_when_creds_present_but_unvalidated(client, all_creds_configured):
+    """The bug the user identified: creds non-empty was treated as 'ready'.
+    With validation gating, unvalidated creds must keep ready=False."""
+    r = client.get("/api/wizard/comfygen/preflight")
+    body = r.json()
+    assert body["ready"] is False
+    assert body["services"]["runpod"]["status"] == "unvalidated"
+    assert body["services"]["r2"]["status"] == "unvalidated"
+
+
+def test_preflight_ready_when_required_services_validated_within_ttl(client, all_creds_configured):
+    _stamp_validation("runpod", ok=True, validated_at=_iso(seconds_ago=60))
+    _stamp_validation("r2", ok=True, validated_at=_iso(seconds_ago=60))
+
+    r = client.get("/api/wizard/comfygen/preflight")
+    body = r.json()
+    assert body["ready"] is True
+    assert body["services"]["runpod"]["status"] == "valid"
+    assert body["services"]["r2"]["status"] == "valid"
+
+
+def test_preflight_stale_validation_does_not_count_as_ready(client, all_creds_configured):
+    """A 'valid' validation older than the TTL must surface as status=stale
+    and ready=False — the wizard needs a fresh re-check."""
+    _stamp_validation("runpod", ok=True, validated_at=_iso(seconds_ago=700))  # > 600s TTL
+    _stamp_validation("r2", ok=True, validated_at=_iso(seconds_ago=60))
+
+    r = client.get("/api/wizard/comfygen/preflight")
+    body = r.json()
+    assert body["ready"] is False
+    assert body["services"]["runpod"]["status"] == "stale"
+    assert body["services"]["r2"]["status"] == "valid"
+
+
+def test_preflight_failed_validation_surfaces_error(client, all_creds_configured):
+    _stamp_validation("runpod", ok=False, validated_at=_iso(0), error="HTTP 401")
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is False
+    assert body["services"]["runpod"]["status"] == "invalid"
+    assert body["services"]["runpod"]["error"] == "HTTP 401"
+
+
+def test_preflight_civitai_validated_does_not_gate_ready(client, all_creds_configured):
+    """CivitAI is recommended, not required. ready must depend only on
+    runpod + r2 validation."""
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+    # CivitAI cred present but never validated
+    settings_store.set_credential("civitai_api_key", "civ_tok")
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is True
+    assert body["services"]["civitai"]["status"] == "unvalidated"
+    assert body["services"]["civitai"]["required"] is False
+
+
+def test_preflight_civitai_credentials_missing_does_not_gate_ready(
+    client, all_creds_configured
+):
+    """If civitai_api_key is empty entirely (default state), wizard should still
+    be launchable so long as required creds are valid."""
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is True
+    assert body["services"]["civitai"]["status"] == "credentials_missing"
+
+
+def test_preflight_civitai_invalid_does_not_gate_ready(client, all_creds_configured):
+    """Even with CivitAI validation failed, ready stays True so long as required
+    services are valid. The UI surfaces CivitAI as a yellow warning, not a block."""
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+    settings_store.set_credential("civitai_api_key", "civ_bad")
+    _stamp_validation("civitai", ok=False, validated_at=_iso(0), error="HTTP 401")
+
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is True
+    assert body["services"]["civitai"]["status"] == "invalid"
+
+
+def test_preflight_required_field_marks_services(client, all_creds_configured):
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["services"]["runpod"]["required"] is True
+    assert body["services"]["r2"]["required"] is True
+    assert body["services"]["civitai"]["required"] is False
+
+
+def test_preflight_credentials_missing_overrides_validation(client):
+    """Even if a stale validation row exists for r2, an empty r2_bucket
+    means the credential is missing — that takes precedence."""
+    # Set runpod fully + validated
+    settings_store.set_credential("runpod_api_key", "rpa")
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    # Set 3 of 4 R2 creds, leave r2_bucket missing, but persist a stale 'valid' row.
+    settings_store.set_credential("r2_endpoint_url", "https://x.r2.com")
+    settings_store.set_credential("r2_access_key_id", "AKIA")
+    settings_store.set_credential("r2_secret_access_key", "sekret")
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is False
+    assert "r2_bucket" in body["missing"]
+    assert body["services"]["r2"]["status"] == "credentials_missing"
 
 
 # === tiers ==================================================================
@@ -123,7 +279,7 @@ def test_tiers_returns_three_tiers_with_required_fields(client):
 
 # === provision (happy path) =================================================
 
-def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_configured, mocker):
+def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_validated, mocker):
     """Volume → Template → Endpoint, each receiving the right args."""
     create_volume = mocker.patch.object(
         wizard_routes.runpod_api, "create_network_volume",
@@ -177,7 +333,7 @@ def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_config
     assert ep_kwargs["workers_max"] == 3  # default
 
 
-def test_provision_persists_endpoint_to_settings(client, all_creds_configured, mocker):
+def test_provision_persists_endpoint_to_settings(client, all_creds_validated, mocker):
     mocker.patch.object(wizard_routes.runpod_api, "create_network_volume",
                         return_value={"id": "vol_x"})
     mocker.patch.object(wizard_routes.runpod_api, "create_template",
@@ -200,7 +356,7 @@ def test_provision_persists_endpoint_to_settings(client, all_creds_configured, m
     assert ep["gpu_tier"] == "budget"
 
 
-def test_provision_passes_user_supplied_volume_size_and_max_workers(client, all_creds_configured, mocker):
+def test_provision_passes_user_supplied_volume_size_and_max_workers(client, all_creds_validated, mocker):
     create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume",
                                         return_value={"id": "vol_x"})
     mocker.patch.object(wizard_routes.runpod_api, "create_template", return_value={"id": "tmpl_x"})
@@ -254,7 +410,7 @@ def test_provision_400_when_tier_invalid(client, all_creds_configured):
     assert "ultra" in detail_str or "tier" in detail_str
 
 
-def test_provision_rolls_back_volume_if_template_creation_fails(client, all_creds_configured, mocker):
+def test_provision_rolls_back_volume_if_template_creation_fails(client, all_creds_validated, mocker):
     """If template creation fails after volume was created, the volume should be deleted.
 
     Otherwise we leave dangling resources the user has to clean up manually."""
@@ -274,7 +430,7 @@ def test_provision_rolls_back_volume_if_template_creation_fails(client, all_cred
     assert settings_store.get_endpoint("comfygen") is None
 
 
-def test_provision_rolls_back_volume_and_template_if_endpoint_creation_fails(client, all_creds_configured, mocker):
+def test_provision_rolls_back_volume_and_template_if_endpoint_creation_fails(client, all_creds_validated, mocker):
     mocker.patch.object(wizard_routes.runpod_api, "create_network_volume",
                         return_value={"id": "vol_x"})
     mocker.patch.object(wizard_routes.runpod_api, "create_template",
@@ -294,7 +450,7 @@ def test_provision_rolls_back_volume_and_template_if_endpoint_creation_fails(cli
 
 # === attach (attach-existing flow) ==========================================
 
-def test_attach_persists_existing_endpoint_after_health_check(client, all_creds_configured, mocker):
+def test_attach_persists_existing_endpoint_after_health_check(client, all_creds_validated, mocker):
     """User provides an endpoint ID; we verify it's reachable via /health, then store it."""
     health = mocker.patch.object(wizard_routes.runpod_api, "get_endpoint_health",
                                  return_value={"workers": {"ready": 0, "idle": 0}})
@@ -311,7 +467,7 @@ def test_attach_persists_existing_endpoint_after_health_check(client, all_creds_
     assert ep["volume_id"] == "vol_user_existing"
 
 
-def test_attach_400_when_health_check_fails(client, all_creds_configured, mocker):
+def test_attach_400_when_health_check_fails(client, all_creds_validated, mocker):
     mocker.patch.object(wizard_routes.runpod_api, "get_endpoint_health",
                         side_effect=wizard_routes.runpod_api.RunPodAPIError("HTTP 404"))
 
@@ -326,6 +482,163 @@ def test_attach_400_when_runpod_key_missing(client):
     r = client.post("/api/wizard/comfygen/attach", json={"endpoint_id": "ep_x"})
     assert r.status_code == 400
     assert "runpod_api_key" in r.json()["detail"]
+
+
+# === sgs-ui-5nn: provision + attach validation gating =======================
+
+def test_provision_refuses_when_runpod_unvalidated(client, all_creds_configured, mocker):
+    """Backend defense in depth: even if the UI is bypassed, provision must
+    refuse to spawn RunPod resources without fresh validation."""
+    create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume")
+    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    assert r.status_code == 400
+    assert "validated" in r.json()["detail"].lower()
+    create_volume.assert_not_called()
+
+
+def test_provision_refuses_when_r2_unvalidated(client, all_creds_configured, mocker):
+    settings_store.set_credential_validation(
+        "runpod", {"ok": True, "error": None, "validated_at": _iso(0)}
+    )
+    # r2 deliberately not validated
+    create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume")
+    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    assert r.status_code == 400
+    assert "r2" in r.json()["detail"].lower() or "validated" in r.json()["detail"].lower()
+    create_volume.assert_not_called()
+
+
+def test_provision_refuses_when_validation_is_stale(client, all_creds_configured, mocker):
+    """A stale 'valid' row (older than TTL) must NOT pass the gate."""
+    settings_store.set_credential_validation(
+        "runpod", {"ok": True, "error": None, "validated_at": _iso(seconds_ago=700)}
+    )
+    settings_store.set_credential_validation(
+        "r2", {"ok": True, "error": None, "validated_at": _iso(0)}
+    )
+    create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume")
+    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    assert r.status_code == 400
+    create_volume.assert_not_called()
+
+
+# === sgs-ui-5nn: Step 8 quickstart-preset selection ========================
+
+def _make_resp(body, status: int = 200):
+    """Build a minimal mock HTTP response object compatible with curl_cffi."""
+    import json as _json
+    from unittest.mock import MagicMock
+    m = MagicMock()
+    m.status_code = status
+    m.text = _json.dumps(body)
+    m.json = lambda: body
+    return m
+
+
+def _manifest(presets):
+    return {"manifest_version": 1, "presets": presets}
+
+
+def _manifest_entry(*, id, size_gb, preset_url=None):
+    return {
+        "id": id,
+        "name": id.replace("-", " ").title(),
+        "disk_size_estimate_gb": size_gb,
+        "preset_url": preset_url or f"https://example/{id}.json",
+    }
+
+
+def _preset_detail(*, urls):
+    return {"models": [{"url": u, "dest": "checkpoints"} for u in urls]}
+
+
+def test_quickstart_returns_smallest_non_civitai_preset(client, mocker):
+    """Walks manifest entries in size order, fetches each preset.json, picks
+    the first whose model URLs don't reference civitai.com."""
+    from backend import preset_routes
+
+    manifest = _manifest([
+        _manifest_entry(id="big-clean", size_gb=80, preset_url="https://x/big.json"),
+        _manifest_entry(id="tiny-civitai", size_gb=5, preset_url="https://x/tiny.json"),
+        _manifest_entry(id="small-clean", size_gb=10, preset_url="https://x/small.json"),
+    ])
+    details = {
+        "https://x/big.json": _preset_detail(urls=["https://huggingface.co/m1.safetensors"]),
+        "https://x/tiny.json": _preset_detail(urls=["https://civitai.com/api/v1/m2"]),
+        "https://x/small.json": _preset_detail(urls=["https://huggingface.co/m3.safetensors"]),
+    }
+
+    def fake_get(url, **kw):
+        if url.endswith("manifest.json"):
+            return _make_resp(manifest)
+        return _make_resp(details[url])
+
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=fake_get)
+
+    r = client.get("/api/wizard/comfygen/quickstart-preset")
+
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["preset_id"] == "small-clean"
+    assert body["disk_size_estimate_gb"] == 10
+    assert "civitai" not in str(body).lower() or body["source"] != "civitai"
+
+
+def test_quickstart_falls_back_when_registry_unreachable(client, mocker):
+    from backend import preset_routes
+
+    def fake_get(url, **kw):
+        raise RuntimeError("network down")
+
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=fake_get)
+
+    r = client.get("/api/wizard/comfygen/quickstart-preset")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["fallback"] is True
+    assert body["preset_id"]  # hardcoded id is present
+
+
+def test_quickstart_502_when_all_presets_require_civitai_and_no_fallback(client, mocker):
+    """Degenerate: every preset uses CivitAI and we don't have a fallback that
+    works either. Surface 502 so the UI can show 'no quick-start available'."""
+    from backend import preset_routes
+
+    manifest = _manifest([
+        _manifest_entry(id="a", size_gb=5, preset_url="https://x/a.json"),
+        _manifest_entry(id="b", size_gb=10, preset_url="https://x/b.json"),
+    ])
+    civ = _preset_detail(urls=["https://civitai.com/api/v1/x"])
+    def fake_get(url, **kw):
+        if url.endswith("manifest.json"):
+            return _make_resp(manifest)
+        return _make_resp(civ)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=fake_get)
+    # Force the fallback resolver to fail so we exercise the no-result branch.
+    mocker.patch.object(wizard_routes, "_QUICKSTART_FALLBACK_ID", "no-such-preset")
+
+    r = client.get("/api/wizard/comfygen/quickstart-preset")
+    assert r.status_code == 502
+    assert "civitai" in r.json()["detail"].lower() or "quickstart" in r.json()["detail"].lower()
+
+
+def test_attach_refuses_when_r2_unvalidated(client, all_creds_configured, mocker):
+    """sgs-ui-5nn Q11: attach must validate R2 round-trip (cached) before
+    persisting the endpoint. The UI's attach button is the only path where
+    a user can hook up an existing endpoint, and we want to catch the
+    'attached endpoint uses a different bucket' class of failures upfront."""
+    settings_store.set_credential_validation(
+        "runpod", {"ok": True, "error": None, "validated_at": _iso(0)}
+    )
+    # r2 deliberately not validated
+    health = mocker.patch.object(wizard_routes.runpod_api, "get_endpoint_health")
+    r = client.post(
+        "/api/wizard/comfygen/attach", json={"endpoint_id": "ep_x"}
+    )
+    assert r.status_code == 400
+    assert "r2" in r.json()["detail"].lower() or "validated" in r.json()["detail"].lower()
+    health.assert_not_called()
+    assert settings_store.get_endpoint("comfygen") is None
 
 
 # === health (proxy) =========================================================

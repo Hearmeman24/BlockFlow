@@ -58,6 +58,13 @@ export function CredentialInput({ name, label, validator, hint }: Props) {
       await saveCredential(name, draftValue)
       setStoredValue(draftValue)
       setSaveState({ kind: 'idle' })
+      // sgs-ui-5nn: auto-validate on save. The user grilled this as
+      // "save-time + wizard-open TTL" — saving without immediate validation
+      // would defeat the cred-save-time-feedback half.
+      if (validator && draftValue) {
+        // Don't await: failure paths still surface via the state.
+        handleValidate()
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setSaveState({ kind: 'error', message })

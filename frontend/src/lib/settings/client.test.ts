@@ -334,7 +334,9 @@ describe('wizardPreflight', () => {
       '/api/wizard/comfygen/preflight',
       expect.objectContaining({ method: 'GET' }),
     )
-    expect(result).toEqual({ ready: false, missing: ['runpod_api_key', 'r2_bucket'] })
+    expect(result).toMatchObject({ ready: false, missing: ['runpod_api_key', 'r2_bucket'] })
+    // sgs-ui-5nn: services map defaults to {} when older backend omits it.
+    expect(result.services).toEqual({})
   })
 
   test('returns {ready: true, missing: []} when all creds present', async () => {

@@ -74,6 +74,19 @@ OPTIONAL_S3_CREDS: tuple[str, ...] = (
 DEFAULT_VOLUME_SIZE_GB = 200
 DEFAULT_MAX_WORKERS = 3
 
+# sgs-ui-5nn: preflight only treats a cached validation as 'valid' if recorded
+# within the last 10 minutes. Older entries report status=stale and force the
+# UI to refresh before unlocking the Set up button.
+VALIDATION_TTL_SECONDS = 600
+
+REQUIRED_VALIDATOR_SERVICES: tuple[str, ...] = ("runpod", "r2")
+OPTIONAL_VALIDATOR_SERVICES: tuple[str, ...] = ("civitai",)
+
+# sgs-ui-5nn Step 8: when the registry is unreachable and we can't pick a
+# quickstart preset from it, fall back to this hardcoded id. Must exist as a
+# valid preset in the public registry. Easily replaceable per release.
+_QUICKSTART_FALLBACK_ID = "sdxl-turbo-quickstart"
+
 
 # === request bodies =========================================================
 
@@ -100,6 +113,26 @@ def _required_creds_present() -> tuple[bool, list[str]]:
         if not settings_store.get_credential(r2_field):
             missing.append(r2_field)
     return (not missing, missing)
+
+
+def _required_services_validated() -> tuple[bool, list[str]]:
+    """sgs-ui-5nn: backend defense-in-depth gate. Returns (ok, problems).
+
+    `problems` lists services that aren't currently usable: not yet validated,
+    stale, or last-validated as failed. Empty list means all required services
+    have status=valid within VALIDATION_TTL_SECONDS.
+
+    This is what provision/attach refuse on — independent of UI gating so a
+    direct curl can't bypass it.
+    """
+    problems: list[str] = []
+    for svc in REQUIRED_VALIDATOR_SERVICES:
+        status = _service_status(
+            svc, missing_creds=_service_credentials_missing(svc)
+        )["status"]
+        if status != "valid":
+            problems.append(f"{svc}:{status}")
+    return (not problems, problems)
 
 
 def _build_env_for_template() -> dict[str, str]:
@@ -129,11 +162,157 @@ def _short_id() -> str:
 
 # === routes =================================================================
 
+def _service_status(service: str, *, missing_creds: bool) -> dict[str, Any]:
+    """Compute the gating status for a single validator service.
+
+    Status values:
+      - credentials_missing: the underlying credential(s) are empty in Settings.
+      - unvalidated:         creds present but no validation has been recorded.
+      - stale:               last validation older than VALIDATION_TTL_SECONDS.
+      - invalid:             last validation ran and returned ok=False.
+      - valid:               last validation ok=True and fresh.
+    """
+    if missing_creds:
+        return {"status": "credentials_missing", "validated_at": None, "error": None}
+
+    record = settings_store.get_credential_validation(service)
+    if record is None:
+        return {"status": "unvalidated", "validated_at": None, "error": None}
+
+    if not record["ok"]:
+        return {
+            "status": "invalid",
+            "validated_at": record["validated_at"],
+            "error": record["error"],
+        }
+
+    # Check freshness against TTL.
+    from datetime import datetime, timezone
+    try:
+        ts = datetime.fromisoformat(record["validated_at"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return {
+            "status": "stale",
+            "validated_at": record["validated_at"],
+            "error": None,
+        }
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    if age > VALIDATION_TTL_SECONDS:
+        return {"status": "stale", "validated_at": record["validated_at"], "error": None}
+    return {"status": "valid", "validated_at": record["validated_at"], "error": None}
+
+
+def _service_credentials_missing(service: str) -> bool:
+    """Whether any underlying credential the validator depends on is empty.
+
+    For r2 we mirror the existing `_required_creds_present` rule: r2_endpoint_url
+    is OPTIONAL (empty means AWS S3 default), so its absence does NOT count
+    as credentials_missing here.
+    """
+    if service == "runpod":
+        return not settings_store.get_credential("runpod_api_key")
+    if service == "r2":
+        for field in REQUIRED_R2_CREDS:
+            if not settings_store.get_credential(field):
+                return True
+        return False
+    if service == "civitai":
+        return not settings_store.get_credential("civitai_api_key")
+    return False
+
+
 @router.get("/api/wizard/comfygen/preflight")
 def preflight() -> JSONResponse:
-    """Tell the UI whether all required creds are present before launching the wizard."""
-    ready, missing = _required_creds_present()
-    return JSONResponse({"ready": ready, "missing": missing})
+    """Aggregate gating state for the ComfyGen wizard.
+
+    Backwards-compat: `ready` and `missing` keys retained. New: a `services`
+    map giving per-validator status (valid / unvalidated / stale / invalid /
+    credentials_missing). `ready=True` requires all REQUIRED services to be
+    `valid`. Optional services (CivitAI) never gate `ready` but are surfaced
+    for the wizard UI to render the yellow recommended banner.
+    """
+    _, missing = _required_creds_present()
+
+    services: dict[str, dict[str, Any]] = {}
+    for svc in REQUIRED_VALIDATOR_SERVICES:
+        services[svc] = {
+            **_service_status(svc, missing_creds=_service_credentials_missing(svc)),
+            "required": True,
+        }
+    for svc in OPTIONAL_VALIDATOR_SERVICES:
+        services[svc] = {
+            **_service_status(svc, missing_creds=_service_credentials_missing(svc)),
+            "required": False,
+        }
+
+    ready = all(
+        services[svc]["status"] == "valid" for svc in REQUIRED_VALIDATOR_SERVICES
+    )
+
+    return JSONResponse({
+        "ready": ready,
+        "missing": missing,
+        "services": services,
+    })
+
+
+@router.get("/api/wizard/comfygen/quickstart-preset")
+def quickstart_preset() -> JSONResponse:
+    """Step 8 picker: smallest non-CivitAI preset in the registry.
+
+    Resolution order:
+      1. Walk the manifest in ascending size order, return the first whose
+         models[*].url doesn't reference civitai.com (`fallback=False`).
+      2. If picker returned nothing (registry unreachable or every preset
+         requires CivitAI): try the hardcoded fallback id against the
+         manifest cache, return with `fallback=True`.
+      3. If neither (registry fully down and fallback id not in any cache):
+         return `{preset_id: fallback_id, fallback: True, preset_url: None}`
+         so the UI can render "registry unreachable — try later".
+      4. If the fallback id is deliberately set to a missing value (test
+         monkeypatch): surface 502 — the wizard cannot offer Step 8.
+    """
+    from backend import preset_routes
+
+    picked = preset_routes.pick_quickstart_preset()
+    if picked is not None:
+        return JSONResponse({**picked, "fallback": False})
+
+    fallback_id = _QUICKSTART_FALLBACK_ID
+    manifest = preset_routes._cache["manifest"] or preset_routes._load_disk_cache()
+    if manifest:
+        for entry in manifest.get("presets") or []:
+            if entry.get("id") == fallback_id:
+                return JSONResponse({
+                    "preset_id": entry["id"],
+                    "name": entry.get("name") or entry["id"],
+                    "disk_size_estimate_gb": entry.get("disk_size_estimate_gb"),
+                    "preset_url": entry.get("preset_url"),
+                    "fallback": True,
+                })
+        # Manifest reached the cache but fallback id isn't in it. The wizard
+        # cannot offer Step 8 — surface 502 so the UI disables it explicitly.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"no quickstart preset available — registry reachable but "
+                f"every preset requires CivitAI and fallback id "
+                f"'{fallback_id}' is not in the manifest"
+            ),
+        )
+
+    # Manifest never reached us (registry fully down + no disk cache). Return
+    # a bare stub so the UI can render 'registry unreachable — Browse manually'
+    # rather than a hard error.
+    return JSONResponse({
+        "preset_id": fallback_id,
+        "name": fallback_id,
+        "disk_size_estimate_gb": None,
+        "preset_url": None,
+        "fallback": True,
+    })
 
 
 @router.get("/api/wizard/comfygen/tiers")
@@ -153,6 +332,18 @@ def provision(body: ProvisionBody) -> JSONResponse:
         raise HTTPException(
             status_code=400,
             detail=f"missing required credentials in Settings: {missing}",
+        )
+
+    # sgs-ui-5nn: backend defense-in-depth gate. Refuse to spawn RunPod
+    # resources unless all required services have a fresh `valid` row.
+    services_ok, problems = _required_services_validated()
+    if not services_ok:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"credentials not validated within TTL: {problems} — "
+                "open Settings → Credentials and re-validate before provisioning"
+            ),
         )
 
     api_key = settings_store.get_credential("runpod_api_key")
@@ -237,6 +428,20 @@ def attach(body: AttachBody) -> JSONResponse:
     api_key = settings_store.get_credential("runpod_api_key")
     if not api_key:
         raise HTTPException(status_code=400, detail="runpod_api_key not configured in Settings")
+
+    # sgs-ui-5nn: attach gates on the same validation cache as provision —
+    # specifically the R2 round-trip, which catches "attached endpoint uses
+    # a different bucket than current Settings" failures before they bake
+    # into the persisted endpoint row.
+    services_ok, problems = _required_services_validated()
+    if not services_ok:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"credentials not validated within TTL: {problems} — "
+                "open Settings → Credentials and re-validate before attaching"
+            ),
+        )
 
     # Verify the endpoint is reachable + the API key has access to it.
     try:

@@ -285,6 +285,76 @@ def _find_manifest_entry(preset_id: str) -> dict | None:
     return None
 
 
+# === sgs-ui-5nn: Step 8 quickstart picker ===================================
+
+def _get_or_fetch_manifest_cached() -> dict | None:
+    """Reader used by the wizard quickstart picker. Returns the cached manifest
+    if fresh, otherwise attempts a fetch; falls back to in-memory or disk cache
+    on network error. Returns None only when no manifest can be produced at
+    all."""
+    if _cache_is_fresh():
+        return _cache["manifest"]
+    try:
+        manifest = _fetch_manifest()
+        _cache["manifest"] = manifest
+        _cache["fetched_at"] = time.time()
+        _save_disk_cache(manifest)
+        return manifest
+    except Exception:
+        return _cache["manifest"] or _load_disk_cache()
+
+
+def _fetch_preset_detail_remote(preset_url: str) -> dict:
+    resp = _cffi_requests.get(preset_url, timeout=_HTTP_TIMEOUT_SEC)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"detail fetch HTTP {resp.status_code}")
+    return resp.json()
+
+
+def _preset_uses_civitai(detail: dict) -> bool:
+    """True iff any model URL in this preset's detail references civitai.com."""
+    for model in detail.get("models") or []:
+        url = (model.get("url") or "").lower()
+        if "civitai.com" in url:
+            return True
+    return False
+
+
+def pick_quickstart_preset() -> dict | None:
+    """Walk the manifest in ascending disk_size_estimate_gb order. For each
+    candidate, fetch its preset.json and pick the first one whose model URLs
+    don't reference CivitAI.
+
+    Returns `{preset_id, name, disk_size_estimate_gb, preset_url}` or None if
+    the manifest is unreachable or every preset requires CivitAI.
+    """
+    manifest = _get_or_fetch_manifest_cached()
+    if manifest is None:
+        return None
+    presets = manifest.get("presets") or []
+
+    sorted_presets = sorted(
+        presets, key=lambda p: p.get("disk_size_estimate_gb") or 1_000_000
+    )
+    for entry in sorted_presets:
+        preset_url = entry.get("preset_url")
+        if not preset_url:
+            continue
+        try:
+            detail = _fetch_preset_detail_remote(preset_url)
+        except Exception:
+            continue
+        if _preset_uses_civitai(detail):
+            continue
+        return {
+            "preset_id": entry["id"],
+            "name": entry.get("name") or entry["id"],
+            "disk_size_estimate_gb": entry.get("disk_size_estimate_gb"),
+            "preset_url": preset_url,
+        }
+    return None
+
+
 @router.get("/api/presets/manifest/{preset_id}")
 def get_preset_detail(preset_id: str) -> JSONResponse:
     entry = _find_manifest_entry(preset_id)

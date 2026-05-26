@@ -161,9 +161,35 @@ export type WizardTier = {
   region: string
 }
 
+export type WizardServiceStatus =
+  | 'valid'
+  | 'unvalidated'
+  | 'stale'
+  | 'invalid'
+  | 'credentials_missing'
+
+export type WizardServiceState = {
+  status: WizardServiceStatus
+  validated_at: string | null
+  error: string | null
+  required: boolean
+}
+
 export type WizardPreflight = {
   ready: boolean
   missing: string[]
+  // sgs-ui-5nn: per-service validation state. UI uses this to render
+  // green/red rows + the yellow CivitAI banner. Optional so older backends
+  // (and pre-5nn test fixtures) that omit it still parse.
+  services?: Record<string, WizardServiceState>
+}
+
+export type WizardQuickstartPreset = {
+  preset_id: string
+  name: string
+  disk_size_estimate_gb: number | null
+  preset_url: string | null
+  fallback: boolean
 }
 
 export type WizardProvisionInput = {
@@ -199,7 +225,20 @@ export type EndpointHealth = {
 export async function wizardPreflight(): Promise<WizardPreflight> {
   const res = await fetch('/api/wizard/comfygen/preflight', { method: 'GET' })
   await _throwIfNonOk(res)
-  return (await res.json()) as WizardPreflight
+  const body = (await res.json()) as Partial<WizardPreflight>
+  // Defensive default: older backends (or tests stubbing this shape) might
+  // omit `services`. Surface an empty map so callers can iterate safely.
+  return {
+    ready: !!body.ready,
+    missing: body.missing ?? [],
+    services: body.services ?? {},
+  }
+}
+
+export async function wizardQuickstartPreset(): Promise<WizardQuickstartPreset> {
+  const res = await fetch('/api/wizard/comfygen/quickstart-preset', { method: 'GET' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as WizardQuickstartPreset
 }
 
 export async function wizardTiers(): Promise<WizardTier[]> {

@@ -544,6 +544,81 @@ def test_install_mode_gpu_uses_old_download_cli(client, mocker):
     assert len(row["installed_paths"]) == 2
 
 
+def test_install_mode_gpu_batch_spec_runs_through_canonical_translator(
+    client, mocker
+):
+    """src-abj (supersedes src-b6b): the GPU-fallback batch spec must
+    flow through preset_resolver.preset_to_download_batch — the same
+    translator comfy-gen's install-preset orchestrator uses. That means:
+
+    - source=huggingface is aliased to 'url'
+    - source=url emits 'destination_path' (NOT bare 'dest' with a slash —
+      the worker treats dest as a subfolder and FileExistsErrors)
+    - source=civitai parses version_id out of the URL and splits dest
+      into subfolder + filename (without this the worker raises
+      'version_id required for civitai source')
+    """
+    preset = _full_preset(n_models=1)
+    preset["models"] = [
+        {
+            "source": "huggingface",
+            "url": "https://hf.co/org/text_encoder.safetensors",
+            "dest": "text_encoders/umt5_xxl_fp8.safetensors",
+            "sha256": "a" * 64, "size_gb": 1.0,
+        },
+        {
+            "source": "civitai",
+            "url": "https://civitai.com/api/download/models/456789",
+            "dest": "loras/cool_style.safetensors",
+            "sha256": "b" * 64, "size_gb": 0.2,
+        },
+    ]
+    _mock_registry_fetches(mocker, preset)
+    proc = _make_proc(
+        stdout='{"ok": true, "files": []}\n',
+        stderr="[1/2] downloaded\n[2/2] downloaded\n",
+        returncode=0,
+    )
+
+    captured: dict = {}
+
+    def _capture_then_return(args, *a, **kw):
+        try:
+            i = args.index("--batch")
+            with open(args[i + 1], "r", encoding="utf-8") as fp:
+                captured["spec"] = json.load(fp)
+        except (ValueError, IndexError, OSError):
+            captured["spec"] = None
+        return proc
+
+    mocker.patch.object(
+        preset_routes.subprocess, "Popen", side_effect=_capture_then_return
+    )
+
+    r = client.post(
+        "/api/presets/install?mode=gpu",
+        json={"preset_id": preset["id"]},
+    )
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error", "cancelled")
+    assert preset_routes._install_state["state"] == "completed"
+
+    spec = captured.get("spec")
+    assert spec is not None, "batch spec was not captured"
+    assert len(spec) == 2
+
+    hf_entry, civ_entry = spec
+    # huggingface → url alias + destination_path
+    assert hf_entry["source"] == "url"
+    assert hf_entry["destination_path"] == "text_encoders/umt5_xxl_fp8.safetensors"
+    assert "dest" not in hf_entry or "/" not in hf_entry["dest"]
+    # civitai → version_id parsed, dest split
+    assert civ_entry["source"] == "civitai"
+    assert civ_entry["version_id"] == "456789"
+    assert civ_entry["dest"] == "loras"
+    assert civ_entry["filename"] == "cool_style.safetensors"
+
+
 def test_install_mode_gpu_failure_surfaces_stderr(client, mocker):
     """When `comfy-gen download` exits non-zero in GPU mode, the install
     state lands on error with the stderr tail in the message."""

@@ -58,3 +58,6 @@ comfy_gen_info_cache.json
 /preset_install.log
 /preset_manifest_cache.json
 
+
+# CLAUDE.md is local-only (see ~/.claude memory: claude-md-stays-local)
+CLAUDE.md

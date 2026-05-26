@@ -544,6 +544,56 @@ def test_install_mode_gpu_uses_old_download_cli(client, mocker):
     assert len(row["installed_paths"]) == 2
 
 
+def test_install_mode_gpu_batch_spec_uses_destination_path(client, mocker):
+    """src-b6b: the GPU-fallback batch spec must NOT pass the full
+    `<subfolder>/<filename>` in `dest` — the worker's download handler
+    interprets `dest` as a subfolder (directory) and FileExistsError's
+    on os.makedirs when a file already exists at that path. Each entry
+    must be rewritten to use `destination_path` (which the handler
+    splits via `_split_destination_path`)."""
+    preset = _full_preset(n_models=2)
+    _mock_registry_fetches(mocker, preset)
+    proc = _make_proc(
+        stdout='{"ok": true, "files": []}\n',
+        stderr="[1/2] downloaded\n[2/2] downloaded\n",
+        returncode=0,
+    )
+
+    captured: dict = {}
+
+    def _capture_then_return(args, *a, **kw):
+        try:
+            i = args.index("--batch")
+            with open(args[i + 1], "r", encoding="utf-8") as fp:
+                captured["spec"] = json.load(fp)
+        except (ValueError, IndexError, OSError):
+            captured["spec"] = None
+        return proc
+
+    mocker.patch.object(
+        preset_routes.subprocess, "Popen", side_effect=_capture_then_return
+    )
+
+    r = client.post(
+        "/api/presets/install?mode=gpu",
+        json={"preset_id": preset["id"]},
+    )
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error", "cancelled")
+    assert preset_routes._install_state["state"] == "completed"
+
+    spec = captured.get("spec")
+    assert spec is not None, "batch spec was not captured"
+    assert len(spec) == 2
+    for entry in spec:
+        assert "destination_path" in entry, entry
+        assert "/" in entry["destination_path"]
+        if "dest" in entry:
+            assert "/" not in entry["dest"], (
+                f"dest must be a subfolder only, got {entry['dest']!r}"
+            )
+
+
 def test_install_mode_gpu_failure_surfaces_stderr(client, mocker):
     """When `comfy-gen download` exits non-zero in GPU mode, the install
     state lands on error with the stderr tail in the message."""

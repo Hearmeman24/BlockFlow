@@ -582,6 +582,24 @@ def _strip_internal_fields(entry: dict) -> dict:
     return {k: v for k, v in entry.items() if not k.startswith("_")}
 
 
+def _normalize_batch_entry(entry: dict) -> dict:
+    """src-b6b: comfy-gen's `download` API contract treats `dest` as a
+    *subfolder* (directory) under MODELS_BASE, not a full file path.
+    Preset entries store the full `<subfolder>/<filename>` relative path
+    in `dest`, which the worker then tries to mkdir — failing with
+    FileExistsError when a regular file already lives there.
+
+    Rewrite to `destination_path` (the handler splits this correctly
+    via _split_destination_path)."""
+    out = {k: v for k, v in entry.items() if k != "dest"}
+    dest = entry.get("dest") or ""
+    if dest:
+        out["destination_path"] = (
+            dest if "/" in dest else f"checkpoints/{dest}"
+        )
+    return out
+
+
 def _run_gpu_install_subprocess(
     *,
     preset_id: str,
@@ -610,7 +628,10 @@ def _run_gpu_install_subprocess(
     )
 
     # Build the download batch spec from preset.models.
-    batch_spec = [_strip_internal_fields(m) for m in preset_models]
+    batch_spec = [
+        _normalize_batch_entry(_strip_internal_fields(m))
+        for m in preset_models
+    ]
     files_total = len(batch_spec)
     _install_state["files_total"] = files_total
 

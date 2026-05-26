@@ -15,6 +15,7 @@ import {
   type InstalledPresetSummary,
   type PresetManifest,
   type PresetManifestEntry,
+  type RefreshInstalledSummary,
 } from '@/lib/settings/client'
 import { classifyInstallErrorKind } from '@/lib/install-error-kind'
 import { InstallMilestones } from './install-milestones'
@@ -28,9 +29,20 @@ export function PresetsPageBody() {
   // sgs-ui-41c: separate structured-refusal state so the UI can render a
   // banner linking the user straight to Settings → Credentials.
   const [refused, setRefused] = useState<InstallRefusedError | null>(null)
+  // sgs-ui-ag2: Refresh button feedback.
+  const [refreshing, setRefreshing] = useState(false)
+  type RefreshStatus =
+    | { kind: 'success'; summary: RefreshInstalledSummary }
+    | { kind: 'warning'; summary: RefreshInstalledSummary }
+    | { kind: 'error'; message: string }
+  const [refreshStatus, setRefreshStatus] = useState<RefreshStatus | null>(null)
 
   const refresh = useCallback(async (opts?: { syncInstalled?: boolean }) => {
     setManifestErr(null)
+    if (opts?.syncInstalled) {
+      setRefreshing(true)
+      setRefreshStatus(null)
+    }
     try {
       const m = await getPresetManifest({ refresh: opts?.syncInstalled })
       setManifest(m)
@@ -43,7 +55,20 @@ export function PresetsPageBody() {
     // workflows[].settings knob) wouldn't reach already-installed presets
     // until the next backend restart.
     if (opts?.syncInstalled) {
-      try { await refreshInstalledPresets() } catch { /* best-effort */ }
+      try {
+        const summary = await refreshInstalledPresets()
+        setRefreshStatus({
+          kind: summary.errors.length > 0 ? 'warning' : 'success',
+          summary,
+        })
+      } catch (err) {
+        setRefreshStatus({
+          kind: 'error',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      } finally {
+        setRefreshing(false)
+      }
     }
     try {
       setInstalled(await listInstalledPresets())
@@ -135,12 +160,14 @@ export function PresetsPageBody() {
         <button
           type="button"
           onClick={() => refresh({ syncInstalled: true })}
-          className="px-3 py-1.5 text-xs rounded border border-border"
+          disabled={refreshing}
+          className="px-3 py-1.5 text-xs rounded border border-border disabled:opacity-50 disabled:cursor-wait"
           title="Re-fetch the registry manifest AND re-sync every installed preset's metadata (workflows, settings, recommendations). Models aren't touched."
         >
-          Refresh
+          {refreshing ? 'Refreshing…' : 'Refresh'}
         </button>
       </header>
+      {refreshStatus && <RefreshStatusBanner status={refreshStatus} onDismiss={() => setRefreshStatus(null)} /> }
 
       {manifestErr && (
         <div className="border border-destructive/40 bg-destructive/10 rounded p-3 text-sm">
@@ -438,6 +465,54 @@ function Detail({ label, value }: { label: string; value: string }) {
     <div>
       <dt className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</dt>
       <dd className="font-mono text-xs">{value}</dd>
+    </div>
+  )
+}
+
+// sgs-ui-ag2: status banner for the /presets Refresh button. Renders the
+// counts on success ("Refreshed N · M skipped"), a warning tone when any
+// per-preset error came back, or a destructive banner on an outright
+// refresh failure. data-tone is asserted by tests so the visual signal is
+// load-bearing, not vibes.
+type _RefreshStatus =
+  | { kind: 'success'; summary: RefreshInstalledSummary }
+  | { kind: 'warning'; summary: RefreshInstalledSummary }
+  | { kind: 'error'; message: string }
+
+function RefreshStatusBanner({
+  status, onDismiss,
+}: { status: _RefreshStatus; onDismiss: () => void }) {
+  if (status.kind === 'error') {
+    return (
+      <div
+        data-testid="refresh-status-banner"
+        data-tone="error"
+        className="border border-destructive/40 bg-destructive/10 rounded p-3 text-sm flex justify-between gap-3"
+      >
+        <span>Refresh failed: {status.message}</span>
+        <button type="button" onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">dismiss</button>
+      </div>
+    )
+  }
+  const { summary } = status
+  const ok = summary.refreshed.length
+  const skip = summary.skipped.length
+  const errs = summary.errors.length
+  const cls = status.kind === 'warning'
+    ? 'border-amber-500/40 bg-amber-500/10'
+    : 'border-emerald-500/40 bg-emerald-500/10'
+  return (
+    <div
+      data-testid="refresh-status-banner"
+      data-tone={status.kind}
+      className={`border ${cls} rounded p-3 text-sm flex justify-between gap-3`}
+    >
+      <span>
+        ✓ Refreshed {ok} preset{ok === 1 ? '' : 's'}
+        {skip > 0 && ` · ${skip} skipped`}
+        {errs > 0 && ` · ${errs} error${errs === 1 ? '' : 's'}`}
+      </span>
+      <button type="button" onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">dismiss</button>
     </div>
   )
 }

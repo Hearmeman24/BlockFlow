@@ -74,6 +74,14 @@ OPTIONAL_S3_CREDS: tuple[str, ...] = (
 DEFAULT_VOLUME_SIZE_GB = 200
 DEFAULT_MAX_WORKERS = 3
 
+# sgs-ui-5nn: preflight only treats a cached validation as 'valid' if recorded
+# within the last 10 minutes. Older entries report status=stale and force the
+# UI to refresh before unlocking the Set up button.
+VALIDATION_TTL_SECONDS = 600
+
+REQUIRED_VALIDATOR_SERVICES: tuple[str, ...] = ("runpod", "r2")
+OPTIONAL_VALIDATOR_SERVICES: tuple[str, ...] = ("civitai",)
+
 
 # === request bodies =========================================================
 
@@ -129,11 +137,100 @@ def _short_id() -> str:
 
 # === routes =================================================================
 
+def _service_status(service: str, *, missing_creds: bool) -> dict[str, Any]:
+    """Compute the gating status for a single validator service.
+
+    Status values:
+      - credentials_missing: the underlying credential(s) are empty in Settings.
+      - unvalidated:         creds present but no validation has been recorded.
+      - stale:               last validation older than VALIDATION_TTL_SECONDS.
+      - invalid:             last validation ran and returned ok=False.
+      - valid:               last validation ok=True and fresh.
+    """
+    if missing_creds:
+        return {"status": "credentials_missing", "validated_at": None, "error": None}
+
+    record = settings_store.get_credential_validation(service)
+    if record is None:
+        return {"status": "unvalidated", "validated_at": None, "error": None}
+
+    if not record["ok"]:
+        return {
+            "status": "invalid",
+            "validated_at": record["validated_at"],
+            "error": record["error"],
+        }
+
+    # Check freshness against TTL.
+    from datetime import datetime, timezone
+    try:
+        ts = datetime.fromisoformat(record["validated_at"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return {
+            "status": "stale",
+            "validated_at": record["validated_at"],
+            "error": None,
+        }
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    if age > VALIDATION_TTL_SECONDS:
+        return {"status": "stale", "validated_at": record["validated_at"], "error": None}
+    return {"status": "valid", "validated_at": record["validated_at"], "error": None}
+
+
+def _service_credentials_missing(service: str) -> bool:
+    """Whether any underlying credential the validator depends on is empty.
+
+    For r2 we mirror the existing `_required_creds_present` rule: r2_endpoint_url
+    is OPTIONAL (empty means AWS S3 default), so its absence does NOT count
+    as credentials_missing here.
+    """
+    if service == "runpod":
+        return not settings_store.get_credential("runpod_api_key")
+    if service == "r2":
+        for field in REQUIRED_R2_CREDS:
+            if not settings_store.get_credential(field):
+                return True
+        return False
+    if service == "civitai":
+        return not settings_store.get_credential("civitai_api_key")
+    return False
+
+
 @router.get("/api/wizard/comfygen/preflight")
 def preflight() -> JSONResponse:
-    """Tell the UI whether all required creds are present before launching the wizard."""
-    ready, missing = _required_creds_present()
-    return JSONResponse({"ready": ready, "missing": missing})
+    """Aggregate gating state for the ComfyGen wizard.
+
+    Backwards-compat: `ready` and `missing` keys retained. New: a `services`
+    map giving per-validator status (valid / unvalidated / stale / invalid /
+    credentials_missing). `ready=True` requires all REQUIRED services to be
+    `valid`. Optional services (CivitAI) never gate `ready` but are surfaced
+    for the wizard UI to render the yellow recommended banner.
+    """
+    _, missing = _required_creds_present()
+
+    services: dict[str, dict[str, Any]] = {}
+    for svc in REQUIRED_VALIDATOR_SERVICES:
+        services[svc] = {
+            **_service_status(svc, missing_creds=_service_credentials_missing(svc)),
+            "required": True,
+        }
+    for svc in OPTIONAL_VALIDATOR_SERVICES:
+        services[svc] = {
+            **_service_status(svc, missing_creds=_service_credentials_missing(svc)),
+            "required": False,
+        }
+
+    ready = all(
+        services[svc]["status"] == "valid" for svc in REQUIRED_VALIDATOR_SERVICES
+    )
+
+    return JSONResponse({
+        "ready": ready,
+        "missing": missing,
+        "services": services,
+    })
 
 
 @router.get("/api/wizard/comfygen/tiers")

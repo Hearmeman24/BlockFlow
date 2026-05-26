@@ -68,27 +68,32 @@ def test_preflight_reports_all_credentials_missing(client):
     assert "r2_bucket" in body["missing"]
 
 
-def test_preflight_ready_with_empty_endpoint_url_for_aws_s3(client):
+def test_preflight_missing_empty_with_empty_endpoint_url_for_aws_s3(client):
     """Users on AWS S3 (not Cloudflare R2) leave r2_endpoint_url empty —
-    boto3 defaults to the AWS endpoint. Preflight must accept that."""
+    boto3 defaults to the AWS endpoint. Preflight must NOT report r2_endpoint_url
+    as missing.
+
+    sgs-ui-5nn note: ready=True now also requires validation, so this test
+    only asserts the `missing` field. Validation-gated readiness is covered
+    in test_preflight_ready_when_required_services_validated_within_ttl.
+    """
     settings_store.set_credential("runpod_api_key", "rpa")
     settings_store.set_credential("r2_access_key_id", "AKIA_aws")
     settings_store.set_credential("r2_secret_access_key", "secret_aws")
     settings_store.set_credential("r2_bucket", "hearmeman-loras")
     # r2_endpoint_url deliberately not set
 
-    r = client.get("/api/wizard/comfygen/preflight")
-    body = r.json()
-    assert body["ready"] is True
+    body = client.get("/api/wizard/comfygen/preflight").json()
     assert body["missing"] == []
 
 
-def test_preflight_reports_ready_when_all_present(client, all_creds_configured):
-    r = client.get("/api/wizard/comfygen/preflight")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ready"] is True
+def test_preflight_no_missing_when_all_present(client, all_creds_configured):
+    """sgs-ui-5nn: presence of creds no longer implies ready=True; only
+    `missing` is empty. ready=True needs validation (separate test)."""
+    body = client.get("/api/wizard/comfygen/preflight").json()
     assert body["missing"] == []
+    assert body["services"]["runpod"]["status"] == "unvalidated"
+    assert body["services"]["r2"]["status"] == "unvalidated"
 
 
 def test_preflight_lists_only_actually_missing_creds(client):
@@ -102,6 +107,135 @@ def test_preflight_lists_only_actually_missing_creds(client):
     assert "runpod_api_key" not in body["missing"]
     assert "r2_endpoint_url" not in body["missing"]
     assert "r2_access_key_id" in body["missing"]
+
+
+# === sgs-ui-5nn: preflight validation gating ================================
+#
+# Old behavior: ready = True iff all required credentials are non-empty.
+# New behavior: ready = True iff all required credentials are present AND
+# validated successfully within the TTL window. Preflight is a pure reader;
+# the UI calls /api/settings/validate/{service} to refresh stale validations.
+
+def _stamp_validation(service: str, ok: bool, validated_at: str, error: str | None = None) -> None:
+    settings_store.set_credential_validation(
+        service,
+        {"ok": ok, "error": error, "validated_at": validated_at},
+    )
+
+
+def _iso(seconds_ago: int = 0) -> str:
+    from datetime import datetime, timedelta, timezone
+    t = datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    return t.isoformat(timespec="seconds")
+
+
+def test_preflight_not_ready_when_creds_present_but_unvalidated(client, all_creds_configured):
+    """The bug the user identified: creds non-empty was treated as 'ready'.
+    With validation gating, unvalidated creds must keep ready=False."""
+    r = client.get("/api/wizard/comfygen/preflight")
+    body = r.json()
+    assert body["ready"] is False
+    assert body["services"]["runpod"]["status"] == "unvalidated"
+    assert body["services"]["r2"]["status"] == "unvalidated"
+
+
+def test_preflight_ready_when_required_services_validated_within_ttl(client, all_creds_configured):
+    _stamp_validation("runpod", ok=True, validated_at=_iso(seconds_ago=60))
+    _stamp_validation("r2", ok=True, validated_at=_iso(seconds_ago=60))
+
+    r = client.get("/api/wizard/comfygen/preflight")
+    body = r.json()
+    assert body["ready"] is True
+    assert body["services"]["runpod"]["status"] == "valid"
+    assert body["services"]["r2"]["status"] == "valid"
+
+
+def test_preflight_stale_validation_does_not_count_as_ready(client, all_creds_configured):
+    """A 'valid' validation older than the TTL must surface as status=stale
+    and ready=False — the wizard needs a fresh re-check."""
+    _stamp_validation("runpod", ok=True, validated_at=_iso(seconds_ago=700))  # > 600s TTL
+    _stamp_validation("r2", ok=True, validated_at=_iso(seconds_ago=60))
+
+    r = client.get("/api/wizard/comfygen/preflight")
+    body = r.json()
+    assert body["ready"] is False
+    assert body["services"]["runpod"]["status"] == "stale"
+    assert body["services"]["r2"]["status"] == "valid"
+
+
+def test_preflight_failed_validation_surfaces_error(client, all_creds_configured):
+    _stamp_validation("runpod", ok=False, validated_at=_iso(0), error="HTTP 401")
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is False
+    assert body["services"]["runpod"]["status"] == "invalid"
+    assert body["services"]["runpod"]["error"] == "HTTP 401"
+
+
+def test_preflight_civitai_validated_does_not_gate_ready(client, all_creds_configured):
+    """CivitAI is recommended, not required. ready must depend only on
+    runpod + r2 validation."""
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+    # CivitAI cred present but never validated
+    settings_store.set_credential("civitai_api_key", "civ_tok")
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is True
+    assert body["services"]["civitai"]["status"] == "unvalidated"
+    assert body["services"]["civitai"]["required"] is False
+
+
+def test_preflight_civitai_credentials_missing_does_not_gate_ready(
+    client, all_creds_configured
+):
+    """If civitai_api_key is empty entirely (default state), wizard should still
+    be launchable so long as required creds are valid."""
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is True
+    assert body["services"]["civitai"]["status"] == "credentials_missing"
+
+
+def test_preflight_civitai_invalid_does_not_gate_ready(client, all_creds_configured):
+    """Even with CivitAI validation failed, ready stays True so long as required
+    services are valid. The UI surfaces CivitAI as a yellow warning, not a block."""
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+    settings_store.set_credential("civitai_api_key", "civ_bad")
+    _stamp_validation("civitai", ok=False, validated_at=_iso(0), error="HTTP 401")
+
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is True
+    assert body["services"]["civitai"]["status"] == "invalid"
+
+
+def test_preflight_required_field_marks_services(client, all_creds_configured):
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["services"]["runpod"]["required"] is True
+    assert body["services"]["r2"]["required"] is True
+    assert body["services"]["civitai"]["required"] is False
+
+
+def test_preflight_credentials_missing_overrides_validation(client):
+    """Even if a stale validation row exists for r2, an empty r2_bucket
+    means the credential is missing — that takes precedence."""
+    # Set runpod fully + validated
+    settings_store.set_credential("runpod_api_key", "rpa")
+    _stamp_validation("runpod", ok=True, validated_at=_iso(0))
+    # Set 3 of 4 R2 creds, leave r2_bucket missing, but persist a stale 'valid' row.
+    settings_store.set_credential("r2_endpoint_url", "https://x.r2.com")
+    settings_store.set_credential("r2_access_key_id", "AKIA")
+    settings_store.set_credential("r2_secret_access_key", "sekret")
+    _stamp_validation("r2", ok=True, validated_at=_iso(0))
+
+    body = client.get("/api/wizard/comfygen/preflight").json()
+    assert body["ready"] is False
+    assert "r2_bucket" in body["missing"]
+    assert body["services"]["r2"]["status"] == "credentials_missing"
 
 
 # === tiers ==================================================================

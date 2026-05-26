@@ -52,6 +52,21 @@ def all_creds_configured():
     settings_store.set_credential("r2_bucket", "my-bucket")
 
 
+@pytest.fixture
+def all_creds_validated(all_creds_configured):
+    """sgs-ui-5nn: provision/attach also check that creds were validated
+    within the TTL. Tests that mutate Settings before posting need fresh
+    validation rows; this fixture stamps them."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    settings_store.set_credential_validation(
+        "runpod", {"ok": True, "error": None, "validated_at": now}
+    )
+    settings_store.set_credential_validation(
+        "r2", {"ok": True, "error": None, "validated_at": now}
+    )
+
+
 # === preflight ==============================================================
 
 def test_preflight_reports_all_credentials_missing(client):
@@ -257,7 +272,7 @@ def test_tiers_returns_three_tiers_with_required_fields(client):
 
 # === provision (happy path) =================================================
 
-def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_configured, mocker):
+def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_validated, mocker):
     """Volume → Template → Endpoint, each receiving the right args."""
     create_volume = mocker.patch.object(
         wizard_routes.runpod_api, "create_network_volume",
@@ -311,7 +326,7 @@ def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_config
     assert ep_kwargs["workers_max"] == 3  # default
 
 
-def test_provision_persists_endpoint_to_settings(client, all_creds_configured, mocker):
+def test_provision_persists_endpoint_to_settings(client, all_creds_validated, mocker):
     mocker.patch.object(wizard_routes.runpod_api, "create_network_volume",
                         return_value={"id": "vol_x"})
     mocker.patch.object(wizard_routes.runpod_api, "create_template",
@@ -334,7 +349,7 @@ def test_provision_persists_endpoint_to_settings(client, all_creds_configured, m
     assert ep["gpu_tier"] == "budget"
 
 
-def test_provision_passes_user_supplied_volume_size_and_max_workers(client, all_creds_configured, mocker):
+def test_provision_passes_user_supplied_volume_size_and_max_workers(client, all_creds_validated, mocker):
     create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume",
                                         return_value={"id": "vol_x"})
     mocker.patch.object(wizard_routes.runpod_api, "create_template", return_value={"id": "tmpl_x"})
@@ -388,7 +403,7 @@ def test_provision_400_when_tier_invalid(client, all_creds_configured):
     assert "ultra" in detail_str or "tier" in detail_str
 
 
-def test_provision_rolls_back_volume_if_template_creation_fails(client, all_creds_configured, mocker):
+def test_provision_rolls_back_volume_if_template_creation_fails(client, all_creds_validated, mocker):
     """If template creation fails after volume was created, the volume should be deleted.
 
     Otherwise we leave dangling resources the user has to clean up manually."""
@@ -408,7 +423,7 @@ def test_provision_rolls_back_volume_if_template_creation_fails(client, all_cred
     assert settings_store.get_endpoint("comfygen") is None
 
 
-def test_provision_rolls_back_volume_and_template_if_endpoint_creation_fails(client, all_creds_configured, mocker):
+def test_provision_rolls_back_volume_and_template_if_endpoint_creation_fails(client, all_creds_validated, mocker):
     mocker.patch.object(wizard_routes.runpod_api, "create_network_volume",
                         return_value={"id": "vol_x"})
     mocker.patch.object(wizard_routes.runpod_api, "create_template",
@@ -428,7 +443,7 @@ def test_provision_rolls_back_volume_and_template_if_endpoint_creation_fails(cli
 
 # === attach (attach-existing flow) ==========================================
 
-def test_attach_persists_existing_endpoint_after_health_check(client, all_creds_configured, mocker):
+def test_attach_persists_existing_endpoint_after_health_check(client, all_creds_validated, mocker):
     """User provides an endpoint ID; we verify it's reachable via /health, then store it."""
     health = mocker.patch.object(wizard_routes.runpod_api, "get_endpoint_health",
                                  return_value={"workers": {"ready": 0, "idle": 0}})
@@ -445,7 +460,7 @@ def test_attach_persists_existing_endpoint_after_health_check(client, all_creds_
     assert ep["volume_id"] == "vol_user_existing"
 
 
-def test_attach_400_when_health_check_fails(client, all_creds_configured, mocker):
+def test_attach_400_when_health_check_fails(client, all_creds_validated, mocker):
     mocker.patch.object(wizard_routes.runpod_api, "get_endpoint_health",
                         side_effect=wizard_routes.runpod_api.RunPodAPIError("HTTP 404"))
 
@@ -460,6 +475,63 @@ def test_attach_400_when_runpod_key_missing(client):
     r = client.post("/api/wizard/comfygen/attach", json={"endpoint_id": "ep_x"})
     assert r.status_code == 400
     assert "runpod_api_key" in r.json()["detail"]
+
+
+# === sgs-ui-5nn: provision + attach validation gating =======================
+
+def test_provision_refuses_when_runpod_unvalidated(client, all_creds_configured, mocker):
+    """Backend defense in depth: even if the UI is bypassed, provision must
+    refuse to spawn RunPod resources without fresh validation."""
+    create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume")
+    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    assert r.status_code == 400
+    assert "validated" in r.json()["detail"].lower()
+    create_volume.assert_not_called()
+
+
+def test_provision_refuses_when_r2_unvalidated(client, all_creds_configured, mocker):
+    settings_store.set_credential_validation(
+        "runpod", {"ok": True, "error": None, "validated_at": _iso(0)}
+    )
+    # r2 deliberately not validated
+    create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume")
+    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    assert r.status_code == 400
+    assert "r2" in r.json()["detail"].lower() or "validated" in r.json()["detail"].lower()
+    create_volume.assert_not_called()
+
+
+def test_provision_refuses_when_validation_is_stale(client, all_creds_configured, mocker):
+    """A stale 'valid' row (older than TTL) must NOT pass the gate."""
+    settings_store.set_credential_validation(
+        "runpod", {"ok": True, "error": None, "validated_at": _iso(seconds_ago=700)}
+    )
+    settings_store.set_credential_validation(
+        "r2", {"ok": True, "error": None, "validated_at": _iso(0)}
+    )
+    create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume")
+    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    assert r.status_code == 400
+    create_volume.assert_not_called()
+
+
+def test_attach_refuses_when_r2_unvalidated(client, all_creds_configured, mocker):
+    """sgs-ui-5nn Q11: attach must validate R2 round-trip (cached) before
+    persisting the endpoint. The UI's attach button is the only path where
+    a user can hook up an existing endpoint, and we want to catch the
+    'attached endpoint uses a different bucket' class of failures upfront."""
+    settings_store.set_credential_validation(
+        "runpod", {"ok": True, "error": None, "validated_at": _iso(0)}
+    )
+    # r2 deliberately not validated
+    health = mocker.patch.object(wizard_routes.runpod_api, "get_endpoint_health")
+    r = client.post(
+        "/api/wizard/comfygen/attach", json={"endpoint_id": "ep_x"}
+    )
+    assert r.status_code == 400
+    assert "r2" in r.json()["detail"].lower() or "validated" in r.json()["detail"].lower()
+    health.assert_not_called()
+    assert settings_store.get_endpoint("comfygen") is None
 
 
 # === health (proxy) =========================================================

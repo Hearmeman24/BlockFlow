@@ -110,6 +110,26 @@ def _required_creds_present() -> tuple[bool, list[str]]:
     return (not missing, missing)
 
 
+def _required_services_validated() -> tuple[bool, list[str]]:
+    """sgs-ui-5nn: backend defense-in-depth gate. Returns (ok, problems).
+
+    `problems` lists services that aren't currently usable: not yet validated,
+    stale, or last-validated as failed. Empty list means all required services
+    have status=valid within VALIDATION_TTL_SECONDS.
+
+    This is what provision/attach refuse on — independent of UI gating so a
+    direct curl can't bypass it.
+    """
+    problems: list[str] = []
+    for svc in REQUIRED_VALIDATOR_SERVICES:
+        status = _service_status(
+            svc, missing_creds=_service_credentials_missing(svc)
+        )["status"]
+        if status != "valid":
+            problems.append(f"{svc}:{status}")
+    return (not problems, problems)
+
+
 def _build_env_for_template() -> dict[str, str]:
     """Construct the env-var bundle that gets baked into the RunPod template."""
     env = {
@@ -252,6 +272,18 @@ def provision(body: ProvisionBody) -> JSONResponse:
             detail=f"missing required credentials in Settings: {missing}",
         )
 
+    # sgs-ui-5nn: backend defense-in-depth gate. Refuse to spawn RunPod
+    # resources unless all required services have a fresh `valid` row.
+    services_ok, problems = _required_services_validated()
+    if not services_ok:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"credentials not validated within TTL: {problems} — "
+                "open Settings → Credentials and re-validate before provisioning"
+            ),
+        )
+
     api_key = settings_store.get_credential("runpod_api_key")
     assert api_key  # ready=True guarantees it
     tier = TIERS[body.tier]
@@ -334,6 +366,20 @@ def attach(body: AttachBody) -> JSONResponse:
     api_key = settings_store.get_credential("runpod_api_key")
     if not api_key:
         raise HTTPException(status_code=400, detail="runpod_api_key not configured in Settings")
+
+    # sgs-ui-5nn: attach gates on the same validation cache as provision —
+    # specifically the R2 round-trip, which catches "attached endpoint uses
+    # a different bucket than current Settings" failures before they bake
+    # into the persisted endpoint row.
+    services_ok, problems = _required_services_validated()
+    if not services_ok:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"credentials not validated within TTL: {problems} — "
+                "open Settings → Credentials and re-validate before attaching"
+            ),
+        )
 
     # Verify the endpoint is reachable + the API key has access to it.
     try:

@@ -15,6 +15,7 @@ import {
   type PresetManifest,
   type PresetManifestEntry,
 } from '@/lib/settings/client'
+import { classifyInstallErrorKind } from '@/lib/install-error-kind'
 
 export function PresetsPageBody() {
   const [manifest, setManifest] = useState<PresetManifest | null>(null)
@@ -72,10 +73,10 @@ export function PresetsPageBody() {
     return () => clearInterval(interval)
   }, [progress, refresh])
 
-  const handleInstall = async (presetId: string) => {
+  const handleInstall = async (presetId: string, mode: 'cpu' | 'gpu' = 'cpu') => {
     setActionErr(null)
     try {
-      const result = await installPreset(presetId)
+      const result = await installPreset(presetId, { mode })
       setProgress({
         state: result.state as InstallProgress['state'],
         preset_id: result.preset_id,
@@ -149,6 +150,8 @@ export function PresetsPageBody() {
           onCancel={async () => {
             try { await cancelInstall() } catch { /* tolerate 409 race */ }
           }}
+          onRetryCpu={() => progress.preset_id && handleInstall(progress.preset_id, 'cpu')}
+          onUseGpu={() => progress.preset_id && handleInstall(progress.preset_id, 'gpu')}
         />
       )}
 
@@ -187,9 +190,13 @@ export function PresetsPageBody() {
 function InstallProgressCard({
   progress,
   onCancel,
+  onRetryCpu,
+  onUseGpu,
 }: {
   progress: InstallProgress
   onCancel: () => Promise<void>
+  onRetryCpu: () => void
+  onUseGpu: () => void
 }) {
   const cached = progress.cached_count ?? 0
   const missing = progress.missing_count ?? 0
@@ -202,8 +209,18 @@ function InstallProgressCard({
   const isActive = progress.state === 'queued' || progress.state === 'running'
   const cancelling = progress.state === 'cancelling'
 
+  // sgs-ui-wx0: prefer the backend's authoritative classification; fall
+  // back to client-side regex match if the field is missing (older
+  // /progress payload during hot-reload).
+  const errorKind =
+    progress.state === 'error'
+      ? (progress.error_kind ?? classifyInstallErrorKind(progress.error))
+      : null
+  const isSupplyConstraint = errorKind === 'supply_constraint'
+
   const headline =
     progress.state === 'completed' ? '✓ Install complete'
+    : isSupplyConstraint            ? '⏳ RunPod is temporarily out of CPU capacity'
     : progress.state === 'error'   ? '✗ Install failed'
     : progress.state === 'cancelled' ? '⏹ Install cancelled'
     : cancelling                    ? `Cancelling ${progress.preset_id}…`
@@ -276,8 +293,37 @@ function InstallProgressCard({
           {progress.log_tail}
         </pre>
       )}
-      {progress.error && (
-        <p className="text-xs text-destructive whitespace-pre-wrap">{progress.error}</p>
+      {isSupplyConstraint ? (
+        <div className="space-y-2">
+          <p className="text-xs text-amber-400">
+            Try again in a few minutes — the CPU installer pod pool is exhausted.
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onRetryCpu}
+              className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground"
+            >
+              Retry on CPU
+            </button>
+            <button
+              type="button"
+              onClick={onUseGpu}
+              title="Spawns a GPU serverless worker for download — slower and costs ~$1.50 per wan-animate-sized install (~40 GB). Use when CPU pod capacity is exhausted."
+              className="px-3 py-1.5 text-xs rounded border border-border text-foreground hover:bg-muted/40"
+            >
+              Use GPU instead
+            </button>
+          </div>
+          <details className="text-[10px]">
+            <summary className="cursor-pointer text-muted-foreground">Show raw error</summary>
+            <p className="mt-1 text-destructive whitespace-pre-wrap">{progress.error}</p>
+          </details>
+        </div>
+      ) : (
+        progress.error && (
+          <p className="text-xs text-destructive whitespace-pre-wrap">{progress.error}</p>
+        )
       )}
       {progress.state === 'error' && progress.pod_id && (
         <p className="text-xs">

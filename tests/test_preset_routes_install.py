@@ -428,3 +428,142 @@ def test_record_installed_preset_round_trips_pod_id_and_cost(tmp_path, monkeypat
     assert row["pod_id"] == "pod_abc"
     assert row["install_mode"] == "cpu"
     assert row["cost_per_hr_at_spawn"] == pytest.approx(0.06)
+
+
+# === sgs-ui-wx0: status-shaped early-exit + supply-constraint UX + GPU fallback ====
+
+def test_status_shaped_early_exit_becomes_terminal_error(client, mocker):
+    """The CLI emits early-exit failures (e.g. no CPU SKU available) as
+    `{"status": "error", "error": "..."}` on stdout instead of the
+    documented `{"type": "install_error"}` envelope. The runner must treat
+    that line as a terminal error and surface the reason."""
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    proc = _make_proc(
+        stdout='{"status": "error", "error": "SUPPLY_CONSTRAINT: no CPU instance available across all 4 SKUs"}\n',
+        returncode=1,
+    )
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error", "cancelled")
+
+    s = preset_routes._install_state
+    assert s["state"] == "error"
+    assert "SUPPLY_CONSTRAINT" in s["error"]
+    assert "no terminal event" not in s["error"]
+
+
+def test_error_kind_supply_constraint_classification(client, mocker):
+    """Terminal error containing SUPPLY_CONSTRAINT → error_kind='supply_constraint'."""
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    proc = _make_proc(
+        stdout='{"status": "error", "error": "SUPPLY_CONSTRAINT: out of CPU"}\n',
+        returncode=1,
+    )
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    assert r.status_code == 202
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    assert preset_routes._install_state["error_kind"] == "supply_constraint"
+
+
+def test_error_kind_unknown_for_non_supply_failures(client, mocker):
+    """Any other terminal error → error_kind='unknown' so the UI doesn't
+    show the friendly retry copy and the user sees the raw reason."""
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "p", "token": "t"},
+        {"type": "preflight_ok", "models_count": 1, "total_bytes": 0,
+         "volume_free_bytes": 0},
+        {"type": "install_error", "stage": "download",
+         "reason": "aria2c exit 122: disk quota exceeded"},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=1)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    assert r.status_code == 202
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    assert preset_routes._install_state["error_kind"] == "unknown"
+
+
+def test_classify_error_kind_pure_helper():
+    """Pure helper: regex-style detection of supply-constraint failures.
+    Both the magic token and the human phrase should match."""
+    assert preset_routes._classify_error_kind(
+        "SUPPLY_CONSTRAINT: nothing available") == "supply_constraint"
+    assert preset_routes._classify_error_kind(
+        "RunPod returned 'no CPU instance available'") == "supply_constraint"
+    assert preset_routes._classify_error_kind(
+        "aria2c exit 122 disk quota exceeded") == "unknown"
+    assert preset_routes._classify_error_kind("") == "unknown"
+
+
+def test_install_mode_gpu_uses_old_download_cli(client, mocker):
+    """POST /api/presets/install?mode=gpu must invoke `comfy-gen download
+    --batch ... --endpoint-id <ep>` (the pre-8ww flow), NOT
+    `comfy-gen install-preset`. On success, Settings.install_mode='gpu'
+    and pod_id=None (the GPU endpoint isn't a pod BlockFlow controls)."""
+    preset = _full_preset(n_models=2)
+    _mock_registry_fetches(mocker, preset)
+    proc = _make_proc(
+        stdout='{"ok": true, "files": []}\n',
+        stderr="[1/2] downloaded file0.safetensors\n[2/2] downloaded file1.safetensors\n",
+        returncode=0,
+    )
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    r = client.post(
+        "/api/presets/install?mode=gpu",
+        json={"preset_id": preset["id"]},
+    )
+    assert r.status_code == 202
+    _wait_for_install_state("completed", "error", "cancelled")
+
+    s = preset_routes._install_state
+    assert s["state"] == "completed", s
+
+    args = preset_routes.subprocess.Popen.call_args.args[0]
+    assert args[:2] == ["comfy-gen", "download"]
+    assert "install-preset" not in args
+    assert "--batch" in args
+    assert "--endpoint-id" in args and "ep_test" in args
+
+    row = settings_store.get_installed_preset(preset["id"])
+    assert row is not None
+    assert row["install_mode"] == "gpu"
+    assert row["pod_id"] is None
+    assert row["cost_per_hr_at_spawn"] is None
+    assert len(row["installed_paths"]) == 2
+
+
+def test_install_mode_gpu_failure_surfaces_stderr(client, mocker):
+    """When `comfy-gen download` exits non-zero in GPU mode, the install
+    state lands on error with the stderr tail in the message."""
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    proc = _make_proc(
+        stdout="",
+        stderr="comfy-gen: endpoint returned 502\n",
+        returncode=1,
+    )
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    r = client.post(
+        "/api/presets/install?mode=gpu",
+        json={"preset_id": preset["id"]},
+    )
+    assert r.status_code == 202
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    s = preset_routes._install_state
+    assert s["state"] == "error"
+    assert "502" in s["error"]
+    assert settings_store.get_installed_preset(preset["id"]) is None

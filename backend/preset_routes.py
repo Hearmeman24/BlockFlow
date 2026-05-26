@@ -30,6 +30,7 @@ Install flow (Stage B):
 from __future__ import annotations
 
 import json
+import re
 import signal
 import subprocess
 import tempfile
@@ -195,6 +196,14 @@ _install_state: dict[str, Any] = {
     "files_total": 0,
     "files_done": 0,
     "error": None,
+    # sgs-ui-wx0: classified failure mode. 'supply_constraint' when RunPod
+    # is out of CPU capacity (the only case the UI offers a GPU-fallback
+    # button); 'unknown' for everything else (existing raw-error UI).
+    "error_kind": None,
+    # sgs-ui-wx0: 'cpu' (default, install-preset CLI) or 'gpu' (resurrected
+    # pre-8ww `comfy-gen download --batch` path against the comfygen
+    # serverless endpoint). Persisted to Settings on success.
+    "install_mode": None,
     # sgs-ui-8ww: classification counts are derived live from
     # download_done.cached — `stale_count` retained for the
     # response shape but always zero now (CLI handles eviction internally).
@@ -239,6 +248,8 @@ def _reset_install_state() -> None:
         "files_total": 0,
         "files_done": 0,
         "error": None,
+        "error_kind": None,
+        "install_mode": None,
         "cached_count": 0,
         "missing_count": 0,
         "stale_count": 0,
@@ -485,10 +496,38 @@ def _delete_paths(
 _CPU_INSTALLER_COST_PER_HR = 0.06
 
 
+# sgs-ui-wx0: RunPod's CPU-pod supply ceiling shows up in multiple shapes
+# depending on which layer of the CLI raised it. The magic token is
+# `SUPPLY_CONSTRAINT` (emitted by comfy-gen install-preset); the human
+# phrase 'no CPU instance available' is the older bare-RunPod-error variant.
+_SUPPLY_CONSTRAINT_RE = re.compile(r"SUPPLY_CONSTRAINT|no CPU instance available", re.IGNORECASE)
+
+
+def _classify_error_kind(reason: str | None) -> str:
+    """Map a terminal error message to one of {'supply_constraint', 'unknown'}.
+    Only SUPPLY_CONSTRAINT failures get the friendly retry + GPU-fallback UI;
+    every other failure surfaces the raw reason so real bugs aren't masked."""
+    if reason and _SUPPLY_CONSTRAINT_RE.search(reason):
+        return "supply_constraint"
+    return "unknown"
+
+
 def _process_install_event(evt: dict) -> dict | None:
     """Apply one SSE event to _install_state. Returns the event itself if
     it's terminal (install_done / install_error / preflight_fail), else None.
+
+    sgs-ui-wx0: also recognizes `{"status": "error", "error": "..."}`,
+    the early-exit shape comfy-gen install-preset emits when it bails
+    before producing a type-shaped event (e.g. SUPPLY_CONSTRAINT on pod
+    spawn). Treated as an install_error at stage='spawn'.
     """
+    # sgs-ui-wx0: status-shaped early-exit → coerce to install_error envelope.
+    if "type" not in evt and evt.get("status") == "error":
+        return {
+            "type": "install_error",
+            "stage": "spawn",
+            "reason": evt.get("error") or "unknown early-exit error",
+        }
     etype = evt.get("type")
     if etype == "pod_spawned":
         _install_state["pod_id"] = evt.get("pod_id")
@@ -535,6 +574,165 @@ def _process_install_event(evt: dict) -> dict | None:
     elif etype in ("install_done", "install_error", "preflight_fail"):
         return evt
     return None
+
+
+def _strip_internal_fields(entry: dict) -> dict:
+    """Drop underscore-prefixed fields before writing the comfy-gen download
+    spec. The CLI doesn't tolerate unknown fields cleanly."""
+    return {k: v for k, v in entry.items() if not k.startswith("_")}
+
+
+def _run_gpu_install_subprocess(
+    *,
+    preset_id: str,
+    version: str,
+    disk_size_gb: int,
+    workflow_json_str: str,
+    preset_models: list[dict],
+    canonical_paths: list[str],
+    endpoint_id: str,
+) -> None:
+    """sgs-ui-wx0: pre-8ww install path — shells out to
+    `comfy-gen download --batch <file> --endpoint-id <ep>` against the
+    configured ComfyGen serverless endpoint. Used as a fallback when
+    RunPod CPU pod capacity is exhausted.
+
+    Progress is opaque (the legacy `download` subcommand returns a final
+    JSON result on stdout and per-file lines on stderr); we keep
+    `_install_state['log_tail']` live for the UI feed and bump
+    `files_done` per stderr line that looks like progress. install_mode
+    is persisted as 'gpu' and pod_id stays None (the endpoint isn't a
+    pod BlockFlow controls)."""
+    log_path = config.ROOT_DIR / "preset_install.log"
+    log_fp = log_path.open("a", buffering=1)
+    log_fp.write(
+        f"\n\n=== {_now_iso()} preset={preset_id} START (GPU fallback) ===\n"
+    )
+
+    # Build the download batch spec from preset.models.
+    batch_spec = [_strip_internal_fields(m) for m in preset_models]
+    files_total = len(batch_spec)
+    _install_state["files_total"] = files_total
+
+    batch_path: str | None = None
+    proc: subprocess.Popen | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        ) as tf:
+            json.dump(batch_spec, tf)
+            batch_path = tf.name
+
+        args = [
+            "comfy-gen", "download",
+            "--batch", batch_path,
+            "--endpoint-id", endpoint_id,
+            "--timeout", "3600",
+        ]
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        _install_proc["proc"] = proc
+
+        stderr_tail: deque[str] = deque(maxlen=_LOG_TAIL_MAXLEN)
+        stdout_chunks: list[str] = []
+
+        def _pump_stderr() -> None:
+            assert proc is not None and proc.stderr is not None
+            try:
+                for line in iter(proc.stderr.readline, ""):
+                    stderr_tail.append(line)
+                    _install_state["log_tail"] = "".join(stderr_tail)
+                    log_fp.write("[stderr] " + line)
+                    # Best-effort progress: each '[i/N] downloaded ...'-shaped
+                    # line increments files_done.
+                    if re.search(r"\[\d+/\d+\]|downloaded\s+", line):
+                        if _install_state["files_done"] < files_total:
+                            _install_state["files_done"] += 1
+            except (ValueError, OSError):
+                pass
+
+        def _pump_stdout() -> None:
+            assert proc is not None and proc.stdout is not None
+            try:
+                for line in iter(proc.stdout.readline, ""):
+                    stdout_chunks.append(line)
+                    log_fp.write("[stdout] " + line)
+            except (ValueError, OSError):
+                pass
+
+        t_err = threading.Thread(target=_pump_stderr, daemon=True)
+        t_out = threading.Thread(target=_pump_stdout, daemon=True)
+        t_err.start()
+        t_out.start()
+
+        rc = proc.wait(timeout=3660)
+        t_err.join(timeout=5)
+        t_out.join(timeout=5)
+
+        if _install_state["state"] == "cancelling":
+            _install_state.update({
+                "state": "cancelled",
+                "completed_at": _now_iso(),
+                "error": "install cancelled by user",
+            })
+            return
+
+        if rc != 0:
+            err = ("".join(stderr_tail).strip()
+                   or "comfy-gen download failed with no stderr output")
+            _install_state.update({
+                "state": "error",
+                "completed_at": _now_iso(),
+                "error": err[-3000:] if len(err) > 3000 else err,
+                "error_kind": _classify_error_kind(err),
+            })
+            return
+
+        settings_store.record_installed_preset(
+            preset_id=preset_id,
+            version=version,
+            disk_size_gb=disk_size_gb,
+            workflow_json=workflow_json_str,
+            installed_paths=canonical_paths,
+            pod_id=None,
+            install_mode="gpu",
+            cost_per_hr_at_spawn=None,
+        )
+        _install_state.update({
+            "state": "completed",
+            "completed_at": _now_iso(),
+            "error": None,
+            "error_kind": None,
+            "install_mode": "gpu",
+            "files_done": files_total,
+        })
+
+    except Exception as exc:
+        msg = str(exc)[:2000]
+        _install_state.update({
+            "state": "error",
+            "completed_at": _now_iso(),
+            "error": msg,
+            "error_kind": _classify_error_kind(msg),
+        })
+    finally:
+        log_fp.write(
+            f"\n=== {_now_iso()} preset={preset_id} "
+            f"state={_install_state['state']} (GPU fallback) ===\n"
+        )
+        log_fp.flush()
+        log_fp.close()
+        _install_proc["proc"] = None
+        if batch_path:
+            try:
+                Path(batch_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _run_install_subprocess(
@@ -648,6 +846,8 @@ def _run_install_subprocess(
                 "state": "completed",
                 "completed_at": _now_iso(),
                 "error": None,
+                "error_kind": None,
+                "install_mode": "cpu",
             })
             # sgs-ui-c7n trigger #2: tear the pod down immediately on
             # success. Idempotent — if the CLI's own DELETE already landed
@@ -678,13 +878,16 @@ def _run_install_subprocess(
             "state": "error",
             "completed_at": _now_iso(),
             "error": err[:3000],
+            "error_kind": _classify_error_kind(err),
         })
 
     except Exception as exc:
+        msg = str(exc)[:2000]
         _install_state.update({
             "state": "error",
             "completed_at": _now_iso(),
-            "error": str(exc)[:2000],
+            "error": msg,
+            "error_kind": _classify_error_kind(msg),
         })
     finally:
         log_fp.write(
@@ -825,11 +1028,20 @@ def _normalize_stored_recommendations(raw: str | None) -> dict:
 
 
 @router.post("/api/presets/install")
-def install_preset(body: InstallBody) -> JSONResponse:
+def install_preset(body: InstallBody, mode: str = "cpu") -> JSONResponse:
     """sgs-ui-8ww: shell out to `comfy-gen install-preset` which spawns a
     CPU installer pod, does its own preflight, and streams JSON events
     back. BlockFlow just resolves the volume_id, fetches the workflows for
-    the local dropdown, and drives the subprocess."""
+    the local dropdown, and drives the subprocess.
+
+    sgs-ui-wx0: when `?mode=gpu`, fall back to the pre-8ww
+    `comfy-gen download --batch <file> --endpoint-id <ep>` flow against
+    the configured ComfyGen serverless endpoint. Used when CPU pod
+    capacity is exhausted. Costs ~$1.50/install and is slower; surfaced
+    via an inline secondary button in the SUPPLY_CONSTRAINT error card.
+    """
+    if mode not in ("cpu", "gpu"):
+        raise HTTPException(status_code=400, detail=f"invalid mode '{mode}' — must be 'cpu' or 'gpu'")
     api_key = settings_store.get_credential("runpod_api_key")
     if not api_key:
         raise HTTPException(status_code=400, detail="runpod_api_key not configured in Settings")
@@ -909,6 +1121,8 @@ def install_preset(body: InstallBody) -> JSONResponse:
             "files_total": len(preset.get("models", []) or []),
             "files_done": 0,
             "error": None,
+            "error_kind": None,
+            "install_mode": None,
             "log_tail": "",
             "cached_count": 0,
             "missing_count": 0,
@@ -923,6 +1137,17 @@ def install_preset(body: InstallBody) -> JSONResponse:
 
     def _runner() -> None:
         _install_state["state"] = "running"
+        if mode == "gpu":
+            _run_gpu_install_subprocess(
+                preset_id=body.preset_id,
+                version=preset.get("comfygen_min_version", "0.0.0"),
+                disk_size_gb=preset.get("disk_size_estimate_gb", 0),
+                workflow_json_str=json.dumps(stored_blob),
+                preset_models=preset.get("models", []) or [],
+                canonical_paths=canonical_paths,
+                endpoint_id=ep["endpoint_id"],
+            )
+            return
         _run_install_subprocess(
             preset_id=body.preset_id,
             version=preset.get("comfygen_min_version", "0.0.0"),

@@ -427,6 +427,12 @@ export type InstallProgress = {
   pod_id?: string | null
   // Rolling tail of the subprocess's stderr (~30 lines).
   log_tail?: string
+  // sgs-ui-wx0: classified terminal-failure mode. 'supply_constraint'
+  // gets the friendly retry + GPU-fallback card variant; everything
+  // else surfaces the raw error text.
+  error_kind?: 'supply_constraint' | 'unknown' | null
+  // sgs-ui-wx0: 'cpu' (install-preset CLI) or 'gpu' (pre-8ww fallback).
+  install_mode?: 'cpu' | 'gpu' | null
 }
 
 export async function getPresetDetail(presetId: string): Promise<PresetDetail> {
@@ -441,8 +447,18 @@ export async function getDiskBudget(): Promise<DiskBudget> {
   return (await res.json()) as DiskBudget
 }
 
-export async function installPreset(presetId: string): Promise<{ preset_id: string; state: string; files_total: number; started_at: string }> {
-  const res = await fetch('/api/presets/install', {
+// sgs-ui-wx0: mode='gpu' triggers the pre-8ww `comfy-gen download --batch`
+// fallback against the configured ComfyGen serverless endpoint. Used when
+// RunPod CPU pod capacity is exhausted. Default 'cpu' = install-preset CLI.
+export async function installPreset(
+  presetId: string,
+  opts?: { mode?: 'cpu' | 'gpu' },
+): Promise<{ preset_id: string; state: string; files_total: number; started_at: string }> {
+  const mode = opts?.mode ?? 'cpu'
+  const url = mode === 'gpu'
+    ? '/api/presets/install?mode=gpu'
+    : '/api/presets/install'
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ preset_id: presetId }),

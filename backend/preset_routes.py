@@ -950,6 +950,12 @@ def _run_install_subprocess(
             "error": err[:3000],
             "error_kind": _classify_error_kind(err),
         })
+        # sgs-ui-515: pod does NOT self-clean — symmetric with success branch.
+        try:
+            from backend import installer_pod_sweeper as _sweeper
+            _sweeper.delete_pod_post_install(_install_state.get("pod_id"))
+        except Exception as exc:
+            print(f"[preset-install] post-error pod delete failed: {exc}")
 
     except Exception as exc:
         msg = str(exc)[:2000]
@@ -959,6 +965,12 @@ def _run_install_subprocess(
             "error": msg,
             "error_kind": _classify_error_kind(msg),
         })
+        # sgs-ui-515: same leak guard for unexpected exceptions.
+        try:
+            from backend import installer_pod_sweeper as _sweeper
+            _sweeper.delete_pod_post_install(_install_state.get("pod_id"))
+        except Exception as exc2:
+            print(f"[preset-install] post-exception pod delete failed: {exc2}")
     finally:
         log_fp.write(
             f"\n=== {_now_iso()} preset={preset_id} "

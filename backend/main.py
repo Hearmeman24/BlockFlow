@@ -101,10 +101,12 @@ def _refresh_installed_presets_on_startup() -> None:
 _refresh_installed_presets_on_startup()
 
 
-# sgs-ui-c7n: belt-and-suspenders cleanup for installer pods. The
-# `comfy-gen install-preset` CLI DELETEs the pod on a clean exit, but the
-# sweeper catches the cases where the CLI can't run its cleanup (BlockFlow
-# crashed mid-install, subprocess hung, DELETE failed with a 5xx).
+# sgs-ui-c7n: belt-and-suspenders cleanup for installer pods. Pods do not
+# self-clean — BlockFlow DELETEs the pod itself on both the success branch
+# (sgs-ui-c7n trigger) and the failure/exception branches (sgs-ui-515). The
+# sweeper catches the cases where BlockFlow can't run that cleanup
+# (BlockFlow crashed mid-install, DELETE failed with a 5xx, orphan pod from
+# a previous process).
 installer_pod_sweeper.start_in_background()
 
 

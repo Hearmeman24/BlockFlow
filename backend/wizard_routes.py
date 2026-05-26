@@ -82,6 +82,11 @@ VALIDATION_TTL_SECONDS = 600
 REQUIRED_VALIDATOR_SERVICES: tuple[str, ...] = ("runpod", "r2")
 OPTIONAL_VALIDATOR_SERVICES: tuple[str, ...] = ("civitai",)
 
+# sgs-ui-5nn Step 8: when the registry is unreachable and we can't pick a
+# quickstart preset from it, fall back to this hardcoded id. Must exist as a
+# valid preset in the public registry. Easily replaceable per release.
+_QUICKSTART_FALLBACK_ID = "sdxl-turbo-quickstart"
+
 
 # === request bodies =========================================================
 
@@ -250,6 +255,63 @@ def preflight() -> JSONResponse:
         "ready": ready,
         "missing": missing,
         "services": services,
+    })
+
+
+@router.get("/api/wizard/comfygen/quickstart-preset")
+def quickstart_preset() -> JSONResponse:
+    """Step 8 picker: smallest non-CivitAI preset in the registry.
+
+    Resolution order:
+      1. Walk the manifest in ascending size order, return the first whose
+         models[*].url doesn't reference civitai.com (`fallback=False`).
+      2. If picker returned nothing (registry unreachable or every preset
+         requires CivitAI): try the hardcoded fallback id against the
+         manifest cache, return with `fallback=True`.
+      3. If neither (registry fully down and fallback id not in any cache):
+         return `{preset_id: fallback_id, fallback: True, preset_url: None}`
+         so the UI can render "registry unreachable — try later".
+      4. If the fallback id is deliberately set to a missing value (test
+         monkeypatch): surface 502 — the wizard cannot offer Step 8.
+    """
+    from backend import preset_routes
+
+    picked = preset_routes.pick_quickstart_preset()
+    if picked is not None:
+        return JSONResponse({**picked, "fallback": False})
+
+    fallback_id = _QUICKSTART_FALLBACK_ID
+    manifest = preset_routes._cache["manifest"] or preset_routes._load_disk_cache()
+    if manifest:
+        for entry in manifest.get("presets") or []:
+            if entry.get("id") == fallback_id:
+                return JSONResponse({
+                    "preset_id": entry["id"],
+                    "name": entry.get("name") or entry["id"],
+                    "disk_size_estimate_gb": entry.get("disk_size_estimate_gb"),
+                    "preset_url": entry.get("preset_url"),
+                    "fallback": True,
+                })
+        # Manifest reached the cache but fallback id isn't in it. The wizard
+        # cannot offer Step 8 — surface 502 so the UI disables it explicitly.
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"no quickstart preset available — registry reachable but "
+                f"every preset requires CivitAI and fallback id "
+                f"'{fallback_id}' is not in the manifest"
+            ),
+        )
+
+    # Manifest never reached us (registry fully down + no disk cache). Return
+    # a bare stub so the UI can render 'registry unreachable — Browse manually'
+    # rather than a hard error.
+    return JSONResponse({
+        "preset_id": fallback_id,
+        "name": fallback_id,
+        "disk_size_estimate_gb": None,
+        "preset_url": None,
+        "fallback": True,
     })
 
 

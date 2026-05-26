@@ -32,6 +32,13 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(settings_store, "DB_PATH", db_path)
     settings_store.init_db()
 
+    # sgs-ui-5nn: quickstart-preset reads the preset registry cache. Isolate
+    # it per test so cross-test bleed (or a leftover file in the dev env)
+    # doesn't confuse fallback assertions.
+    from backend import preset_routes
+    monkeypatch.setattr(preset_routes, "_CACHE_PATH", tmp_path / "preset_manifest_cache.json")
+    preset_routes._cache_reset()
+
     fastapi_app = FastAPI()
     fastapi_app.include_router(wizard_routes.router)
     return fastapi_app
@@ -513,6 +520,106 @@ def test_provision_refuses_when_validation_is_stale(client, all_creds_configured
     r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
     assert r.status_code == 400
     create_volume.assert_not_called()
+
+
+# === sgs-ui-5nn: Step 8 quickstart-preset selection ========================
+
+def _make_resp(body, status: int = 200):
+    """Build a minimal mock HTTP response object compatible with curl_cffi."""
+    import json as _json
+    from unittest.mock import MagicMock
+    m = MagicMock()
+    m.status_code = status
+    m.text = _json.dumps(body)
+    m.json = lambda: body
+    return m
+
+
+def _manifest(presets):
+    return {"manifest_version": 1, "presets": presets}
+
+
+def _manifest_entry(*, id, size_gb, preset_url=None):
+    return {
+        "id": id,
+        "name": id.replace("-", " ").title(),
+        "disk_size_estimate_gb": size_gb,
+        "preset_url": preset_url or f"https://example/{id}.json",
+    }
+
+
+def _preset_detail(*, urls):
+    return {"models": [{"url": u, "dest": "checkpoints"} for u in urls]}
+
+
+def test_quickstart_returns_smallest_non_civitai_preset(client, mocker):
+    """Walks manifest entries in size order, fetches each preset.json, picks
+    the first whose model URLs don't reference civitai.com."""
+    from backend import preset_routes
+
+    manifest = _manifest([
+        _manifest_entry(id="big-clean", size_gb=80, preset_url="https://x/big.json"),
+        _manifest_entry(id="tiny-civitai", size_gb=5, preset_url="https://x/tiny.json"),
+        _manifest_entry(id="small-clean", size_gb=10, preset_url="https://x/small.json"),
+    ])
+    details = {
+        "https://x/big.json": _preset_detail(urls=["https://huggingface.co/m1.safetensors"]),
+        "https://x/tiny.json": _preset_detail(urls=["https://civitai.com/api/v1/m2"]),
+        "https://x/small.json": _preset_detail(urls=["https://huggingface.co/m3.safetensors"]),
+    }
+
+    def fake_get(url, **kw):
+        if url.endswith("manifest.json"):
+            return _make_resp(manifest)
+        return _make_resp(details[url])
+
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=fake_get)
+
+    r = client.get("/api/wizard/comfygen/quickstart-preset")
+
+    assert r.status_code == 200, r.json()
+    body = r.json()
+    assert body["preset_id"] == "small-clean"
+    assert body["disk_size_estimate_gb"] == 10
+    assert "civitai" not in str(body).lower() or body["source"] != "civitai"
+
+
+def test_quickstart_falls_back_when_registry_unreachable(client, mocker):
+    from backend import preset_routes
+
+    def fake_get(url, **kw):
+        raise RuntimeError("network down")
+
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=fake_get)
+
+    r = client.get("/api/wizard/comfygen/quickstart-preset")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["fallback"] is True
+    assert body["preset_id"]  # hardcoded id is present
+
+
+def test_quickstart_502_when_all_presets_require_civitai_and_no_fallback(client, mocker):
+    """Degenerate: every preset uses CivitAI and we don't have a fallback that
+    works either. Surface 502 so the UI can show 'no quick-start available'."""
+    from backend import preset_routes
+
+    manifest = _manifest([
+        _manifest_entry(id="a", size_gb=5, preset_url="https://x/a.json"),
+        _manifest_entry(id="b", size_gb=10, preset_url="https://x/b.json"),
+    ])
+    civ = _preset_detail(urls=["https://civitai.com/api/v1/x"])
+    def fake_get(url, **kw):
+        if url.endswith("manifest.json"):
+            return _make_resp(manifest)
+        return _make_resp(civ)
+    mocker.patch.object(preset_routes._cffi_requests, "get", side_effect=fake_get)
+    # Force the fallback resolver to fail so we exercise the no-result branch.
+    mocker.patch.object(wizard_routes, "_QUICKSTART_FALLBACK_ID", "no-such-preset")
+
+    r = client.get("/api/wizard/comfygen/quickstart-preset")
+    assert r.status_code == 502
+    assert "civitai" in r.json()["detail"].lower() or "quickstart" in r.json()["detail"].lower()
 
 
 def test_attach_refuses_when_r2_unvalidated(client, all_creds_configured, mocker):

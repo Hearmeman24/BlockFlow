@@ -12,13 +12,32 @@ import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/settings/client', () => ({
   listEndpoints: vi.fn(),
-  // Stubs for the wizard component the Set Up button mounts
-  wizardPreflight: vi.fn().mockResolvedValue({ ready: true, missing: [] }),
+  // Stubs for the wizard component the Set Up button mounts.
+  // sgs-ui-5nn: `services` map + new client functions added.
+  wizardPreflight: vi.fn().mockResolvedValue({
+    ready: true,
+    missing: [],
+    services: {
+      runpod: { status: 'valid', validated_at: '2026-05-26T00:00:00Z', error: null, required: true },
+      r2: { status: 'valid', validated_at: '2026-05-26T00:00:00Z', error: null, required: true },
+    },
+  }),
   wizardTiers: vi.fn().mockResolvedValue([]),
   wizardProvision: vi.fn(),
   wizardAttach: vi.fn(),
   wizardHealth: vi.fn(),
   wizardTeardown: vi.fn(),
+  wizardQuickstartPreset: vi.fn(),
+  validateService: vi.fn(),
+  installPreset: vi.fn(),
+  getInstallProgress: vi.fn(),
+  cancelInstall: vi.fn(),
+}))
+
+// next/navigation isn't mounted in vitest; provide a stub useRouter so the
+// wizard can render in tests.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn(), forward: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
 }))
 
 import * as client from '@/lib/settings/client'

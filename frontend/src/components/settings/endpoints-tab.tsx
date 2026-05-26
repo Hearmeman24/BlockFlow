@@ -2,7 +2,14 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-import { listEndpoints, wizardTeardown, type EndpointRecord, type WizardTeardownResult } from '@/lib/settings/client'
+import {
+  listEndpoints,
+  wizardPreflight,
+  wizardTeardown,
+  type EndpointRecord,
+  type WizardPreflight,
+  type WizardTeardownResult,
+} from '@/lib/settings/client'
 
 import { ComfyGenWizard } from '@/components/wizard/comfygen-wizard'
 
@@ -27,6 +34,10 @@ export function EndpointsTab() {
   const [wizardOpen, setWizardOpen] = useState<EndpointType | null>(null)
   const [teardownTarget, setTeardownTarget] = useState<EndpointType | null>(null)
   const [recreateAfterTeardown, setRecreateAfterTeardown] = useState(false)
+  // sgs-ui-5nn: gate Set up / Recreate on wizard preflight readiness so
+  // users can't launch the wizard when their credentials are missing or
+  // unvalidated.
+  const [preflight, setPreflight] = useState<WizardPreflight | null>(null)
 
   const refresh = useCallback(() => {
     listEndpoints()
@@ -43,9 +54,16 @@ export function EndpointsTab() {
       .catch(() => setLoaded(true))
   }, [])
 
+  const refreshPreflight = useCallback(() => {
+    wizardPreflight()
+      .then(setPreflight)
+      .catch(() => setPreflight({ ready: false, missing: [], services: {} }))
+  }, [])
+
   useEffect(() => {
     refresh()
-  }, [refresh])
+    refreshPreflight()
+  }, [refresh, refreshPreflight])
 
   return (
     <div className="space-y-4">
@@ -55,6 +73,7 @@ export function EndpointsTab() {
           definition={def}
           record={byType.get(def.type) ?? null}
           loaded={loaded}
+          preflight={preflight}
           onSetUp={() => setWizardOpen(def.type)}
           onTearDown={() => {
             setTeardownTarget(def.type)
@@ -69,7 +88,12 @@ export function EndpointsTab() {
 
       {wizardOpen === 'comfygen' && (
         <ComfyGenWizard
-          onClose={() => setWizardOpen(null)}
+          onClose={() => {
+            setWizardOpen(null)
+            // Refresh preflight after the wizard closes — the user may have
+            // re-validated credentials inside it.
+            refreshPreflight()
+          }}
           onSuccess={() => {
             refresh()
           }}
@@ -288,13 +312,33 @@ interface RowProps {
   definition: { type: EndpointType; label: string; description: string }
   record: EndpointRecord | null
   loaded: boolean
+  preflight: WizardPreflight | null
   onSetUp: () => void
   onTearDown: () => void
   onRecreate: () => void
 }
 
-function EndpointRow({ definition, record, loaded, onSetUp, onTearDown, onRecreate }: RowProps) {
+function EndpointRow({ definition, record, loaded, preflight, onSetUp, onTearDown, onRecreate }: RowProps) {
   const configured = record !== null
+  // sgs-ui-5nn: gate Set up + Recreate on validated credentials. The wizard
+  // also surfaces its own preflight panel, but blocking at the button level
+  // means a user with missing creds doesn't open the wizard at all.
+  const preflightReady = preflight?.ready === true
+  // Only meaningful for the ComfyGen row — the trainer wizard isn't shipping
+  // yet, so leave its placeholder button gating as-is.
+  const gateOnPreflight = definition.type === 'comfygen'
+  const setUpBlocked = configured || (gateOnPreflight && !preflightReady)
+  const setUpTitle = configured
+    ? 'Already configured — tear down to reset'
+    : gateOnPreflight && !preflightReady
+    ? 'Validate credentials in Settings → Credentials first'
+    : 'Launch the setup wizard'
+  const recreateBlocked = !configured || (gateOnPreflight && !preflightReady)
+  const recreateTitle = !configured
+    ? 'Nothing to recreate'
+    : gateOnPreflight && !preflightReady
+    ? 'Validate credentials in Settings → Credentials first'
+    : 'Tear down + re-launch setup wizard'
 
   return (
     <article className="rounded-lg border border-border/50 bg-card/40 p-5 space-y-4">
@@ -339,8 +383,8 @@ function EndpointRow({ definition, record, loaded, onSetUp, onTearDown, onRecrea
         <button
           type="button"
           onClick={onSetUp}
-          disabled={configured}
-          title={configured ? 'Already configured — tear down to reset' : 'Launch the setup wizard'}
+          disabled={setUpBlocked}
+          title={setUpTitle}
           className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Set up
@@ -361,12 +405,8 @@ function EndpointRow({ definition, record, loaded, onSetUp, onTearDown, onRecrea
         <button
           type="button"
           onClick={onRecreate}
-          disabled={!configured}
-          title={
-            configured
-              ? 'Tear down + re-launch setup wizard'
-              : 'Nothing to recreate'
-          }
+          disabled={recreateBlocked}
+          title={recreateTitle}
           className="px-3 py-1.5 text-xs rounded border border-border hover:bg-accent/50 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Recreate

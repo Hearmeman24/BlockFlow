@@ -17,6 +17,18 @@ vi.mock('@/lib/settings/client', () => ({
   wizardProvision: vi.fn(),
   wizardAttach: vi.fn(),
   wizardHealth: vi.fn(),
+  // sgs-ui-5nn additions: Step 8 + revalidation API.
+  wizardQuickstartPreset: vi.fn(),
+  validateService: vi.fn(),
+  installPreset: vi.fn(),
+  getInstallProgress: vi.fn(),
+  cancelInstall: vi.fn(),
+}))
+
+// Mock Next.js navigation so useRouter() works without an app router context.
+const pushMock = vi.fn()
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: pushMock, replace: vi.fn(), back: vi.fn(), forward: vi.fn(), refresh: vi.fn(), prefetch: vi.fn() }),
 }))
 
 import * as client from '@/lib/settings/client'

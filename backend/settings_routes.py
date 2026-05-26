@@ -133,4 +133,14 @@ def validate_service(service: str) -> JSONResponse:
         result = validator()
     except settings_validators.CredentialNotConfigured as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return JSONResponse(result)
+
+    # sgs-ui-5nn: cache the verdict so the wizard preflight can read it
+    # within the TTL window without re-running the live call.
+    from datetime import datetime, timezone
+    validated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    settings_store.set_credential_validation(
+        service,
+        {"ok": result["ok"], "error": result["error"], "validated_at": validated_at},
+    )
+
+    return JSONResponse({**result, "validated_at": validated_at})

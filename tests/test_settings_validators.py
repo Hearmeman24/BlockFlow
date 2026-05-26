@@ -138,31 +138,44 @@ def test_validate_r2_partial_config_lists_only_missing(client, store):
     assert "r2_access_key_id" not in detail
 
 
-def test_validate_r2_success(client, configured_r2, mocker):
-    # Mock the boto3 client factory at the boundary; validator constructs its own
-    # client config (which we want to verify) but the network call is faked.
-    # Switched to head_bucket per the .1 fix — list_buckets fails on R2 tokens
-    # that are scoped to a single bucket.
+def _r2_happy_client(mocker):
+    """Fake boto3 client with all four operations in the round-trip succeeding."""
     fake_client = mocker.MagicMock()
     fake_client.head_bucket.return_value = {}
+    fake_client.put_object.return_value = {"ETag": '"abc"'}
+    fake_client.generate_presigned_url.return_value = "https://x.example/presigned"
+    fake_client.delete_object.return_value = {}
+    return fake_client
+
+
+def test_validate_r2_success(client, configured_r2, mocker):
+    """sgs-ui-5nn option B: success path runs head_bucket THEN the full
+    put/presigned-get/delete round-trip. All four operations + the presigned
+    GET must be mocked."""
+    fake_client = _r2_happy_client(mocker)
     mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
+    mocker.patch.object(
+        settings_validators,
+        "_r2_fetch_presigned",
+        return_value=settings_validators.R2_ROUND_TRIP_PAYLOAD,
+    )
 
     r = client.post("/api/settings/validate/r2")
 
-    assert r.status_code == 200
+    assert r.status_code == 200, r.json()
     body = r.json()
     assert body["ok"] is True
     fake_client.head_bucket.assert_called_once_with(Bucket="my-bucket")
 
 
 def test_validate_r2_passes_correct_creds_to_boto3(client, configured_r2, mocker):
-    """The validator must construct the boto3 client using the stored credentials,
-    not hardcoded values. This is the regression-scope test for changes to credential
-    plumbing.
-    """
-    fake_client = mocker.MagicMock()
-    fake_client.head_bucket.return_value = {}
+    """Regression for credential plumbing — boto3 client constructed from stored creds."""
+    fake_client = _r2_happy_client(mocker)
     factory = mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
+    mocker.patch.object(
+        settings_validators, "_r2_fetch_presigned",
+        return_value=settings_validators.R2_ROUND_TRIP_PAYLOAD,
+    )
 
     client.post("/api/settings/validate/r2")
 
@@ -281,3 +294,239 @@ def test_validate_endpoint_does_not_break_credentials_crud(client, store):
     assert r.status_code == 200
     r2 = client.get("/api/settings/credentials/some_key")
     assert r2.json()["value"] == "v"
+
+
+# === sgs-ui-5nn: CivitAI validator ==========================================
+
+def test_validate_civitai_unconfigured_returns_400(client, store):
+    r = client.post("/api/settings/validate/civitai")
+    assert r.status_code == 400
+    assert "civitai_api_key" in r.json()["detail"]
+
+
+def test_validate_civitai_success(client, store, mocker):
+    store.set_credential("civitai_api_key", "civ_valid_token")
+    mocker.patch.object(
+        settings_validators,
+        "_civitai_auth_check",
+        return_value={"username": "tester"},
+    )
+    r = client.post("/api/settings/validate/civitai")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["error"] is None
+
+
+def test_validate_civitai_401_returns_ok_false(client, store, mocker):
+    store.set_credential("civitai_api_key", "civ_bad")
+    mocker.patch.object(
+        settings_validators,
+        "_civitai_auth_check",
+        side_effect=settings_validators.ValidationFailed("HTTP 401: Unauthorized"),
+    )
+    r = client.post("/api/settings/validate/civitai")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "401" in body["error"]
+
+
+def test_validate_civitai_network_error_returns_ok_false(client, store, mocker):
+    store.set_credential("civitai_api_key", "civ_anything")
+    mocker.patch.object(
+        settings_validators,
+        "_civitai_auth_check",
+        side_effect=settings_validators.ValidationFailed("network error: timeout"),
+    )
+    r = client.post("/api/settings/validate/civitai")
+    body = r.json()
+    assert body["ok"] is False
+    assert "network" in body["error"].lower() or "timeout" in body["error"].lower()
+
+
+def test_validate_civitai_passes_real_token(client, store, mocker):
+    store.set_credential("civitai_api_key", "civ_actual_token")
+    spy = mocker.patch.object(
+        settings_validators,
+        "_civitai_auth_check",
+        return_value={"username": "tester"},
+    )
+    client.post("/api/settings/validate/civitai")
+    assert spy.call_args.kwargs.get("api_key") == "civ_actual_token"
+
+
+# === sgs-ui-5nn: R2 round-trip extension ====================================
+
+def test_validate_r2_does_round_trip_after_head_bucket(client, configured_r2, mocker):
+    """sgs-ui-5nn option B: after head_bucket passes, validator must perform a
+    put/presigned-get/delete round-trip on the test key 'sgs-ui/.preflight-test'
+    to verify the worker's actual code path works (put + get perms + presigned URLs)."""
+    fake_client = mocker.MagicMock()
+    fake_client.head_bucket.return_value = {}
+    fake_client.put_object.return_value = {"ETag": '"abc"'}
+    fake_client.generate_presigned_url.return_value = "https://x.example/presigned"
+    fake_client.delete_object.return_value = {}
+    mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
+    # Mock the HTTP GET on the presigned URL
+    mocker.patch.object(
+        settings_validators,
+        "_r2_fetch_presigned",
+        return_value=settings_validators.R2_ROUND_TRIP_PAYLOAD,
+    )
+
+    r = client.post("/api/settings/validate/r2")
+
+    assert r.status_code == 200, r.json()
+    assert r.json()["ok"] is True
+    fake_client.head_bucket.assert_called_once_with(Bucket="my-bucket")
+    fake_client.put_object.assert_called_once()
+    put_kwargs = fake_client.put_object.call_args.kwargs
+    assert put_kwargs["Bucket"] == "my-bucket"
+    assert put_kwargs["Key"] == "sgs-ui/.preflight-test"
+    fake_client.generate_presigned_url.assert_called_once()
+    fake_client.delete_object.assert_called_once_with(
+        Bucket="my-bucket", Key="sgs-ui/.preflight-test"
+    )
+
+
+def test_validate_r2_put_failure_surfaced(client, configured_r2, mocker):
+    fake_client = mocker.MagicMock()
+    fake_client.head_bucket.return_value = {}
+    fake_client.put_object.side_effect = Exception(
+        "An error occurred (AccessDenied) when calling the PutObject operation"
+    )
+    mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
+
+    r = client.post("/api/settings/validate/r2")
+    body = r.json()
+    assert body["ok"] is False
+    assert "AccessDenied" in body["error"]
+    assert "PutObject" in body["error"]
+
+
+def test_validate_r2_presigned_get_mismatch_surfaced(client, configured_r2, mocker):
+    """If the round-trip GET returns content different from what we PUT,
+    surface that — it usually means presigned-URL host config is wrong."""
+    fake_client = mocker.MagicMock()
+    fake_client.head_bucket.return_value = {}
+    fake_client.put_object.return_value = {"ETag": '"abc"'}
+    fake_client.generate_presigned_url.return_value = "https://x.example/presigned"
+    mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
+    mocker.patch.object(
+        settings_validators,
+        "_r2_fetch_presigned",
+        return_value=b"WRONG-CONTENT",
+    )
+
+    r = client.post("/api/settings/validate/r2")
+    body = r.json()
+    assert body["ok"] is False
+    assert "round-trip" in body["error"].lower() or "mismatch" in body["error"].lower()
+    # delete_object must still be called for cleanup even on mismatch
+    fake_client.delete_object.assert_called_once()
+
+
+def test_validate_r2_delete_failure_is_warning_not_failure(client, configured_r2, mocker):
+    """The test object MUST be deleted on success path. If delete fails, that's
+    a real problem — surface it. But the validator should still report ok=True
+    if put + get succeeded (the user's worker round-trip works, the orphan is
+    a known issue surfaced via info, not a hard failure)."""
+    fake_client = mocker.MagicMock()
+    fake_client.head_bucket.return_value = {}
+    fake_client.put_object.return_value = {"ETag": '"abc"'}
+    fake_client.generate_presigned_url.return_value = "https://x.example/presigned"
+    fake_client.delete_object.side_effect = Exception("AccessDenied: DeleteObject")
+    mocker.patch.object(settings_validators, "_make_r2_client", return_value=fake_client)
+    mocker.patch.object(
+        settings_validators,
+        "_r2_fetch_presigned",
+        return_value=settings_validators.R2_ROUND_TRIP_PAYLOAD,
+    )
+
+    r = client.post("/api/settings/validate/r2")
+    body = r.json()
+    # Round-trip succeeded — ok=True. Delete failure surfaced via info.
+    assert body["ok"] is True
+    assert body["info"] and body["info"].get("cleanup_warning")
+    assert "DeleteObject" in body["info"]["cleanup_warning"]
+
+
+# === sgs-ui-5nn: validation persistence =====================================
+
+def test_validate_runpod_persists_result_in_store(client, store, mocker):
+    """Successful validation must record validated_at + ok in the store (keyed
+    by SERVICE name, not credential name — service 'runpod' covers the single
+    'runpod_api_key' credential)."""
+    store.set_credential("runpod_api_key", "rpa_persist")
+    mocker.patch.object(
+        settings_validators,
+        "_runpod_graphql_post",
+        return_value={"data": {"gpuTypes": [{"id": "X"}]}},
+    )
+
+    before = store.get_credential_validation("runpod")
+    assert before is None
+
+    r = client.post("/api/settings/validate/runpod")
+    assert r.status_code == 200
+
+    after = store.get_credential_validation("runpod")
+    assert after is not None
+    assert after["ok"] is True
+    assert after["validated_at"]
+    assert after["error"] is None
+
+
+def test_validate_runpod_failed_validation_persisted(client, store, mocker):
+    store.set_credential("runpod_api_key", "rpa_bad")
+    mocker.patch.object(
+        settings_validators,
+        "_runpod_graphql_post",
+        side_effect=settings_validators.ValidationFailed("HTTP 401"),
+    )
+    client.post("/api/settings/validate/runpod")
+    record = store.get_credential_validation("runpod")
+    assert record is not None
+    assert record["ok"] is False
+    assert "401" in record["error"]
+
+
+def test_validation_record_cleared_when_underlying_credential_changes(store):
+    """Changing a credential value (e.g. runpod_api_key) must invalidate the
+    cached validation for every service that depends on it (here, 'runpod')."""
+    store.set_credential("runpod_api_key", "rpa_old")
+    store.set_credential_validation(
+        "runpod",
+        {"ok": True, "error": None, "validated_at": "2026-01-01T00:00:00+00:00"},
+    )
+    assert store.get_credential_validation("runpod") is not None
+
+    store.set_credential("runpod_api_key", "rpa_new")
+    assert store.get_credential_validation("runpod") is None
+
+
+def test_validation_record_cleared_for_r2_when_any_r2_field_changes(store):
+    """The R2 validator depends on 4 credentials — changing ANY of them
+    must clear the cached r2 validation."""
+    for field in ("r2_endpoint_url", "r2_access_key_id", "r2_secret_access_key", "r2_bucket"):
+        store.set_credential(field, f"orig_{field}")
+    store.set_credential_validation(
+        "r2", {"ok": True, "error": None, "validated_at": "2026-01-01T00:00:00+00:00"}
+    )
+    assert store.get_credential_validation("r2") is not None
+
+    # Change only one field — r2 validation should still clear.
+    store.set_credential("r2_bucket", "new-bucket")
+    assert store.get_credential_validation("r2") is None
+
+
+def test_validation_record_preserved_when_credential_value_unchanged(store):
+    """Saving the same credential value (e.g. resave from settings UI) should
+    NOT clear the validation cache — only an actual value change does."""
+    store.set_credential("runpod_api_key", "rpa_same")
+    store.set_credential_validation(
+        "runpod", {"ok": True, "error": None, "validated_at": "2026-01-01T00:00:00+00:00"}
+    )
+    store.set_credential("runpod_api_key", "rpa_same")  # resave same value
+    assert store.get_credential_validation("runpod") is not None

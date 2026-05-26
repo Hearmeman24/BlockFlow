@@ -64,6 +64,17 @@ def init_db() -> None:
                     updated_at TEXT NOT NULL
                 );
 
+                -- sgs-ui-5nn: cache the most recent validation result per
+                -- service name (NOT per credential — a validator like 'r2'
+                -- depends on 4 credentials but produces one verdict). Cleared
+                -- when any underlying credential value changes.
+                CREATE TABLE IF NOT EXISTS settings_credential_validations (
+                    name TEXT PRIMARY KEY,
+                    ok INTEGER NOT NULL,
+                    error TEXT,
+                    validated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS settings_endpoints (
                     type TEXT PRIMARY KEY,
                     endpoint_id TEXT NOT NULL,
@@ -132,6 +143,14 @@ def set_credential(name: str, value: str) -> None:
     with _lock:
         conn = _get_conn()
         try:
+            # Detect whether the value actually changed. If so, drop any
+            # cached validations that depend on this credential — stale
+            # 'valid' state must not survive a key rotation.
+            prior_row = conn.execute(
+                "SELECT value FROM settings_credentials WHERE name = ?", (name,)
+            ).fetchone()
+            value_changed = prior_row is None or prior_row["value"] != value
+
             conn.execute(
                 """
                 INSERT INTO settings_credentials (name, value, updated_at)
@@ -140,6 +159,20 @@ def set_credential(name: str, value: str) -> None:
                 """,
                 (name, value, _now()),
             )
+
+            if value_changed:
+                # Imported here to avoid a circular import at module load
+                # (settings_validators imports settings_store).
+                from backend import settings_validators as _v
+                affected_services = [
+                    svc for svc, fields in _v.VALIDATOR_CREDENTIALS.items() if name in fields
+                ]
+                for svc in affected_services:
+                    conn.execute(
+                        "DELETE FROM settings_credential_validations WHERE name = ?",
+                        (svc,),
+                    )
+
             conn.commit()
         finally:
             conn.close()
@@ -183,9 +216,81 @@ def delete_credential(name: str) -> None:
         conn = _get_conn()
         try:
             conn.execute("DELETE FROM settings_credentials WHERE name = ?", (name,))
+            # Also clear any cached validations that depended on this credential.
+            from backend import settings_validators as _v
+            affected_services = [
+                svc for svc, fields in _v.VALIDATOR_CREDENTIALS.items() if name in fields
+            ]
+            for svc in affected_services:
+                conn.execute(
+                    "DELETE FROM settings_credential_validations WHERE name = ?",
+                    (svc,),
+                )
             conn.commit()
         finally:
             conn.close()
+
+
+# === credential validation cache (sgs-ui-5nn) ===============================
+
+def set_credential_validation(name: str, result: dict[str, Any]) -> None:
+    """Persist the most recent validation result for a validator (e.g. 'runpod',
+    'r2', 'civitai'). `name` is the validator service name, NOT a credential
+    name — a validator like 'r2' depends on multiple credentials but produces
+    one verdict.
+
+    `result` must include keys: `ok`, `error` (optional), `validated_at`.
+    """
+    ok = 1 if result.get("ok") else 0
+    error = result.get("error")
+    validated_at = result.get("validated_at") or _now()
+    with _lock:
+        conn = _get_conn()
+        try:
+            conn.execute(
+                """
+                INSERT INTO settings_credential_validations (name, ok, error, validated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET
+                    ok=excluded.ok, error=excluded.error, validated_at=excluded.validated_at
+                """,
+                (name, ok, error, validated_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_credential_validation(name: str) -> dict[str, Any] | None:
+    conn = _get_conn()
+    try:
+        row = conn.execute(
+            "SELECT ok, error, validated_at FROM settings_credential_validations WHERE name = ?",
+            (name,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return {
+        "ok": bool(row["ok"]),
+        "error": row["error"],
+        "validated_at": row["validated_at"],
+    }
+
+
+def list_credential_validations() -> dict[str, dict[str, Any]]:
+    conn = _get_conn()
+    try:
+        rows = conn.execute(
+            "SELECT name, ok, error, validated_at FROM settings_credential_validations"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        r["name"]: {"ok": bool(r["ok"]), "error": r["error"], "validated_at": r["validated_at"]}
+        for r in rows
+    }
 
 
 # === endpoints ==============================================================

@@ -103,15 +103,42 @@ def _make_r2_client(*, endpoint_url: str, access_key_id: str, secret_access_key:
     )
 
 
-def validate_r2() -> ValidationResult:
-    """Verify the R2/S3 credentials can reach the CONFIGURED bucket.
+R2_ROUND_TRIP_KEY = "sgs-ui/.preflight-test"
+R2_ROUND_TRIP_PAYLOAD = b"sgs-ui preflight round-trip test"
 
-    Deliberately does NOT call list_buckets() — Cloudflare R2 tokens are
-    typically scoped to a single bucket and lack account-wide ListBuckets
-    perms. list_buckets() returns AccessDenied even with valid creds for
-    the bucket they're actually scoped to. head_bucket on the configured
-    bucket is the correct test: works for bucket-scoped tokens AND
-    account-wide tokens, surfaces a clear error otherwise.
+
+def _r2_fetch_presigned(url: str) -> bytes:
+    """Boundary: GET a presigned URL. Mocked in tests."""
+    try:
+        resp = _cffi_requests.get(url, timeout=10)
+    except Exception as exc:
+        raise ValidationFailed(f"presigned GET network error: {exc}") from exc
+    if resp.status_code != 200:
+        raise ValidationFailed(f"presigned GET HTTP {resp.status_code}")
+    return resp.content
+
+
+def _stringify_boto_error(exc: Exception) -> str:
+    msg = str(exc)
+    if "AccessDenied" in msg or "NoSuchBucket" in msg or "Not Found" in msg or "404" in msg:
+        return msg
+    return f"{type(exc).__name__}: {msg}"
+
+
+def validate_r2() -> ValidationResult:
+    """Verify the R2/S3 credentials can reach the CONFIGURED bucket AND
+    perform the same put/presigned-get/delete round-trip the worker runs.
+
+    Order:
+      1. head_bucket — catches bucket-name typos + bucket-level perms.
+      2. put_object — verifies PutObject perm.
+      3. presigned GET + content compare — verifies GetObject perm AND that
+         presigned URLs resolve correctly (catches CF R2 host-config issues).
+      4. delete_object — cleans up. Failure here is reported via info, NOT a
+         hard failure: the round-trip itself succeeded.
+
+    Deliberately does NOT call list_buckets() — R2 tokens scoped to one bucket
+    lack ListBuckets perms.
     """
     creds = {field: settings_store.get_credential(field) for field in R2_FIELDS}
     missing = sorted(field for field, value in creds.items() if not value)
@@ -126,24 +153,63 @@ def validate_r2() -> ValidationResult:
         secret_access_key=creds["r2_secret_access_key"],
     )
     bucket = creds["r2_bucket"]
+
+    # 1. head_bucket
     try:
         client.head_bucket(Bucket=bucket)
     except ValidationFailed as exc:
         return ValidationResult(ok=False, error=str(exc), info=None)
     except Exception as exc:
-        # boto3 ClientError already stringifies as "An error occurred (Code)..."
-        # which is readable. Keep the type prefix only for genuinely unfamiliar
-        # exceptions (DNS errors, certificate issues, etc.).
-        msg = str(exc)
-        if "AccessDenied" in msg or "NoSuchBucket" in msg or "Not Found" in msg or "404" in msg:
-            return ValidationResult(ok=False, error=msg, info=None)
-        return ValidationResult(ok=False, error=f"{type(exc).__name__}: {msg}", info=None)
+        return ValidationResult(ok=False, error=_stringify_boto_error(exc), info=None)
 
-    return ValidationResult(
-        ok=True,
-        error=None,
-        info={"bucket_reachable": bucket},
-    )
+    # 2. put_object
+    try:
+        client.put_object(Bucket=bucket, Key=R2_ROUND_TRIP_KEY, Body=R2_ROUND_TRIP_PAYLOAD)
+    except Exception as exc:
+        return ValidationResult(ok=False, error=_stringify_boto_error(exc), info=None)
+
+    # 3. presigned GET + content compare
+    cleanup_warning: str | None = None
+    try:
+        url = client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": R2_ROUND_TRIP_KEY},
+            ExpiresIn=60,
+        )
+    except Exception as exc:
+        # Try to clean up the put before returning
+        try:
+            client.delete_object(Bucket=bucket, Key=R2_ROUND_TRIP_KEY)
+        except Exception:
+            pass
+        return ValidationResult(ok=False, error=_stringify_boto_error(exc), info=None)
+
+    fetched: bytes | None = None
+    fetch_error: str | None = None
+    try:
+        fetched = _r2_fetch_presigned(url)
+    except ValidationFailed as exc:
+        fetch_error = str(exc)
+
+    # 4. delete_object always attempted
+    try:
+        client.delete_object(Bucket=bucket, Key=R2_ROUND_TRIP_KEY)
+    except Exception as exc:
+        cleanup_warning = f"test object orphaned at {R2_ROUND_TRIP_KEY}: {_stringify_boto_error(exc)}"
+
+    if fetch_error:
+        return ValidationResult(ok=False, error=fetch_error, info=None)
+    if fetched != R2_ROUND_TRIP_PAYLOAD:
+        return ValidationResult(
+            ok=False,
+            error="round-trip content mismatch (presigned URL host config may be wrong)",
+            info=None,
+        )
+
+    info: dict[str, Any] = {"bucket_reachable": bucket, "round_trip": "ok"}
+    if cleanup_warning:
+        info["cleanup_warning"] = cleanup_warning
+    return ValidationResult(ok=True, error=None, info=info)
 
 
 # === OpenRouter =============================================================
@@ -187,10 +253,66 @@ def validate_openrouter() -> ValidationResult:
     return ValidationResult(ok=True, error=None, info={"label": label} if label else None)
 
 
+# === CivitAI ================================================================
+
+CIVITAI_AUTH_URL = "https://civitai.com/api/v1/me"
+
+
+def _civitai_auth_check(*, api_key: str) -> dict[str, Any]:
+    """Boundary: GET CivitAI's /api/v1/me. Mocked in tests."""
+    try:
+        resp = _cffi_requests.get(
+            CIVITAI_AUTH_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "blockflow-settings/0.1",
+            },
+            timeout=10,
+        )
+    except Exception as exc:
+        raise ValidationFailed(f"network error: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise ValidationFailed(f"HTTP {resp.status_code}")
+    try:
+        return resp.json()
+    except Exception as exc:
+        raise ValidationFailed(f"non-JSON response: {exc}") from exc
+
+
+def validate_civitai() -> ValidationResult:
+    api_key = settings_store.get_credential("civitai_api_key")
+    if not api_key:
+        raise CredentialNotConfigured("civitai_api_key not configured in Settings")
+
+    try:
+        body = _civitai_auth_check(api_key=api_key)
+    except ValidationFailed as exc:
+        return ValidationResult(ok=False, error=str(exc), info=None)
+
+    username = body.get("username") if isinstance(body, dict) else None
+    return ValidationResult(
+        ok=True,
+        error=None,
+        info={"username": username} if username else None,
+    )
+
+
 # === Registry ===============================================================
 
 VALIDATORS: dict[str, Callable[[], ValidationResult]] = {
     "runpod": validate_runpod,
     "r2": validate_r2,
     "openrouter": validate_openrouter,
+    "civitai": validate_civitai,
+}
+
+# Maps validator service name → the credential names it depends on. Used by
+# the store to invalidate cached validation when the underlying credential
+# changes.
+VALIDATOR_CREDENTIALS: dict[str, tuple[str, ...]] = {
+    "runpod": ("runpod_api_key",),
+    "r2": R2_FIELDS,
+    "openrouter": ("openrouter_api_key",),
+    "civitai": ("civitai_api_key",),
 }

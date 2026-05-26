@@ -356,6 +356,60 @@ def test_validate_civitai_passes_real_token(client, store, mocker):
     assert spy.call_args.kwargs.get("api_key") == "civ_actual_token"
 
 
+# === sgs-ui-6px: HuggingFace token validator ================================
+
+def test_validate_huggingface_unconfigured_returns_400(client, store):
+    r = client.post("/api/settings/validate/huggingface")
+    assert r.status_code == 400
+    assert "hf_token" in r.json()["detail"]
+
+
+def test_validate_huggingface_success(client, store, mocker):
+    store.set_credential("hf_token", "hf_valid_xxx")
+    mocker.patch.object(
+        settings_validators,
+        "_huggingface_auth_check",
+        return_value={"name": "aviv-test", "type": "user"},
+    )
+    r = client.post("/api/settings/validate/huggingface")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["error"] is None
+
+
+def test_validate_huggingface_401_returns_ok_false(client, store, mocker):
+    store.set_credential("hf_token", "hf_bad")
+    mocker.patch.object(
+        settings_validators,
+        "_huggingface_auth_check",
+        side_effect=settings_validators.ValidationFailed("HTTP 401: invalid token"),
+    )
+    r = client.post("/api/settings/validate/huggingface")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "401" in body["error"]
+
+
+def test_validate_huggingface_passes_real_token(client, store, mocker):
+    store.set_credential("hf_token", "hf_actual_token")
+    spy = mocker.patch.object(
+        settings_validators,
+        "_huggingface_auth_check",
+        return_value={"name": "tester"},
+    )
+    client.post("/api/settings/validate/huggingface")
+    assert spy.call_args.kwargs.get("token") == "hf_actual_token"
+
+
+def test_huggingface_in_validators_and_credentials_map():
+    """Registry plumbing: huggingface must be both runnable and map to
+    hf_token for cache-invalidation when the credential changes."""
+    assert "huggingface" in settings_validators.VALIDATORS
+    assert settings_validators.VALIDATOR_CREDENTIALS["huggingface"] == ("hf_token",)
+
+
 # === sgs-ui-5nn: R2 round-trip extension ====================================
 
 def test_validate_r2_does_round_trip_after_head_bucket(client, configured_r2, mocker):

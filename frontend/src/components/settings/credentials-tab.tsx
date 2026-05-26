@@ -33,6 +33,13 @@ export function CredentialsTab() {
           validator="civitai"
           hint="Required for the civitai_share block and CivitAI-hosted presets."
         />
+        {/* sgs-ui-6px: HF token for gated model downloads during preset install. */}
+        <CredentialInput
+          name="hf_token"
+          label="HuggingFace Token"
+          validator="huggingface"
+          hint="Required for gated HuggingFace models referenced by presets (Flux, some Wan checkpoints). Generate at huggingface.co/settings/tokens — read access is sufficient."
+        />
       </Section>
 
       <Section title="Image Hosting" description="Used by image-upload blocks for transient public URLs.">

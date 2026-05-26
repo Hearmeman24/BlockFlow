@@ -32,6 +32,8 @@ describe('CredentialsTab', () => {
     expect(screen.getByLabelText(/R2 Bucket/)).toBeInTheDocument()
     expect(screen.getByLabelText(/OpenRouter API Key/)).toBeInTheDocument()
     expect(screen.getByLabelText(/CivitAI API Key/)).toBeInTheDocument()
+    // sgs-ui-6px: HuggingFace token field for gated model downloads.
+    expect(screen.getByLabelText(/HuggingFace Token/)).toBeInTheDocument()
     expect(screen.getByLabelText(/ImgBB API Key/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Tmpfiles API Key/)).toBeInTheDocument()
     expect(screen.getByLabelText(/Topaz API Key/)).toBeInTheDocument()

@@ -298,6 +298,52 @@ def validate_civitai() -> ValidationResult:
     )
 
 
+# === HuggingFace (sgs-ui-6px) ===============================================
+
+HF_AUTH_URL = "https://huggingface.co/api/whoami-v2"
+
+
+def _huggingface_auth_check(*, token: str) -> dict[str, Any]:
+    """Boundary: GET HF's whoami-v2 endpoint. 200 → valid token; 401 →
+    invalid; anything else is treated as transient. Mocked in tests."""
+    try:
+        resp = _cffi_requests.get(
+            HF_AUTH_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "blockflow-settings/0.1",
+            },
+            timeout=10,
+        )
+    except Exception as exc:
+        raise ValidationFailed(f"network error: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise ValidationFailed(f"HTTP {resp.status_code}")
+    try:
+        return resp.json()
+    except Exception as exc:
+        raise ValidationFailed(f"non-JSON response: {exc}") from exc
+
+
+def validate_huggingface() -> ValidationResult:
+    token = settings_store.get_credential("hf_token")
+    if not token:
+        raise CredentialNotConfigured("hf_token not configured in Settings")
+
+    try:
+        body = _huggingface_auth_check(token=token)
+    except ValidationFailed as exc:
+        return ValidationResult(ok=False, error=str(exc), info=None)
+
+    name = body.get("name") if isinstance(body, dict) else None
+    return ValidationResult(
+        ok=True,
+        error=None,
+        info={"username": name} if name else None,
+    )
+
+
 # === Registry ===============================================================
 
 VALIDATORS: dict[str, Callable[[], ValidationResult]] = {
@@ -305,6 +351,7 @@ VALIDATORS: dict[str, Callable[[], ValidationResult]] = {
     "r2": validate_r2,
     "openrouter": validate_openrouter,
     "civitai": validate_civitai,
+    "huggingface": validate_huggingface,
 }
 
 # Maps validator service name → the credential names it depends on. Used by
@@ -315,4 +362,5 @@ VALIDATOR_CREDENTIALS: dict[str, tuple[str, ...]] = {
     "r2": R2_FIELDS,
     "openrouter": ("openrouter_api_key",),
     "civitai": ("civitai_api_key",),
+    "huggingface": ("hf_token",),
 }

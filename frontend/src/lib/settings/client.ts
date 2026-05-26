@@ -179,8 +179,9 @@ export type WizardPreflight = {
   ready: boolean
   missing: string[]
   // sgs-ui-5nn: per-service validation state. UI uses this to render
-  // green/red rows + the yellow CivitAI banner.
-  services: Record<string, WizardServiceState>
+  // green/red rows + the yellow CivitAI banner. Optional so older backends
+  // (and pre-5nn test fixtures) that omit it still parse.
+  services?: Record<string, WizardServiceState>
 }
 
 export type WizardQuickstartPreset = {

@@ -260,6 +260,10 @@ export function ComfyGenWizard({ onClose, onSuccess }: Props) {
                 onClose()
               }}
               onComplete={(presetId) => {
+                // sgs-ui-5nn: the ?preset hint is read by future work that
+                // will auto-select the installed workflow in the ComfyGen
+                // block. Today the /generate page surfaces the global
+                // pipeline UI; the param is harmless and forward-compatible.
                 router.push(`/generate?preset=${encodeURIComponent(presetId)}`)
                 onClose()
               }}

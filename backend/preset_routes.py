@@ -30,6 +30,7 @@ Install flow (Stage B):
 from __future__ import annotations
 
 import json
+import os
 import re
 import signal
 import subprocess
@@ -832,10 +833,14 @@ def _run_install_subprocess(
         "--preset-id", preset_id,
         "--volume-id", volume_id,
     ]
+    # sgs-ui-h1c.1.4 / sgs-ui-8ef: tokens are passed via env, not argv, so
+    # they don't surface in `ps aux` or process listings. comfy-gen reads
+    # env first and falls back to deprecated --civitai-token/--hf-token.
+    env = os.environ.copy()
     if civitai_token:
-        args += ["--civitai-token", civitai_token]
+        env["COMFY_GEN_CIVITAI_TOKEN"] = civitai_token
     if hf_token:
-        args += ["--hf-token", hf_token]
+        env["COMFY_GEN_HF_TOKEN"] = hf_token
 
     terminal: dict = {}
     proc: subprocess.Popen | None = None
@@ -846,6 +851,7 @@ def _run_install_subprocess(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=env,
         )
         _install_proc["proc"] = proc
 
@@ -1214,7 +1220,10 @@ def install_preset(body: InstallBody, mode: str = "cpu") -> JSONResponse:
             "pod_id": None,
         })
 
-    civitai_token = settings_store.get_credential("civitai_token")
+    # sgs-ui-8ef: UI + every other reader (wizard_routes, settings_validators,
+    # civitai_share block) uses 'civitai_api_key'. The old 'civitai_token'
+    # key was a typo and meant the credential never reached the installer.
+    civitai_token = settings_store.get_credential("civitai_api_key")
     hf_token = settings_store.get_credential("hf_token")
 
     def _runner() -> None:

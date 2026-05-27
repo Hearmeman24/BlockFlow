@@ -10,6 +10,9 @@ Stage 1 — those will live alongside these routes in Stage 1.5.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -113,8 +116,25 @@ def get_app_pref(name: str, default: str | None = Query(default=None)) -> JSONRe
     return JSONResponse({"name": name, "value": settings_store.get_app_pref(name, default=default)})
 
 
+def _validate_app_pref(name: str, value: str) -> None:
+    """sgs-ui-se7: per-pref validation hooks. Today only output_dir is
+    validated — caught before persistence so the UI shows the error
+    inline instead of letting a bad path silently fall back to default
+    on next launch. Empty string is allowed (means 'use default')."""
+    if name != "output_dir" or value == "":
+        return
+    p = Path(value).expanduser()
+    if not p.exists():
+        raise HTTPException(status_code=400, detail=f"output_dir {value!r} does not exist")
+    if not p.is_dir():
+        raise HTTPException(status_code=400, detail=f"output_dir {value!r} is not a directory")
+    if not os.access(p, os.W_OK):
+        raise HTTPException(status_code=400, detail=f"output_dir {value!r} is not writable")
+
+
 @router.put("/api/settings/app-prefs/{name}")
 def put_app_pref(name: str, body: AppPrefBody) -> JSONResponse:
+    _validate_app_pref(name, body.value)
     settings_store.set_app_pref(name, body.value)
     return JSONResponse({"name": name, "saved": True})
 

@@ -222,13 +222,16 @@ def test_put_endpoint_update_is_full_replace(client):
 
 # === app_prefs CRUD =========================================================
 
-def test_app_pref_put_then_get(client):
-    r = client.put("/api/settings/app-prefs/output_dir", json={"value": "/tmp/blockflow_out"})
+def test_app_pref_put_then_get(client, tmp_path):
+    # sgs-ui-se7: output_dir is now path-validated on PUT, so use a real dir.
+    out = tmp_path / "blockflow_out"
+    out.mkdir()
+    r = client.put("/api/settings/app-prefs/output_dir", json={"value": str(out)})
     assert r.status_code == 200
 
     r2 = client.get("/api/settings/app-prefs/output_dir")
     assert r2.status_code == 200
-    assert r2.json() == {"name": "output_dir", "value": "/tmp/blockflow_out"}
+    assert r2.json() == {"name": "output_dir", "value": str(out)}
 
 
 def test_app_pref_get_unset_returns_null_value(client):

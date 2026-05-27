@@ -11,8 +11,6 @@ out of ROOT_DIR on first launch, with a breadcrumb so it doesn't re-run.
 """
 from __future__ import annotations
 
-import importlib
-import os
 import sys
 from pathlib import Path
 
@@ -22,7 +20,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from backend import config as _config_module  # noqa: E402
-
 
 # === resolve_user_data_dir ===================================================
 
@@ -213,12 +210,13 @@ def test_migration_handles_missing_legacy_files(legacy_and_target):
 
 def test_user_data_paths_resolve_under_user_data_dir():
     """All user-data paths must live under USER_DATA_DIR, not ROOT_DIR.
-    Code-asset paths (custom_blocks, private_blocks, .env) stay at ROOT_DIR."""
+    Code-asset paths (custom_blocks, private_blocks, .env) stay at ROOT_DIR.
+    LOCAL_OUTPUT_DIR is excluded because Settings may intentionally override
+    it to an arbitrary writable directory."""
     udd = _config_module.USER_DATA_DIR
     rdr = _config_module.ROOT_DIR
 
     for attr in (
-        "LOCAL_OUTPUT_DIR",
         "FLOWS_DIR",
         "JOB_HISTORY_PATH",
         "PROMPT_WRITER_SETTINGS_PATH",
@@ -239,8 +237,7 @@ def test_user_data_paths_resolve_under_user_data_dir():
 def test_db_modules_share_user_data_db_path():
     """Every module that opens run_history.db must point at the SAME file."""
     from backend import db as backend_db
-    from backend import settings_store
-    from backend import lora_metadata
+    from backend import lora_metadata, settings_store
 
     target = _config_module.RUN_HISTORY_DB_PATH
     assert Path(backend_db.DB_PATH) == target

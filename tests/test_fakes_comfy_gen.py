@@ -137,7 +137,7 @@ def test_install_preset_proc_events_are_line_delimited_json():
         {"type": "install_done", "ok": True, "files": 1, "elapsed_sec": 30},
     ]
     proc = fakes.install_preset_proc(events)
-    lines = [json.loads(l) for l in proc.stdout.read().splitlines()]
+    lines = [json.loads(line) for line in proc.stdout.read().splitlines()]
     assert lines == events
     assert proc.returncode == 0
 
@@ -156,7 +156,7 @@ def test_make_proc_line_iteration():
     """Existing call sites iterate proc.stderr line-by-line. Verify our
     StringIO-backed fake supports that."""
     proc = fakes.make_proc(stderr="line one\nline two\nline three\n")
-    lines = [l.rstrip("\n") for l in proc.stderr]
+    lines = [line.rstrip("\n") for line in proc.stderr]
     assert lines == ["line one", "line two", "line three"]
 
 

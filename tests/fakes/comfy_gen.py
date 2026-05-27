@@ -41,7 +41,6 @@ import json
 from typing import Any, Mapping, Sequence
 from unittest.mock import MagicMock
 
-
 # ============================================================================
 # Submit / info / list / download contract — final-JSON stdout + progress stderr
 # ============================================================================

@@ -16,7 +16,6 @@ Post-fix:
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -30,7 +29,6 @@ sys.path.insert(0, str(ROOT))
 
 from backend import config as _config  # noqa: E402
 from backend import settings_routes, settings_store  # noqa: E402
-
 
 # === resolve_local_output_dir (pure function) ================================
 

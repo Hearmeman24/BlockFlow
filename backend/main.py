@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from typing import Iterable
 
@@ -123,8 +124,7 @@ def _refresh_installed_presets_on_startup() -> None:
 # tests that mock _cffi_requests.get and assert on _cache state — its
 # real-network response can populate _cache mid-test and break TTL-based
 # assertions. Under real uvicorn launch, pytest is never in sys.modules.
-import sys as _sys
-if "pytest" not in _sys.modules:
+if "pytest" not in sys.modules:
     _refresh_installed_presets_on_startup()
 
 

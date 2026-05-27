@@ -563,8 +563,8 @@ def test_install_error_schedules_delayed_delete_not_immediate(client, mocker):
 def test_schedule_delayed_delete_sets_pod_delete_at_in_future(mocker):
     """Unit test on the helper itself: stashes a future pod_delete_at on
     _install_state. We patch threading.Thread so we don't actually wait."""
-    from datetime import datetime, timezone
     import threading as _t
+    from datetime import datetime, timezone
     preset_routes._reset_install_state()
 
     class _FakeThread:

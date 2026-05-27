@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -486,6 +487,26 @@ function makePendingOutput(kind: 'image' | 'video') {
   return { __pendingOutput: true, kind }
 }
 
+function parsePresetSelection(selection: string): { presetId: string; workflowIdx: number } {
+  const sepIdx = selection.lastIndexOf('::')
+  if (sepIdx < 0) return { presetId: selection, workflowIdx: 0 }
+  return {
+    presetId: selection.slice(0, sepIdx),
+    workflowIdx: parseInt(selection.slice(sepIdx + 2), 10) || 0,
+  }
+}
+
+function isPresetSummaryNewer(summaryUpdatedAt: string | undefined, appliedUpdatedAt: string): boolean {
+  if (!summaryUpdatedAt) return false
+  if (!appliedUpdatedAt) return true
+  const summaryMs = Date.parse(summaryUpdatedAt)
+  const appliedMs = Date.parse(appliedUpdatedAt)
+  if (Number.isFinite(summaryMs) && Number.isFinite(appliedMs)) {
+    return summaryMs > appliedMs + 1000
+  }
+  return summaryUpdatedAt !== appliedUpdatedAt
+}
+
 function ComfyGenBlock({
   blockId,
   inputs,
@@ -570,6 +591,7 @@ function ComfyGenBlock({
   // workflow + tracked-models bundle from the local Settings.
   const [installedPresets, setInstalledPresets] = useState<InstalledPresetSummary[]>([])
   const [selectedPresetId, setSelectedPresetId] = useSessionState(`block_${blockId}_selected_preset`, '')
+  const [appliedPresetUpdatedAt, setAppliedPresetUpdatedAt] = useSessionState(`block_${blockId}_preset_applied_updated_at`, '')
   // sgs-ui-fmy: snapshot of the applied preset's recommendations so the
   // tooltip survives re-mounts. {global, workflow} arrays; empty when the
   // current workflow wasn't loaded from a preset or the preset shipped
@@ -634,6 +656,20 @@ function ComfyGenBlock({
 
   // Track which text fields use upstream text (keyed by "nodeId.inputName")
   const [textUpstreamFlags, setTextUpstreamFlags] = useSessionState<Record<string, boolean>>(`block_${blockId}_text_upstream`, {})
+
+  const selectedPresetRootId = useMemo(
+    () => selectedPresetId ? parsePresetSelection(selectedPresetId).presetId : '',
+    [selectedPresetId],
+  )
+  const selectedInstalledPreset = useMemo(
+    () => installedPresets.find((p) => p.preset_id === selectedPresetRootId),
+    [installedPresets, selectedPresetRootId],
+  )
+  const presetNeedsReload = Boolean(
+    selectedPresetId
+      && selectedInstalledPreset
+      && isPresetSummaryNewer(selectedInstalledPreset.updated_at, appliedPresetUpdatedAt),
+  )
 
   const automationAxes = useMemo(() => {
     if (!automateEnabled) return []
@@ -1154,6 +1190,8 @@ function ComfyGenBlock({
     // sgs-ui-fmy: a user-loaded JSON isn't tied to a preset — clear any
     // recommendations carried over from a prior preset apply so the
     // tooltip doesn't lie about the current workflow.
+    setSelectedPresetId('')
+    setAppliedPresetUpdatedAt('')
     setPresetRecommendations({ global: [], workflow: [] })
     // sgs-ui-gb4: user-loaded JSON has no preset behind it → hide the
     // Workflow Settings panel (its declarations come from a preset only).
@@ -1163,7 +1201,7 @@ function ComfyGenBlock({
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
     }
-  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setPresetRecommendations, setWorkflowSettings])
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setSelectedPresetId, setAppliedPresetUpdatedAt, setPresetRecommendations, setWorkflowSettings])
 
   // Refresh the installed-preset list on mount + whenever the user mounts
   // (cheap GET; the data is from local Settings).
@@ -1176,9 +1214,7 @@ function ComfyGenBlock({
   // shadcn Select's single-string value contract.
   const handleApplyPreset = useCallback(async (selection: string) => {
     if (!selection) return
-    const sepIdx = selection.lastIndexOf('::')
-    const presetId = sepIdx < 0 ? selection : selection.slice(0, sepIdx)
-    const workflowIdx = sepIdx < 0 ? 0 : parseInt(selection.slice(sepIdx + 2), 10) || 0
+    const { presetId, workflowIdx } = parsePresetSelection(selection)
     setPresetApplyError('')
     setPresetApplying(true)
     try {
@@ -1193,6 +1229,7 @@ function ComfyGenBlock({
       resetRuntimeFromBlock(blockId, { preserveOutputHint: true })
       setWorkflowJson(json)
       setWorkflowName(`${presetId} · ${chosen.name}`)
+      setAppliedPresetUpdatedAt(detail.updated_at || '')
       // sgs-ui-fmy: surface author recommendations next to the workflow
       // line. recommendations.workflows is keyed by the workflow's display
       // name (matches `chosen.name`).
@@ -1216,7 +1253,7 @@ function ComfyGenBlock({
     } finally {
       setPresetApplying(false)
     }
-  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setPresetRecommendations, setWorkflowSettings])
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName, setAppliedPresetUpdatedAt, setPresetRecommendations, setWorkflowSettings])
 
   const handlePngFile = useCallback(async (file: File) => {
     setWorkflowError('')
@@ -1238,6 +1275,8 @@ function ComfyGenBlock({
     // metadata, not the file's content.
     setWorkflowName('PNG Workflow')
     // sgs-ui-fmy: PNG-extracted workflows have no preset behind them.
+    setSelectedPresetId('')
+    setAppliedPresetUpdatedAt('')
     setPresetRecommendations({ global: [], workflow: [] })
     // sgs-ui-gb4: same — no preset, no Workflow Settings panel.
     setWorkflowSettings([])
@@ -1246,7 +1285,7 @@ function ComfyGenBlock({
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
     }
-  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setWorkflowJson, setWorkflowName, setOutput, setPresetRecommendations, setWorkflowSettings])
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setWorkflowJson, setWorkflowName, setOutput, setSelectedPresetId, setAppliedPresetUpdatedAt, setPresetRecommendations, setWorkflowSettings])
 
   // Polling helper with progress updates
   // onProgress callback used during batch mode to route status to per-job tracking
@@ -1972,6 +2011,27 @@ function ComfyGenBlock({
                 )}
               </SelectContent>
             </Select>
+            {selectedPresetId && selectedInstalledPreset && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-label="Reload preset"
+                title={presetNeedsReload
+                  ? 'Installed preset metadata changed. Reload this workflow from the refreshed preset.'
+                  : 'Reload this workflow from the installed preset.'}
+                onClick={() => handleApplyPreset(selectedPresetId)}
+                disabled={presetApplying}
+                className={`h-8 shrink-0 px-2 gap-1 border ${
+                  presetNeedsReload
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 hover:text-amber-100'
+                    : 'border-border text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <RefreshCw className={`size-3 ${presetApplying ? 'animate-spin' : ''}`} />
+                <span className="text-[10px]">{presetNeedsReload ? 'Preset updated' : 'Reload'}</span>
+              </Button>
+            )}
             {presetApplying && (
               <span className="text-[10px] text-muted-foreground">applying…</span>
             )}
@@ -2691,6 +2751,7 @@ export const blockDef: BlockDef = {
     // the dropdown ("wan-animate · Replace Face") and the lightbulb tooltip,
     // not just the workflow JSON.
     'selected_preset',
+    'preset_applied_updated_at',
     'preset_recommendations',
     'load_nodes',
     'mappings',

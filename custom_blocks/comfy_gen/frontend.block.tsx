@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
+import { pollJobUntilTerminal, type JobLike } from '@/lib/comfy-poll'
 import type { Job } from '@/lib/types'
 import {
   getEndpoint,
@@ -1287,84 +1288,85 @@ function ComfyGenBlock({
     }
   }, [blockId, parseWorkflow, resetRuntimeFromBlock, setWorkflowJson, setWorkflowName, setOutput, setSelectedPresetId, setAppliedPresetUpdatedAt, setPresetRecommendations, setWorkflowSettings])
 
-  // Polling helper with progress updates
-  // onProgress callback used during batch mode to route status to per-job tracking
-  const pollJob = useCallback(async (jobId: string, onProgress?: (msg: string) => void, signal?: AbortSignal): Promise<Job> => {
-    const maxWait = 600_000
-    const interval = 3_000
-    const start = Date.now()
-
-    while (Date.now() - start < maxWait) {
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-      const res = await fetch(`${STATUS_ENDPOINT}/${encodeURIComponent(jobId)}`)
-      const data = await res.json()
-      const job = data.job as Record<string, unknown> | undefined
-      if (!job) {
-        await new Promise((r) => setTimeout(r, interval))
-        continue
+  // sgs-ui-dgj: thin wrapper over the pure pollJobUntilTerminal helper.
+  // Pre-fix this had its own 10-min hardcoded ceiling that was stricter
+  // than the backend's RUNPOD_POLL_TIMEOUT_SEC (2400s = 40 min), making
+  // long SVI / Wan jobs spuriously throw "Job timed out" in the UI while
+  // they completed cleanly on the backend. The helper polls until the
+  // backend lands on a terminal status (COMPLETED, FAILED, TIMED_OUT,
+  // CANCELLED) or the AbortSignal fires.
+  const pollJob = useCallback(async (
+    jobId: string,
+    onProgress?: (msg: string) => void,
+    signal?: AbortSignal,
+  ): Promise<Job> => {
+    try {
+      const job = await pollJobUntilTerminal(jobId, {
+        signal,
+        fetchStatus: async (id) => {
+          const res = await fetch(`${STATUS_ENDPOINT}/${encodeURIComponent(id)}`)
+          const data = await res.json()
+          return (data.job as JobLike | undefined) ?? null
+        },
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        onPoll: (e) => {
+          if (onProgress) {
+            // Batch mode: route to per-job status badge.
+            if (e.stage === 'inference' && e.node != null && e.nodeTotal != null) {
+              const badge = e.step != null && e.totalSteps != null
+                ? `Step ${e.step}/${e.totalSteps}`
+                : (e.message || e.stage)
+              onProgress(badge)
+            } else if (e.stage) {
+              onProgress(e.message || e.stage)
+            } else if (e.remoteStatus === 'IN_QUEUE') {
+              onProgress('Queued')
+            } else if (e.remoteStatus === 'IN_PROGRESS') {
+              onProgress(e.message || 'Running...')
+            } else {
+              onProgress(e.status)
+            }
+          } else {
+            // Single job mode: drive the single-block progress bar + badge.
+            if (e.stage === 'inference' && e.node != null && e.nodeTotal != null) {
+              const badge = e.step != null && e.totalSteps != null
+                ? `Step ${e.step}/${e.totalSteps} (${e.node}/${e.nodeTotal})`
+                : `${e.message} (${e.node}/${e.nodeTotal})`
+              setProgress({
+                stage: e.stage, percent: e.percent, message: e.message,
+                node: e.node, nodeTotal: e.nodeTotal, step: e.step, totalSteps: e.totalSteps,
+              })
+              setStatusMessage(badge)
+            } else if (e.stage) {
+              setProgress({ stage: e.stage, percent: e.percent, message: e.message || e.stage })
+              setStatusMessage(e.message || e.stage)
+            } else if (e.remoteStatus === 'IN_PROGRESS') {
+              setProgress({ stage: 'running', percent: e.percent, message: e.message || 'Running...' })
+              setStatusMessage('Running...')
+            }
+          }
+        },
+      })
+      if (!onProgress) setProgress(null)
+      return job as unknown as Job
+    } catch (err) {
+      if (!onProgress) setProgress(null)
+      // Surface backend missing_models for the UI's "model needs install"
+      // affordance. The helper rethrows a plain Error; we re-fetch the
+      // last job snapshot via the status endpoint to pull missing_models
+      // out, since we don't get it on the throw path.
+      if (err instanceof Error && !(err instanceof DOMException)) {
+        try {
+          const res = await fetch(`${STATUS_ENDPOINT}/${encodeURIComponent(jobId)}`)
+          const data = await res.json()
+          const job = (data.job ?? {}) as { missing_models?: MissingModel[] }
+          if (Array.isArray(job.missing_models) && job.missing_models.length > 0) {
+            setMissingModels(job.missing_models)
+          }
+        } catch { /* best-effort */ }
       }
-
-      const jobStatus = String(job.status || '').toUpperCase()
-
-      if (jobStatus === 'COMPLETED' || jobStatus === 'COMPLETED_WITH_WARNING') {
-        if (!onProgress) setProgress(null)
-        return job as unknown as Job
-      }
-      if (jobStatus === 'FAILED' || jobStatus === 'CANCELLED' || jobStatus === 'TIMED_OUT') {
-        if (!onProgress) setProgress(null)
-        // Check for missing_models structured error
-        const mm = job.missing_models as MissingModel[] | undefined
-        if (mm && Array.isArray(mm) && mm.length > 0) {
-          setMissingModels(mm)
-        }
-        throw new Error((job.error as string) || `Job ${jobStatus}`)
-      }
-
-      const remoteStatus = String(job.remote_status || '').toUpperCase()
-      const stage = (job.progress_stage as string) || ''
-      const percent = (job.progress_percent as number) ?? 0
-      const message = (job.progress_message as string) || ''
-      const node = job.progress_node as number | undefined
-      const nodeTotal = job.progress_node_total as number | undefined
-      const step = job.progress_step as number | undefined
-      const totalSteps = job.progress_total_steps as number | undefined
-
-      if (onProgress) {
-        // Batch mode: route to per-job status
-        if (stage === 'inference' && node != null && nodeTotal != null) {
-          const badge = step != null && totalSteps != null ? `Step ${step}/${totalSteps}` : (message || stage)
-          onProgress(badge)
-        } else if (stage) {
-          onProgress(message || stage)
-        } else if (remoteStatus === 'IN_QUEUE') {
-          onProgress('Queued')
-        } else if (remoteStatus === 'IN_PROGRESS') {
-          onProgress(message || 'Running...')
-        } else {
-          onProgress(jobStatus)
-        }
-      } else {
-        // Single job mode: update badge + progress bar directly
-        if (stage === 'inference' && node != null && nodeTotal != null) {
-          const badge = step != null && totalSteps != null
-            ? `Step ${step}/${totalSteps} (${node}/${nodeTotal})`
-            : `${message} (${node}/${nodeTotal})`
-          setProgress({ stage, percent, message, node, nodeTotal, step, totalSteps })
-          setStatusMessage(badge)
-        } else if (stage) {
-          setProgress({ stage, percent, message: message || stage })
-          setStatusMessage(message || stage)
-        } else if (remoteStatus === 'IN_PROGRESS') {
-          setProgress({ stage: 'running', percent, message: message || 'Running...' })
-          setStatusMessage('Running...')
-        }
-      }
-
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-      await new Promise((r) => setTimeout(r, interval))
+      throw err
     }
-    if (!onProgress) setProgress(null)
-    throw new Error('Job timed out')
   }, [setStatusMessage])
 
   // sgs-ui-gb4: <node_id>.<field> keys already driven by an auto-detected

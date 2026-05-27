@@ -125,6 +125,35 @@ USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 LOCAL_OUTPUT_DIR = USER_DATA_DIR / "output"
 LOCAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def resolve_local_output_dir(*, default: Path, store) -> Path:
+    """sgs-ui-se7: honor the Settings → App tab `output_dir` pref so the
+    user can park generated artifacts on a different volume (e.g. an
+    external SSD) without symlinking.
+
+    Returns the override only when it's an existing, writable directory.
+    Anything else — unset, empty string, missing path, file at that path,
+    read-only dir — silently falls back to the default and logs a warning.
+    The store is duck-typed to avoid a circular import (settings_store
+    imports config); callers pass `backend.settings_store` from main.py.
+    """
+    raw = store.get_app_pref("output_dir") if store is not None else None
+    if not raw:
+        return default
+    override = Path(raw).expanduser()
+    if not override.exists():
+        print(f"[config] output_dir override {override} does not exist; using default")
+        return default
+    if not override.is_dir():
+        print(f"[config] output_dir override {override} is not a directory; using default")
+        return default
+    if not os.access(override, os.W_OK):
+        print(f"[config] output_dir override {override} is not writable; using default")
+        return default
+    return override
+
+
 FLOWS_DIR = USER_DATA_DIR / "flows"
 FLOWS_DIR.mkdir(parents=True, exist_ok=True)
 JOB_HISTORY_PATH = USER_DATA_DIR / "job_history.json"

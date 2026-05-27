@@ -51,6 +51,21 @@ config.migrate_legacy_user_data(
 settings_store.init_db()
 lora_metadata.init_db()
 
+# sgs-ui-se7: resolve LOCAL_OUTPUT_DIR from the Settings → App tab pref
+# now that settings_store is initialized. Reassigning the module attribute
+# means every `config.LOCAL_OUTPUT_DIR` read across the codebase
+# (StaticFiles mount below, services.py, routes.py, tmpfiles.py) sees
+# the override. Changes to the pref still require a restart to take
+# effect — surfaced in the Settings UI.
+_resolved_output_dir = config.resolve_local_output_dir(
+    default=config.LOCAL_OUTPUT_DIR, store=settings_store,
+)
+if _resolved_output_dir != config.LOCAL_OUTPUT_DIR:
+    config.LOCAL_OUTPUT_DIR = _resolved_output_dir
+    config.OUTPUT_DIR = _resolved_output_dir  # legacy alias, kept in sync
+    config.LOCAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"[config] LOCAL_OUTPUT_DIR overridden by settings → {_resolved_output_dir}")
+
 
 def _prune_run_history_on_startup() -> None:
     """Apply the user's retention setting to the run history table on launch.

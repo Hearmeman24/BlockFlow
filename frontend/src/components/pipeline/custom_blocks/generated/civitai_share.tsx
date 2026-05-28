@@ -48,7 +48,12 @@ interface GenerationMeta {
 interface ManualResource {
   modelVersionId: number
   modelId: number | null
+  /** Human title from CivitAI's `model.name` (e.g. "WAN 2.2 SVI 4 Passes"). */
   name: string
+  /** Version label from CivitAI's `name` (e.g. "v1.0"). Shown as secondary. */
+  versionName?: string
+  /** CivitAI's `model.type` — "Checkpoint" / "LORA" / "Workflows" / etc. */
+  type?: string
 }
 
 interface ResolvedRow {
@@ -57,9 +62,13 @@ interface ResolvedRow {
   resolved: boolean
   modelVersionId?: number
   modelId?: number
+  /** Model title (preferred display). */
   name?: string
+  /** Version label, secondary display. */
+  versionName?: string
+  /** CivitAI's resource type ("Checkpoint", "LORA", "Workflows", ...). */
+  type?: string
   strength?: number
-  isCheckpoint?: boolean
 }
 
 interface PendingApproval {
@@ -304,20 +313,15 @@ function CivitAIShareBlock({
     const loraHashes = (shareMeta.lora_hashes || {}) as Record<string, string>
     const loras = (shareMeta.loras || []) as Array<{ name: string; strength?: number }>
 
-    const requests: Array<{ filename: string; sha256: string; strength?: number; isCheckpoint: boolean }> = []
+    const requests: Array<{ filename: string; sha256: string; strength?: number }> = []
     for (const [filename, info] of Object.entries(modelHashes)) {
       if (!info?.sha256) continue
-      requests.push({
-        filename,
-        sha256: info.sha256,
-        strength: info.strength,
-        isCheckpoint: info.strength === undefined || info.strength === null,
-      })
+      requests.push({ filename, sha256: info.sha256, strength: info.strength })
     }
     if (requests.length === 0) {
       for (const [filename, sha] of Object.entries(loraHashes)) {
         const matched = loras.find((l) => l.name === filename)
-        requests.push({ filename, sha256: sha, strength: matched?.strength ?? 1.0, isCheckpoint: false })
+        requests.push({ filename, sha256: sha, strength: matched?.strength ?? 1.0 })
       }
     }
 
@@ -330,12 +334,8 @@ function CivitAIShareBlock({
     })
     const data = await res.json()
     if (!data.ok) throw new Error(data.error || 'resolve-hashes failed')
-    const rows = data.resolved as Array<Omit<ResolvedRow, 'strength' | 'isCheckpoint'>>
-    return rows.map((row, i) => ({
-      ...row,
-      strength: requests[i].strength,
-      isCheckpoint: requests[i].isCheckpoint,
-    }))
+    const rows = data.resolved as Array<Omit<ResolvedRow, 'strength'>>
+    return rows.map((row, i) => ({ ...row, strength: requests[i].strength }))
   }
 
   // Promise-based HITL gate: render the panel and await the user's decision.
@@ -588,10 +588,18 @@ function CivitAIShareBlock({
           <div className="space-y-0.5">
             {manualResources.map((r) => (
               <div key={r.modelVersionId} className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
-                <span className="text-[10px] text-muted-foreground truncate">{r.name || `v${r.modelVersionId}`}</span>
+                <span className="text-[10px] text-foreground flex-1 min-w-0 truncate">
+                  {r.name || `v${r.modelVersionId}`}
+                  {r.versionName && r.versionName !== r.name && (
+                    <span className="text-muted-foreground"> ({r.versionName})</span>
+                  )}
+                </span>
+                {r.type && (
+                  <span className="text-[9px] text-muted-foreground mx-1.5 shrink-0">{r.type}</span>
+                )}
                 <button
                   type="button"
-                  className="text-[10px] text-red-400 hover:text-red-300 ml-2"
+                  className="text-[10px] text-red-400 hover:text-red-300 shrink-0"
                   onClick={() => removeManualResource(r.modelVersionId)}
                 >
                   ✕
@@ -632,24 +640,52 @@ function CivitAIShareBlock({
             {approval.resolved.length === 0 ? (
               <p className="text-[10px] text-muted-foreground italic">None detected</p>
             ) : (
-              approval.resolved.map((r, i) => (
-                <div key={`${r.sha256}-${i}`} className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
-                  <span className={`text-[10px] ${r.resolved ? 'text-foreground' : 'text-yellow-500 italic'}`}>
-                    {r.resolved ? r.name : `${r.filename} — Unknown, not on CivitAI`}
-                  </span>
-                  <span className="text-[9px] text-muted-foreground ml-2">
-                    {r.isCheckpoint ? 'checkpoint' : r.strength !== undefined ? `lora @ ${r.strength}` : 'lora'}
-                  </span>
-                </div>
-              ))
+              approval.resolved.map((r, i) => {
+                // CivitAI types: "Checkpoint", "LORA", "LoCon", "Workflows",
+                // "TextualInversion", "Hypernetwork", "AestheticGradient",
+                // "Controlnet", "Poses", "VAE", etc. Render as-is; append
+                // strength for LoRA-family entries since users care about it.
+                const baseType = (r.type || '').toLowerCase()
+                const isLoraFamily = baseType === 'lora' || baseType === 'locon' || baseType === 'lycoris'
+                const typeLabel = r.type
+                  ? (isLoraFamily && r.strength !== undefined ? `${r.type} @ ${r.strength}` : r.type)
+                  : (r.strength !== undefined ? `lora @ ${r.strength}` : '—')
+                return (
+                  <div key={`${r.sha256}-${i}`} className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
+                    <span className={`text-[10px] flex-1 min-w-0 truncate ${r.resolved ? 'text-foreground' : 'text-yellow-500 italic'}`}>
+                      {r.resolved ? (
+                        <>
+                          {r.name}
+                          {r.versionName && r.versionName !== r.name && (
+                            <span className="text-muted-foreground"> ({r.versionName})</span>
+                          )}
+                        </>
+                      ) : (
+                        `${r.filename} — Unknown, not on CivitAI`
+                      )}
+                    </span>
+                    <span className="text-[9px] text-muted-foreground ml-2 shrink-0">
+                      {typeLabel}
+                    </span>
+                  </div>
+                )
+              })
             )}
           </div>
           {approval.manualResources.length > 0 && (
             <div className="space-y-0.5">
               <p className="text-[10px] font-medium text-muted-foreground">Manual links</p>
               {approval.manualResources.map((r) => (
-                <div key={r.modelVersionId} className="rounded border border-border/40 px-1.5 py-0.5">
-                  <span className="text-[10px]">{r.name || `v${r.modelVersionId}`}</span>
+                <div key={r.modelVersionId} className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
+                  <span className="text-[10px] flex-1 min-w-0 truncate">
+                    {r.name || `v${r.modelVersionId}`}
+                    {r.versionName && r.versionName !== r.name && (
+                      <span className="text-muted-foreground"> ({r.versionName})</span>
+                    )}
+                  </span>
+                  {r.type && (
+                    <span className="text-[9px] text-muted-foreground ml-2 shrink-0">{r.type}</span>
+                  )}
                 </div>
               ))}
             </div>

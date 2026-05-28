@@ -41,7 +41,13 @@ def client():
     return TestClient(app)
 
 
-def _vm(version_id: int, model_id: int, name: str) -> civitai_client.CivitAIVersionMetadata:
+def _vm(
+    version_id: int,
+    model_id: int,
+    name: str,
+    model_name: str | None = None,
+    model_type: str | None = None,
+) -> civitai_client.CivitAIVersionMetadata:
     return civitai_client.CivitAIVersionMetadata(
         version_id=version_id,
         model_id=model_id,
@@ -51,6 +57,8 @@ def _vm(version_id: int, model_id: int, name: str) -> civitai_client.CivitAIVers
         primary_file_name=f"{name}.safetensors",
         primary_file_size_kb=100.0,
         download_url=None,
+        model_name=model_name,
+        model_type=model_type,
     )
 
 
@@ -58,10 +66,16 @@ def _vm(version_id: int, model_id: int, name: str) -> civitai_client.CivitAIVers
 
 def test_resolve_hashes_returns_one_entry_per_input(client, mocker):
     """Three hashes in → three rows out. Resolution order matches input order
-    so the gate UI can render rows in the order the user expects."""
+    so the gate UI can render rows in the order the user expects. The `name`
+    in the response is the human MODEL title (not the version name) so the
+    UI shows 'WAN 2.2 SVI 4 Passes' rather than 'v1.0'."""
     mocker.patch.object(
         civitai_client, "fetch_version_by_hash",
-        side_effect=[_vm(1, 10, "first"), _vm(2, 20, "second"), _vm(3, 30, "third")],
+        side_effect=[
+            _vm(1, 10, "v1.0", model_name="First Model", model_type="Checkpoint"),
+            _vm(2, 20, "v2.1", model_name="Second LoRA", model_type="LORA"),
+            _vm(3, 30, "Base", model_name="Third Workflow", model_type="Workflows"),
+        ],
     )
     body = {"hashes": [
         {"filename": "a.safetensors", "sha256": "a" * 64},
@@ -74,9 +88,33 @@ def test_resolve_hashes_returns_one_entry_per_input(client, mocker):
     assert data["ok"] is True
     rows = data["resolved"]
     assert [r["sha256"] for r in rows] == ["a" * 64, "b" * 64, "c" * 64]
-    assert rows[0]["name"] == "first"
+    # `name` is the model title, with the version preserved separately
+    # so the UI can render "First Model (v1.0)" if it wants.
+    assert rows[0]["name"] == "First Model"
+    assert rows[0]["versionName"] == "v1.0"
+    assert rows[0]["type"] == "Checkpoint"
     assert rows[0]["modelVersionId"] == 1
     assert rows[0]["modelId"] == 10
+    assert rows[1]["name"] == "Second LoRA"
+    assert rows[1]["type"] == "LORA"
+    assert rows[2]["name"] == "Third Workflow"
+    assert rows[2]["type"] == "Workflows"
+
+
+def test_resolve_hashes_falls_back_to_version_name_when_model_missing(client, mocker):
+    """If model.name is absent (older payloads), don't render empty — fall
+    back to the version name. Better to show 'v1' than nothing."""
+    mocker.patch.object(
+        civitai_client, "fetch_version_by_hash",
+        return_value=_vm(1, 10, "v1", model_name=None, model_type=None),
+    )
+    resp = client.post(
+        "/resolve-hashes",
+        json={"hashes": [{"filename": "a.safetensors", "sha256": "a" * 64}]},
+    )
+    rows = resp.json()["resolved"]
+    assert rows[0]["name"] == "v1"  # fell back to version name
+    assert rows[0]["versionName"] == "v1"
 
 
 def test_resolve_hashes_404_renders_as_unknown(client, mocker):
@@ -129,9 +167,13 @@ def test_resolve_hashes_empty_input(client):
 # ----- /resolve-resource -----
 
 def test_resolve_resource_full_url(client, mocker):
+    """Same model-title preference for /resolve-resource: the user pasting
+    a model URL wants the title back, not the version label."""
     mocker.patch.object(
         civitai_client, "fetch_version_metadata",
-        return_value=_vm(67890, 12345, "WAN 2.2 SVI 4 Passes"),
+        return_value=_vm(67890, 12345, "v1.0",
+                         model_name="WAN 2.2 SVI 4 Passes",
+                         model_type="Workflows"),
     )
     resp = client.post(
         "/resolve-resource",
@@ -143,6 +185,8 @@ def test_resolve_resource_full_url(client, mocker):
     assert body["resource"]["modelVersionId"] == 67890
     assert body["resource"]["modelId"] == 12345
     assert body["resource"]["name"] == "WAN 2.2 SVI 4 Passes"
+    assert body["resource"]["versionName"] == "v1.0"
+    assert body["resource"]["type"] == "Workflows"
 
 
 def test_resolve_resource_model_only_url_uses_latest(client, mocker):

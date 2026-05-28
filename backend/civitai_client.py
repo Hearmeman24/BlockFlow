@@ -90,12 +90,19 @@ CIVITAI_API_BASE = "https://civitai.com/api/v1"
 class CivitAIVersionMetadata:
     version_id: int
     model_id: int | None
+    # `name` here is the *version* label ("v1.0", "Base"). Model title is on
+    # `model_name`. The two differ on CivitAI's API and the UI almost always
+    # wants the title — code that displays a single string should prefer
+    # `model_name or name`.
     name: str | None
     base_model: str | None
     trigger_words: list[str]
     primary_file_name: str | None
     primary_file_size_kb: float | None
     download_url: str | None
+    # Nested model fields — populated when the response carries `model: {...}`.
+    model_name: str | None = None
+    model_type: str | None = None
 
 
 def fetch_version_metadata(version_id: int, api_key: str = "") -> CivitAIVersionMetadata:
@@ -141,6 +148,12 @@ def fetch_latest_version_for_model(model_id: int, api_key: str = "") -> CivitAIV
     if not versions:
         raise CivitAIRefError(f"model {model_id} has no published versions")
     head = versions[0]
+    # /api/v1/models/<id> puts the model name + type at the OUTER level and
+    # nested version objects don't carry a `model` block. Synthesize one so
+    # _version_metadata_from_payload picks up the title.
+    if "model" not in head:
+        head = dict(head)
+        head["model"] = {"name": data.get("name"), "type": data.get("type")}
     return _version_metadata_from_payload(head, fallback_version_id=int(head.get("id") or 0))
 
 
@@ -149,6 +162,7 @@ def _version_metadata_from_payload(
 ) -> CivitAIVersionMetadata:
     files = data.get("files") or []
     primary = next((f for f in files if f.get("primary")), files[0] if files else {})
+    model_block = data.get("model") or {}
     return CivitAIVersionMetadata(
         version_id=int(data.get("id") or fallback_version_id),
         model_id=(int(data["modelId"]) if data.get("modelId") is not None else None),
@@ -160,4 +174,6 @@ def _version_metadata_from_payload(
             float(primary["sizeKB"]) if primary and primary.get("sizeKB") is not None else None
         ),
         download_url=(primary.get("downloadUrl") or data.get("downloadUrl")),
+        model_name=(model_block.get("name") if isinstance(model_block, dict) else None),
+        model_type=(model_block.get("type") if isinstance(model_block, dict) else None),
     )

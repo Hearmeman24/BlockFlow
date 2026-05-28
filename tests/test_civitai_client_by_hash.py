@@ -33,6 +33,7 @@ def test_fetch_by_hash_returns_version_metadata(mocker) -> None:
         "name": "v2",
         "baseModel": "Flux.1 D",
         "files": [{"primary": True, "name": "char_v2.safetensors", "sizeKB": 100.0}],
+        "model": {"name": "WAN 2.2 SVI 4 Passes", "type": "Workflows"},
     }
     mocker.patch.object(
         civitai_client._requests, "get", return_value=_resp(200, payload)
@@ -42,6 +43,25 @@ def test_fetch_by_hash_returns_version_metadata(mocker) -> None:
     assert meta.version_id == 67890
     assert meta.model_id == 12345
     assert meta.name == "v2"
+    # New fields: model title + type from the nested `model` object.
+    # CivitAI's by-hash response carries the *version* name at `name` and
+    # the human model title at `model.name` — UI needs the title to be
+    # useful (showing "v2" instead of "WAN 2.2 SVI" gave the user no info).
+    assert meta.model_name == "WAN 2.2 SVI 4 Passes"
+    assert meta.model_type == "Workflows"
+
+
+def test_fetch_by_hash_handles_missing_model_block(mocker) -> None:
+    """Older payloads / odd responses may omit the nested `model` object —
+    don't crash, just leave model_name/model_type None."""
+    payload = {"id": 1, "modelId": 2, "name": "v1", "files": []}
+    mocker.patch.object(
+        civitai_client._requests, "get", return_value=_resp(200, payload)
+    )
+    meta = civitai_client.fetch_version_by_hash("a" * 64)
+    assert meta is not None
+    assert meta.model_name is None
+    assert meta.model_type is None
 
 
 def test_fetch_by_hash_404_returns_none(mocker) -> None:

@@ -50,6 +50,14 @@ export function CredentialsTab() {
       <Section title="Upscaling" description="Used by image_upscale and upscale blocks.">
         <CredentialInput name="topaz_api_key" label="Topaz API Key" />
       </Section>
+
+      <Section title="Speech" description="Used by the ElevenLabs TTS block.">
+        <CredentialInput
+          name="elevenlabs_api_key"
+          label="ElevenLabs API Key"
+          hint="Found in ElevenLabs → Profile → API Key. Used by the elevenlabs_tts block."
+        />
+      </Section>
     </div>
   )
 }

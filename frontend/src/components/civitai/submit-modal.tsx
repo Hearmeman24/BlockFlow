@@ -20,6 +20,10 @@ import {
   RESOLVE_RESOURCE_ENDPOINT,
   SHARE_ENDPOINT,
 } from './constants'
+
+/** Live pipeline block route — same source of truth the in-pipeline gate
+ *  uses to enrich a job's saved metadata with model_hashes/lora_hashes. */
+const JOB_META_ENDPOINT = '/api/blocks/civitai_share/job-metadata'
 import {
   extractShareableArtifact,
   pickShareMeta,
@@ -133,16 +137,70 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
       setResourceError('')
       setResolvedRows([])
       setResolveError('')
+      setEnrichedMetadata([])
     }
   }, [open, artifact])
 
-  // Resolve every detected sha256 in the artifact's metadata once when the
-  // modal opens. This populates the categorised preview in the picker step
-  // (and the same list inside the gate later). Failure is non-fatal — the
-  // user can still submit; the gate will just show "No resources detected".
+  // Enriched metadata — saved per-image metadata merged with model_hashes /
+  // lora_hashes pulled from /job-metadata for any job_id referenced in the
+  // saved meta. The frontend comfy_gen block doesn't currently write hashes
+  // into the per-job metadata it emits, so the saved record only has
+  // job_ids/seed/inference_settings/etc. The hashes live on the backend job
+  // record and need a round-trip to surface. Live pipeline gate does the
+  // same trick (custom_blocks/civitai_share frontend.block.tsx).
+  const [enrichedMetadata, setEnrichedMetadata] = useState<PerImageMeta[]>([])
+
   useEffect(() => {
     if (!open || !artifact) return
-    const requests = collectAllHashRequests(artifact.metadata)
+    let cancelled = false
+    void (async () => {
+      // Collect every job_id referenced anywhere in the saved metadata,
+      // fetch its server-side snapshot once, merge hashes back in. Dedup
+      // because batch items typically share a job_ids list.
+      const jobIds = new Set<string>()
+      for (const m of artifact.metadata) {
+        const ids = (m.job_ids as string[] | undefined) || []
+        for (const id of ids) if (id) jobIds.add(id)
+      }
+      const jobMetaByJob = new Map<string, Record<string, unknown>>()
+      for (const id of jobIds) {
+        try {
+          const res = await fetch(`${JOB_META_ENDPOINT}/${encodeURIComponent(id)}`)
+          if (!res.ok) continue
+          const data = await res.json()
+          if (data.ok && data.meta) jobMetaByJob.set(id, data.meta as Record<string, unknown>)
+        } catch { /* non-critical — skip this job */ }
+      }
+      if (cancelled) return
+      // Merge per-image: each image's job_ids[0] is the canonical source
+      // of model_hashes; fall back to the first job in the run.
+      const fallback = jobMetaByJob.values().next().value
+      const merged: PerImageMeta[] = artifact.metadata.map((m) => {
+        if (m.model_hashes || m.lora_hashes) return m
+        const ids = (m.job_ids as string[] | undefined) || []
+        const enrich = (ids[0] && jobMetaByJob.get(ids[0])) || fallback
+        if (!enrich) return m
+        return {
+          ...m,
+          model_hashes: (enrich.model_hashes as PerImageMeta['model_hashes']) || m.model_hashes,
+          lora_hashes: (enrich.lora_hashes as PerImageMeta['lora_hashes']) || m.lora_hashes,
+        }
+      })
+      setEnrichedMetadata(merged)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open, artifact])
+
+  // Resolve every detected sha256 in the (enriched) metadata once when the
+  // modal opens and again whenever the enrichment lands. This populates the
+  // categorised preview in the picker step (and the same list inside the
+  // gate later). Failure is non-fatal — the user can still submit; the gate
+  // will just show "No resources detected".
+  useEffect(() => {
+    if (!open || !artifact || enrichedMetadata.length === 0) return
+    const requests = collectAllHashRequests(enrichedMetadata)
     if (requests.length === 0) {
       setResolvedRows([])
       return
@@ -176,7 +234,7 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
     return () => {
       cancelled = true
     }
-  }, [open, artifact])
+  }, [open, artifact, enrichedMetadata])
 
   const toggleIndex = useCallback((i: number) => {
     setSelected((prev) => {
@@ -235,11 +293,17 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
     setStep({ kind: 'gate' })
   }, [artifact, selected, token])
 
-  // Computed lazily — used by the gate to set the warning banner.
+  // All read sites use the ENRICHED metadata (saved meta + server-side
+  // model_hashes/lora_hashes pulled by job_id) so warnings and submitted
+  // shareMeta reflect the same data the resources list resolves against.
+  // Falls back to raw saved metadata while enrichment is still in flight
+  // so an early submit isn't silently empty.
+  const effectiveMetadata = enrichedMetadata.length > 0 ? enrichedMetadata : (artifact?.metadata || [])
+
   const gateWarning = (() => {
     if (!artifact || selected.size === 0) return undefined
     const selectedIndices = Array.from(selected).sort((a, b) => a - b)
-    const shareMeta = pickShareMeta(artifact.metadata, selectedIndices)
+    const shareMeta = pickShareMeta(effectiveMetadata, selectedIndices)
     return hasResolvableHashes(shareMeta)
       ? undefined
       : 'No model hashes — post will not link to any CivitAI model.'
@@ -252,7 +316,7 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
 
       const selectedIndices = Array.from(selected).sort((a, b) => a - b)
       const selectedUrls = selectedIndices.map((i) => artifact.urls[i])
-      const shareMeta = pickShareMeta(artifact.metadata, selectedIndices)
+      const shareMeta = pickShareMeta(effectiveMetadata, selectedIndices)
       const tagList = tagsInput
         .split(',')
         .map((t) => t.trim())
@@ -286,7 +350,7 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
         setStep({ kind: 'error', message: e instanceof Error ? e.message : String(e) })
       }
     },
-    [artifact, selected, tagsInput, title, token, nsfw, manualResources],
+    [artifact, selected, tagsInput, title, token, nsfw, manualResources, effectiveMetadata],
   )
 
   // ---- Renders ----
@@ -509,7 +573,7 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
             manualResources={manualResources}
             mediaCount={selected.size}
             promptPreview={
-              (pickShareMeta(artifact.metadata, Array.from(selected)).prompt as string) || ''
+              (pickShareMeta(effectiveMetadata, Array.from(selected)).prompt as string) || ''
             }
             tags={tagsInput
               .split(',')

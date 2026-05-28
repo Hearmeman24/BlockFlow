@@ -19,6 +19,7 @@ import {
   RESOLVE_HASHES_ENDPOINT,
   RESOLVE_RESOURCE_ENDPOINT,
   SHARE_ENDPOINT,
+  directBackendUrl,
 } from './constants'
 
 /** Live pipeline block route — same source of truth the in-pipeline gate
@@ -323,7 +324,10 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
         .filter(Boolean)
 
       try {
-        const res = await fetch(SHARE_ENDPOINT, {
+        // Bypass Next.js dev proxy — uploading video to CivitAI takes
+        // longer than the proxy's socket timeout. See directBackendUrl
+        // docstring for full reasoning.
+        const res = await fetch(directBackendUrl(SHARE_ENDPOINT), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

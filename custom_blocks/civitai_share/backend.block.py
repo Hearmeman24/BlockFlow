@@ -690,11 +690,17 @@ async def resolve_hashes(request: Request) -> JSONResponse:
                 meta = civitai_client.fetch_version_by_hash(sha)
             except Exception:
                 meta = None
+            # Prefer the model title (model.name) over the version label
+            # (name) as the primary display string — "WAN 2.2 SVI 4 Passes"
+            # is what the user recognises, "v1.0" is not. Fall back to the
+            # version label if the model block is absent.
             seen[sha] = (
                 {
                     "modelVersionId": meta.version_id,
                     "modelId": meta.model_id,
-                    "name": meta.name or "",
+                    "name": meta.model_name or meta.name or "",
+                    "versionName": meta.name or "",
+                    "type": meta.model_type or "",
                 }
                 if meta is not None
                 else None
@@ -746,6 +752,8 @@ async def resolve_resource(request: Request) -> JSONResponse:
         "resource": {
             "modelVersionId": meta.version_id,
             "modelId": meta.model_id,
-            "name": meta.name or "",
+            "name": meta.model_name or meta.name or "",
+            "versionName": meta.name or "",
+            "type": meta.model_type or "",
         },
     })

@@ -605,6 +605,27 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
               )}
             </div>
 
+            {/* Prompt preview — drawn from the enriched per-image meta
+                (saved meta + /job-metadata for what comfy_gen's emit
+                didn't include). Shown only when there IS a prompt; for
+                older runs where neither path has one we skip the section
+                rather than render an empty card. */}
+            {(() => {
+              const sel = Array.from(selected)
+              const promptText = sel.length > 0
+                ? (pickShareMeta(effectiveMetadata, sel).prompt as string) || ''
+                : ''
+              if (!promptText) return null
+              return (
+                <div className="space-y-1 rounded-md border border-border/60 p-2 bg-muted/10">
+                  <p className="text-[11px] font-medium">Prompt</p>
+                  <p className="text-[10px] text-muted-foreground line-clamp-3 break-words">
+                    &quot;{promptText}&quot;
+                  </p>
+                </div>
+              )
+            })()}
+
             {/* Pre-resolved resource preview — same categorised view the
                 gate uses, surfaced earlier so the user knows what's about
                 to be linked before clicking Continue. */}

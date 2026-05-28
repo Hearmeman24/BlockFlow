@@ -85,6 +85,7 @@ function CivitAIShareBlock({
   registerExecute,
   setStatusMessage,
   setExecutionStatus,
+  hasUpstreamProducer,
 }: BlockComponentProps) {
   const [token, setTokenRaw] = useState(() => {
     if (typeof window === 'undefined') return ''
@@ -119,21 +120,26 @@ function CivitAIShareBlock({
   const mediaUrls = [...upstreamUrls, ...localUrls]
   const meta = (inputs.metadata || {}) as GenerationMeta
 
-  // Upstream status. The pipeline runtime doesn't expose edge metadata to
-  // the block component, so the truest signal we can give is "did any data
-  // arrive on any input port". A populated input port but no extractable
-  // media URLs means the upstream block emitted something we can't share
-  // (common case: Image Viewer declares an image output but never calls
-  // setOutput, so inputs.image stays undefined).
-  const upstreamHasAnyData =
-    inputs.image !== undefined ||
-    inputs.video !== undefined ||
-    inputs.metadata !== undefined ||
-    inputs.prompt !== undefined
-  const upstreamMediaKind = videoUrls.length > 0
+  // Upstream signal — three tiers:
+  //  1. Media URLs already arrived → green ✓ with count (post-run).
+  //  2. No URLs yet, but graph wiring shows an upstream block that DECLARES
+  //     an image or video output → green "Upstream will produce …" (pre-run,
+  //     before the pipeline reaches this block).
+  //  3. Nothing wired → neutral.
+  // The pipeline only triggers this block's executeFn once an image/video
+  // actually arrives, so #2 is purely informational: "you wired it; we're
+  // waiting for the upstream block to run".
+  const upstreamWillProduceVideo = hasUpstreamProducer?.(PORT_VIDEO) ?? false
+  const upstreamWillProduceImage = hasUpstreamProducer?.(PORT_IMAGE) ?? false
+  const upstreamMediaArrived = videoUrls.length > 0
     ? `${videoUrls.length} video${videoUrls.length === 1 ? '' : 's'}`
     : imageUrls.length > 0
       ? `${imageUrls.length} image${imageUrls.length === 1 ? '' : 's'}`
+      : null
+  const upstreamWillProduceKind = upstreamWillProduceVideo
+    ? 'video'
+    : upstreamWillProduceImage
+      ? 'image'
       : null
 
   const addFiles = useCallback(async (files: File[]) => {
@@ -429,20 +435,22 @@ function CivitAIShareBlock({
 
   return (
     <div className="space-y-3">
-      {/* Upstream status badge — always visible so it's obvious whether the
-          wired upstream actually produced media. */}
+      {/* Upstream signal:
+           - media arrived → green ✓ count
+           - graph wiring promises media (upstream declares image/video out) → green pre-run
+           - nothing wired → neutral fallback */}
       <div className={`rounded-md border px-2 py-1 ${
-        upstreamMediaKind
+        upstreamMediaArrived || upstreamWillProduceKind
           ? 'border-emerald-500/40 bg-emerald-500/5'
-          : upstreamHasAnyData
-            ? 'border-yellow-500/40 bg-yellow-500/5'
-            : 'border-border/40 bg-muted/10'
+          : 'border-border/40 bg-muted/10'
       }`}>
         <p className="text-[11px]">
-          {upstreamMediaKind ? (
-            <span className="text-emerald-400">✓ Upstream: {upstreamMediaKind}</span>
-          ) : upstreamHasAnyData ? (
-            <span className="text-yellow-500">⚠ Upstream connected, no media (only non-image data emitted)</span>
+          {upstreamMediaArrived ? (
+            <span className="text-emerald-400">✓ Upstream: {upstreamMediaArrived}</span>
+          ) : upstreamWillProduceKind ? (
+            <span className="text-emerald-400">
+              ✓ Upstream will produce {upstreamWillProduceKind} — waiting for it to run
+            </span>
           ) : (
             <span className="text-muted-foreground">No upstream media — load files below or wire a producer</span>
           )}

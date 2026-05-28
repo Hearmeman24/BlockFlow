@@ -61,6 +61,11 @@ export interface BlockComponentProps {
   setOutputHint?: (activePortName: string) => void
   /** Inject custom action elements into the block card header (next to bypass/remove icons). */
   setHeaderActions?: (node: React.ReactNode) => void
+  /** Static graph lookup: does *any* upstream ancestor declare an output port
+   *  of the given kind? True even if the upstream hasn't run yet — this is
+   *  derived from wiring, not runtime data. Use for "an upstream WILL emit X"
+   *  signaling before the pipeline runs. */
+  hasUpstreamProducer?: (portKind: PortKind) => boolean
 }
 
 export interface BlockExecuteResult {

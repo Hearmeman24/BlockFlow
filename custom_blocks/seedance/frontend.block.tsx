@@ -235,9 +235,9 @@ function SeedanceBlock({
         if (audioUrls.length > 0 && imageUrls.length === 0 && videoUrls.length === 0) {
           throw new Error('Audio-only is not allowed — pair with at least one image or video.')
         }
-        if (imageUrls.length > 0) body.image_urls = imageUrls
-        if (videoUrls.length > 0) body.video_urls = videoUrls.slice(0, 1)
-        if (audioUrls.length > 0) body.audio_urls = audioUrls
+        if (imageUrls.length > 0) body.image_urls = imageUrls.slice(0, 9)
+        if (videoUrls.length > 0) body.video_urls = videoUrls.slice(0, 3)
+        if (audioUrls.length > 0) body.audio_urls = audioUrls.slice(0, 3)
       }
 
       setStatusMessage('Submitting…')
@@ -401,31 +401,31 @@ function SeedanceBlock({
           onRemove={(u) => removeUrl('image', u)}
           uploading={uploading === 'image'}
           kind="image"
-          max={mode === 'first_last_frames' ? 2 : 12}
+          max={mode === 'first_last_frames' ? 2 : 9}
         />
       )}
       {showVideoRefs && (
         <RefSection
-          label="Video reference (max 1)"
+          label="Video references (max 3)"
           upstream={upstreamVideoUrls}
           local={localVideoUrls}
           onPick={() => pick('video')}
           onRemove={(u) => removeUrl('video', u)}
           uploading={uploading === 'video'}
           kind="video"
-          max={1}
+          max={3}
         />
       )}
       {showAudioRefs && (
         <RefSection
-          label="Audio references (mp3/wav, ≤15s each)"
+          label="Audio references (mp3/wav, ≤15s each, max 3)"
           upstream={upstreamAudioUrls}
           local={localAudioUrls}
           onPick={() => pick('audio')}
           onRemove={(u) => removeUrl('audio', u)}
           uploading={uploading === 'audio'}
           kind="audio"
-          max={12}
+          max={3}
         />
       )}
       {uploadError && <p className="text-[10px] text-red-400">{uploadError}</p>}

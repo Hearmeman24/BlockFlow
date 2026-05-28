@@ -44,6 +44,9 @@ ALLOWED_TASK_TYPES = {"seedance-2", "seedance-2-fast"}
 ALLOWED_RESOLUTIONS = {"480p", "720p", "1080p"}
 ALLOWED_ASPECTS = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "auto"}
 MAX_REFERENCES_TOTAL = 12
+MAX_IMAGE_REFS = 9
+MAX_VIDEO_REFS = 3
+MAX_AUDIO_REFS = 3
 MAX_OUTPUT_DURATION = 15
 MIN_OUTPUT_DURATION = 4
 
@@ -163,8 +166,12 @@ def _validate_and_build_input(body: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"omni_reference accepts at most {MAX_REFERENCES_TOTAL} references total (got {total})")
         if audios and not (images or videos):
             raise ValueError("audio-only is not allowed; pair with image or video")
-        if len(videos) > 1:
-            raise ValueError("omni_reference currently supports up to 1 video URL")
+        if len(images) > MAX_IMAGE_REFS:
+            raise ValueError(f"omni_reference accepts at most {MAX_IMAGE_REFS} images (got {len(images)})")
+        if len(videos) > MAX_VIDEO_REFS:
+            raise ValueError(f"omni_reference accepts at most {MAX_VIDEO_REFS} videos (got {len(videos)})")
+        if len(audios) > MAX_AUDIO_REFS:
+            raise ValueError(f"omni_reference accepts at most {MAX_AUDIO_REFS} audios (got {len(audios)})")
         if aspect_ratio == "auto":
             aspect_ratio = "16:9"
         payload["aspect_ratio"] = aspect_ratio

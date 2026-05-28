@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Slider } from '@/components/ui/slider'
-import { Switch } from '@/components/ui/switch'
 import { useSessionState } from '@/lib/use-session-state'
+import { pickFiles } from '@/lib/file-picker'
 import { toPublicUrls } from '@/lib/image-ref'
 import {
   PORT_IMAGE,
@@ -16,25 +16,29 @@ import {
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
 
+const PORT_AUDIO = 'audio'
+
 const HEALTH_ENDPOINT = '/api/blocks/seedance/health'
-const MODELS_ENDPOINT = '/api/blocks/seedance/models'
 const RUN_ENDPOINT = '/api/blocks/seedance/run'
 const STATUS_ENDPOINT = (id: string) => `/api/blocks/seedance/status/${id}`
 const CANCEL_ENDPOINT = (id: string) => `/api/blocks/seedance/cancel/${id}`
+const TMPFILES_UPLOAD_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload'
 
-type FrameMode = 'none' | 'first_frame' | 'last_frame' | 'first_and_last' | 'input_references'
+type Mode = 'text_to_video' | 'first_last_frames' | 'omni_reference'
+type TaskType = 'seedance-2' | 'seedance-2-fast'
 
-interface SeedanceModel {
-  id: string
-  name: string
-  supported_resolutions: string[]
-  supported_aspect_ratios: string[]
-  supported_durations: number[]
-  supported_frame_images: string[]
-  generate_audio: boolean
-  seed: boolean
-  allowed_passthrough_parameters?: string[]
-}
+const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string; resolutions: string[] }> = [
+  { value: 'seedance-2-fast', label: 'Seedance 2 Fast', resolutions: ['480p', '720p'] },
+  { value: 'seedance-2', label: 'Seedance 2 (Pro)', resolutions: ['480p', '720p', '1080p'] },
+]
+
+const MODE_OPTIONS: Array<{ value: Mode; label: string; hint: string }> = [
+  { value: 'text_to_video', label: 'Text → Video', hint: 'Pure prompt, no references.' },
+  { value: 'first_last_frames', label: 'First / Last Frame', hint: '1–2 images as start/end frames.' },
+  { value: 'omni_reference', label: 'Omni Reference', hint: 'Mix images + 1 video + audio (up to 12 total).' },
+]
+
+const ASPECT_OPTIONS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] as const
 
 interface JobSnap {
   job_id: string
@@ -42,13 +46,32 @@ interface JobSnap {
   remote_status?: string | null
   video_url?: string | null
   error?: string
-  usage?: { cost?: number } | null
+  usage?: { consume?: number } | null
 }
 
-function toTextPrompt(value: unknown): string {
+function toText(value: unknown): string {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) return value.find((v) => typeof v === 'string' && v.trim()) ?? ''
   return ''
+}
+
+function asUrlList(value: unknown): string[] {
+  if (value == null) return []
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
+  if (Array.isArray(value)) {
+    const out: string[] = []
+    for (const v of value) out.push(...asUrlList(v))
+    return out
+  }
+  return []
+}
+
+function toLocalOrigin(u: string): string {
+  // Upstream may emit /outputs/... paths — make them absolute so PiAPI can fetch.
+  if (u.startsWith('/outputs/') && typeof window !== 'undefined') {
+    return `${window.location.origin}${u}`
+  }
+  return u
 }
 
 function SeedanceBlock({
@@ -58,76 +81,130 @@ function SeedanceBlock({
   registerExecute,
   setStatusMessage,
 }: BlockComponentProps) {
-  const [modelId, setModelId] = useSessionState<string>(`block_${blockId}_model`, 'bytedance/seedance-2.0-fast')
-  const [prompt, setPrompt] = useSessionState<string>(`block_${blockId}_prompt`, '')
-  const [resolution, setResolution] = useSessionState<string>(`block_${blockId}_resolution`, '720p')
+  const [taskType, setTaskType] = useSessionState<TaskType>(`block_${blockId}_task_type`, 'seedance-2-fast')
+  const [mode, setMode] = useSessionState<Mode>(`block_${blockId}_mode`, 'text_to_video')
+  const [resolution, setResolution] = useSessionState<string>(`block_${blockId}_resolution`, '480p')
   const [aspect, setAspect] = useSessionState<string>(`block_${blockId}_aspect`, '16:9')
   const [duration, setDuration] = useSessionState<number>(`block_${blockId}_duration`, 5)
-  const [seed, setSeed] = useSessionState<string>(`block_${blockId}_seed`, '')
-  const [generateAudio, setGenerateAudio] = useSessionState<boolean>(`block_${blockId}_audio`, true)
-  const [watermark, setWatermark] = useSessionState<boolean>(`block_${blockId}_watermark`, false)
-  const [frameMode, setFrameMode] = useSessionState<FrameMode>(`block_${blockId}_frame_mode`, 'none')
+  const [prompt, setPrompt] = useSessionState<string>(`block_${blockId}_prompt`, '')
   const [useUpstreamPrompt, setUseUpstreamPrompt] = useSessionState<boolean>(`block_${blockId}_use_upstream_prompt`, false)
 
-  const [models, setModels] = useState<SeedanceModel[]>([])
+  // Local refs uploaded inline (alongside upstream image port)
+  const [localImageUrls, setLocalImageUrls] = useSessionState<string[]>(`block_${blockId}_local_images`, [])
+  const [localVideoUrls, setLocalVideoUrls] = useSessionState<string[]>(`block_${blockId}_local_videos`, [])
+  const [localAudioUrls, setLocalAudioUrls] = useSessionState<string[]>(`block_${blockId}_local_audios`, [])
+  const [uploading, setUploading] = useState<'image' | 'video' | 'audio' | null>(null)
+  const [uploadError, setUploadError] = useState('')
+
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [progress, setProgress] = useState<JobSnap | null>(null)
-  const [error, setError] = useState<string>('')
   const cancelRef = useRef<() => void>(() => {})
 
-  const refUrls = toPublicUrls(inputs.image)
-  const upstreamPrompt = toTextPrompt(inputs.text).trim()
-  const effectivePrompt = useUpstreamPrompt && upstreamPrompt ? upstreamPrompt : prompt
+  const upstreamImageUrls = Array.from(new Set(toPublicUrls(inputs.image)))
+  const upstreamVideoUrls = asUrlList(inputs.video).map(toLocalOrigin)
+  const upstreamAudioUrls = asUrlList(inputs.audio).map(toLocalOrigin)
+  const upstreamPrompt = toText(inputs.text).trim()
 
-  const model = models.find((m) => m.id === modelId)
+  const allImageUrls = Array.from(new Set([...upstreamImageUrls, ...localImageUrls]))
+  const allVideoUrls = Array.from(new Set([...upstreamVideoUrls, ...localVideoUrls]))
+  const allAudioUrls = Array.from(new Set([...upstreamAudioUrls, ...localAudioUrls]))
+
+  const taskTypeInfo = TASK_TYPE_OPTIONS.find((o) => o.value === taskType) ?? TASK_TYPE_OPTIONS[0]
+  const availableResolutions = taskTypeInfo.resolutions
+
+  useEffect(() => {
+    if (!availableResolutions.includes(resolution)) setResolution(availableResolutions[0])
+  }, [taskType, availableResolutions, resolution, setResolution])
 
   useEffect(() => {
     fetch(HEALTH_ENDPOINT)
       .then((r) => r.json())
-      .then((d) => setHealthy(!!d.openrouter_key_present))
+      .then((d) => setHealthy(!!d.piapi_key_present))
       .catch(() => setHealthy(false))
-    fetch(MODELS_ENDPOINT)
-      .then((r) => r.json())
-      .then((d) => { if (d.ok) setModels(d.models || []) })
-      .catch(() => {})
   }, [])
+
+  const uploadOne = useCallback(async (file: File): Promise<string> => {
+    const buf = await file.arrayBuffer()
+    const res = await fetch(TMPFILES_UPLOAD_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Filename': file.name,
+        'X-Content-Type': file.type || 'application/octet-stream',
+      },
+      body: buf,
+    })
+    const data = await res.json()
+    if (!data.ok || !data.image_url) throw new Error(data.error || 'upload failed')
+    return data.image_url as string
+  }, [])
+
+  const addFiles = useCallback(async (
+    kind: 'image' | 'video' | 'audio',
+    files: File[],
+  ) => {
+    if (files.length === 0) return
+    setUploadError('')
+    setUploading(kind)
+    try {
+      const urls: string[] = []
+      for (const f of files) {
+        try { urls.push(await uploadOne(f)) }
+        catch (e) { setUploadError(e instanceof Error ? e.message : String(e)) }
+      }
+      if (urls.length === 0) return
+      if (kind === 'image') setLocalImageUrls((p) => Array.from(new Set([...p, ...urls])))
+      else if (kind === 'video') setLocalVideoUrls((p) => Array.from(new Set([...p, ...urls])))
+      else setLocalAudioUrls((p) => Array.from(new Set([...p, ...urls])))
+    } finally {
+      setUploading(null)
+    }
+  }, [uploadOne, setLocalImageUrls, setLocalVideoUrls, setLocalAudioUrls])
+
+  const pick = useCallback(async (kind: 'image' | 'video' | 'audio') => {
+    const accept = kind === 'image' ? 'image/*' : kind === 'video' ? 'video/mp4,video/quicktime' : 'audio/mp3,audio/mpeg,audio/wav'
+    const picked = await pickFiles({ slug: 'seedance', accept, multiple: kind === 'image', description: `${kind} refs` })
+    if (picked) addFiles(kind, picked)
+  }, [addFiles])
 
   useEffect(() => {
     registerExecute(async (freshInputs, signal) => {
-      setError('')
-      const promptText = useUpstreamPrompt
-        ? toTextPrompt(freshInputs.text).trim() || prompt
-        : prompt
-      if (!promptText.trim()) throw new Error('Prompt is empty.')
-      if (!healthy) throw new Error('OpenRouter key not set in Settings.')
+      if (!healthy) throw new Error('PiAPI key not set in Settings.')
 
-      const fresh = toPublicUrls(freshInputs.image)
-      let first_frame_url: string | undefined
-      let last_frame_url: string | undefined
-      let input_references: string[] | undefined
-      if (frameMode === 'first_frame') first_frame_url = fresh[0]
-      else if (frameMode === 'last_frame') last_frame_url = fresh[0]
-      else if (frameMode === 'first_and_last') {
-        first_frame_url = fresh[0]
-        last_frame_url = fresh[1]
-      } else if (frameMode === 'input_references') {
-        input_references = fresh
-      }
+      const finalPrompt = useUpstreamPrompt
+        ? toText(freshInputs.text).trim() || prompt
+        : prompt
+      if (!finalPrompt.trim()) throw new Error('Prompt is empty.')
+
+      const upImages = Array.from(new Set(toPublicUrls(freshInputs.image)))
+      const upVideos = asUrlList(freshInputs.video).map(toLocalOrigin)
+      const upAudios = asUrlList(freshInputs.audio).map(toLocalOrigin)
+      const imageUrls = Array.from(new Set([...upImages, ...localImageUrls]))
+      const videoUrls = Array.from(new Set([...upVideos, ...localVideoUrls]))
+      const audioUrls = Array.from(new Set([...upAudios, ...localAudioUrls]))
 
       const body: Record<string, unknown> = {
-        model: modelId,
-        prompt: promptText,
+        task_type: taskType,
+        mode,
+        prompt: finalPrompt,
+        duration,
         resolution,
         aspect_ratio: aspect,
-        duration,
-        generate_audio: generateAudio,
-        watermark,
       }
-      const seedNum = seed.trim() ? Number(seed.trim()) : NaN
-      if (Number.isFinite(seedNum)) body.seed = seedNum
-      if (first_frame_url) body.first_frame_url = first_frame_url
-      if (last_frame_url) body.last_frame_url = last_frame_url
-      if (input_references && input_references.length > 0) body.input_references = input_references
+      if (mode === 'first_last_frames') {
+        if (imageUrls.length === 0) throw new Error('First/Last Frame mode needs 1–2 images.')
+        body.image_urls = imageUrls.slice(0, 2)
+      } else if (mode === 'omni_reference') {
+        if (imageUrls.length + videoUrls.length + audioUrls.length === 0) {
+          throw new Error('Omni Reference needs at least one image, video, or audio reference.')
+        }
+        if (audioUrls.length > 0 && imageUrls.length === 0 && videoUrls.length === 0) {
+          throw new Error('Audio-only is not allowed — pair with at least one image or video.')
+        }
+        if (imageUrls.length > 0) body.image_urls = imageUrls
+        if (videoUrls.length > 0) body.video_urls = videoUrls.slice(0, 1)
+        if (audioUrls.length > 0) body.audio_urls = audioUrls
+      }
 
       setStatusMessage('Submitting…')
       const startRes = await fetch(RUN_ENDPOINT, {
@@ -136,15 +213,12 @@ function SeedanceBlock({
         body: JSON.stringify(body),
       })
       const startData = await startRes.json()
-      if (!startData.ok) throw new Error(startData.error || 'Failed to submit Seedance job')
+      if (!startData.ok) throw new Error(startData.error || 'submit failed')
       const jobId = startData.job_id as string
 
-      const onAbort = () => {
-        fetch(CANCEL_ENDPOINT(jobId), { method: 'POST' }).catch(() => {})
-      }
+      const onAbort = () => { fetch(CANCEL_ENDPOINT(jobId), { method: 'POST' }).catch(() => {}) }
       signal.addEventListener('abort', onAbort)
       cancelRef.current = onAbort
-
       try {
         while (true) {
           if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
@@ -156,12 +230,12 @@ function SeedanceBlock({
           setProgress(snap)
           setStatusMessage(`${snap.status.toLowerCase()}${snap.remote_status ? ` · ${snap.remote_status}` : ''}`)
           if (snap.status === 'COMPLETED') {
-            if (!snap.video_url) throw new Error('completed but no video_url')
+            if (!snap.video_url) throw new Error('completed without video_url')
             setOutput('video', snap.video_url)
-            setStatusMessage(snap.usage?.cost ? `done · $${snap.usage.cost.toFixed(4)}` : 'done')
+            setStatusMessage('done')
             return
           }
-          if (snap.status === 'FAILED') throw new Error(snap.error || 'Seedance generation failed')
+          if (snap.status === 'FAILED') throw new Error(snap.error || 'Seedance failed')
           if (snap.status === 'CANCELLED') throw new DOMException('Aborted', 'AbortError')
         }
       } finally {
@@ -170,30 +244,82 @@ function SeedanceBlock({
     })
   })
 
-  const isFastModel = modelId.endsWith('-fast')
+  const removeUrl = (kind: 'image' | 'video' | 'audio', url: string) => {
+    if (kind === 'image') setLocalImageUrls((p) => p.filter((u) => u !== url))
+    else if (kind === 'video') setLocalVideoUrls((p) => p.filter((u) => u !== url))
+    else setLocalAudioUrls((p) => p.filter((u) => u !== url))
+  }
+
+  const showImageRefs = mode === 'first_last_frames' || mode === 'omni_reference'
+  const showVideoRefs = mode === 'omni_reference'
+  const showAudioRefs = mode === 'omni_reference'
 
   return (
     <div className="space-y-3">
-      {/* Model */}
+      {/* Mode */}
       <div className="space-y-1">
-        <Label className="text-[11px]">Model</Label>
-        <Select value={modelId} onValueChange={setModelId}>
+        <Label className="text-[11px]">Mode</Label>
+        <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
-            {models.length === 0 && (
-              <>
-                <SelectItem value="bytedance/seedance-2.0">Seedance 2.0</SelectItem>
-                <SelectItem value="bytedance/seedance-2.0-fast">Seedance 2.0 Fast</SelectItem>
-              </>
-            )}
-            {models.map((m) => (
-              <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+            {MODE_OPTIONS.map((m) => (
+              <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
             ))}
           </SelectContent>
         </Select>
-        {isFastModel && (
-          <p className="text-[10px] text-muted-foreground">Fast — lower cost, max 720p.</p>
-        )}
+        <p className="text-[10px] text-muted-foreground">{MODE_OPTIONS.find((m) => m.value === mode)?.hint}</p>
+      </div>
+
+      {/* Model + Resolution */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <Label className="text-[11px]">Model</Label>
+          <Select value={taskType} onValueChange={(v) => setTaskType(v as TaskType)}>
+            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {TASK_TYPE_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-[11px]">Resolution</Label>
+          <Select value={resolution} onValueChange={setResolution}>
+            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {availableResolutions.map((r) => (
+                <SelectItem key={r} value={r}>{r}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {/* Aspect + Duration */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <Label className="text-[11px]">Aspect ratio</Label>
+          <Select value={aspect} onValueChange={setAspect}>
+            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {ASPECT_OPTIONS.map((a) => (
+                <SelectItem key={a} value={a}>{a}</SelectItem>
+              ))}
+              {mode === 'first_last_frames' && <SelectItem value="auto">auto (detect)</SelectItem>}
+            </SelectContent>
+          </Select>
+          {mode === 'first_last_frames' && (
+            <p className="text-[10px] text-muted-foreground italic">Ignored upstream in this mode.</p>
+          )}
+        </div>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <Label className="text-[11px]">Duration</Label>
+            <span className="text-[11px] font-mono">{duration}s</span>
+          </div>
+          <Slider min={4} max={15} step={1} value={[duration]} onValueChange={(v) => setDuration(v[0])} />
+        </div>
       </div>
 
       {/* Prompt */}
@@ -212,136 +338,167 @@ function SeedanceBlock({
           aria-label="Prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="A golden retriever bounding through tall meadow grass at sunset..."
-          className="w-full min-h-[60px] text-[11px] rounded border border-border/60 bg-background p-2"
+          placeholder={mode === 'omni_reference' ? 'Use @image1, @video1, @audio1 to reference inputs by position…' : 'A cinematic shot of…'}
+          className="w-full min-h-[70px] text-[11px] rounded border border-border/60 bg-background p-2"
           disabled={useUpstreamPrompt && !!upstreamPrompt}
         />
         {useUpstreamPrompt && upstreamPrompt && (
-          <p className="text-[10px] text-muted-foreground italic line-clamp-2">Using upstream: {upstreamPrompt}</p>
+          <p className="text-[10px] text-muted-foreground italic line-clamp-2">Upstream: {upstreamPrompt}</p>
         )}
       </div>
 
-      {/* Resolution + Aspect */}
-      <div className="grid grid-cols-2 gap-2">
-        <div className="space-y-1">
-          <Label className="text-[11px]">Resolution</Label>
-          <Select value={resolution} onValueChange={setResolution}>
-            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {(model?.supported_resolutions || ['480p', '720p', '1080p']).map((r) => (
-                <SelectItem key={r} value={r}>{r}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1">
-          <Label className="text-[11px]">Aspect ratio</Label>
-          <Select value={aspect} onValueChange={setAspect}>
-            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {(model?.supported_aspect_ratios || ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21']).map((a) => (
-                <SelectItem key={a} value={a}>{a}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
-      {/* Duration */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <Label className="text-[11px]">Duration (seconds)</Label>
-          <span className="text-[11px] font-mono">{duration}s</span>
-        </div>
-        <Slider
-          min={Math.min(...(model?.supported_durations || [4]))}
-          max={Math.max(...(model?.supported_durations || [15]))}
-          step={1}
-          value={[duration]}
-          onValueChange={(v) => setDuration(v[0])}
+      {/* Image refs */}
+      {showImageRefs && (
+        <RefSection
+          label={mode === 'first_last_frames' ? 'Image frames (1–2)' : 'Image references'}
+          upstream={upstreamImageUrls}
+          local={localImageUrls}
+          onPick={() => pick('image')}
+          onRemove={(u) => removeUrl('image', u)}
+          uploading={uploading === 'image'}
+          kind="image"
+          max={mode === 'first_last_frames' ? 2 : 12}
         />
-      </div>
-
-      {/* Audio + Watermark + Seed */}
-      <div className="grid grid-cols-2 gap-x-2 gap-y-2">
-        <div className="flex items-center justify-between rounded border border-border/60 px-2 py-1">
-          <Label className="text-[11px]">Generate audio</Label>
-          <Switch checked={generateAudio} onCheckedChange={setGenerateAudio} />
-        </div>
-        <div className="flex items-center justify-between rounded border border-border/60 px-2 py-1">
-          <Label className="text-[11px]">Watermark</Label>
-          <Switch checked={watermark} onCheckedChange={setWatermark} />
-        </div>
-        <div className="col-span-2 space-y-1">
-          <Label className="text-[11px]">Seed (blank = random)</Label>
-          <Input value={seed} onChange={(e) => setSeed(e.target.value)} placeholder="e.g. 42" className="h-7 text-xs font-mono" />
-        </div>
-      </div>
-
-      {/* Reference mode */}
-      <div className="space-y-1">
-        <Label className="text-[11px]">Image references</Label>
-        <Select value={frameMode} onValueChange={(v) => setFrameMode(v as FrameMode)}>
-          <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">None (text-to-video)</SelectItem>
-            <SelectItem value="first_frame">First frame</SelectItem>
-            <SelectItem value="last_frame">Last frame</SelectItem>
-            <SelectItem value="first_and_last">First + last frame</SelectItem>
-            <SelectItem value="input_references">Reference-to-video (multi)</SelectItem>
-          </SelectContent>
-        </Select>
-        {frameMode !== 'none' && (
-          <div className="rounded border border-border/60 p-1.5">
-            {refUrls.length === 0 ? (
-              <p className="text-[10px] text-muted-foreground italic">
-                Connect an Upload Image (Tmpfiles mode) upstream — image needs a public URL.
-              </p>
-            ) : (
-              <div className="grid grid-cols-6 gap-1">
-                {refUrls.slice(0, frameMode === 'first_frame' || frameMode === 'last_frame' ? 1 : frameMode === 'first_and_last' ? 2 : refUrls.length).map((u, i) => (
-                  <img key={i} src={u} alt={`ref ${i + 1}`} className="aspect-square w-full rounded object-cover" />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+      )}
+      {showVideoRefs && (
+        <RefSection
+          label="Video reference (max 1)"
+          upstream={upstreamVideoUrls}
+          local={localVideoUrls}
+          onPick={() => pick('video')}
+          onRemove={(u) => removeUrl('video', u)}
+          uploading={uploading === 'video'}
+          kind="video"
+          max={1}
+        />
+      )}
+      {showAudioRefs && (
+        <RefSection
+          label="Audio references (mp3/wav, ≤15s each)"
+          upstream={upstreamAudioUrls}
+          local={localAudioUrls}
+          onPick={() => pick('audio')}
+          onRemove={(u) => removeUrl('audio', u)}
+          uploading={uploading === 'audio'}
+          kind="audio"
+          max={12}
+        />
+      )}
+      {uploadError && <p className="text-[10px] text-red-400">{uploadError}</p>}
 
       {/* Health */}
       {healthy === false && (
-        <p className="text-[10px] text-red-400">Set OpenRouter API key in Settings → Credentials.</p>
+        <p className="text-[10px] text-red-400">Set PiAPI key in Settings → Credentials.</p>
       )}
 
-      {/* Live preview */}
+      {/* Preview */}
       {progress?.video_url && (
         <div className="rounded border border-border/60 p-1.5">
           <video src={progress.video_url} controls className="w-full rounded" />
-          {progress.usage?.cost ? (
-            <p className="text-[10px] text-muted-foreground mt-1">Cost: ${progress.usage.cost.toFixed(4)}</p>
+          {progress.usage?.consume ? (
+            <p className="text-[10px] text-muted-foreground mt-1">Credits used: {progress.usage.consume}</p>
           ) : null}
         </div>
       )}
-      {error && <p className="text-[10px] text-red-400">{error}</p>}
+    </div>
+  )
+}
+
+interface RefSectionProps {
+  label: string
+  upstream: string[]
+  local: string[]
+  onPick: () => void
+  onRemove: (url: string) => void
+  uploading: boolean
+  kind: 'image' | 'video' | 'audio'
+  max: number
+}
+
+function RefSection({ label, upstream, local, onPick, onRemove, uploading, kind, max }: RefSectionProps) {
+  const all = [...upstream, ...local]
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <Label className="text-[11px]">{label}</Label>
+        <span className="text-[10px] text-muted-foreground">{all.length} / {max}</span>
+      </div>
+      <div className="rounded border border-border/60 p-1.5 min-h-[40px]">
+        {all.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground italic">
+            {kind === 'image' ? 'Upload below, or connect an Upload Image (Tmpfiles) upstream.'
+              : kind === 'video' ? 'Upload an mp4/mov, or connect a video-emitting block upstream.'
+              : 'Upload mp3/wav (≤15s), or connect ElevenLabs TTS upstream.'}
+          </p>
+        ) : (
+          <div className={`grid gap-1 ${kind === 'audio' ? 'grid-cols-1' : 'grid-cols-6'}`}>
+            {upstream.map((u, i) => (
+              <RefThumb key={`up-${u}`} url={u} kind={kind} tag="up" index={i} />
+            ))}
+            {local.map((u, i) => (
+              <RefThumb key={`loc-${u}`} url={u} kind={kind} tag={null} index={i} onRemove={() => onRemove(u)} />
+            ))}
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onPick}
+        disabled={uploading || all.length >= max}
+        className="text-[11px] px-2 py-1 rounded border border-border/60 hover:bg-muted/40 disabled:opacity-50"
+      >
+        {uploading ? 'uploading…' : `+ add ${kind}${kind === 'image' && max > 1 ? '(s)' : ''}`}
+      </button>
+    </div>
+  )
+}
+
+function RefThumb({ url, kind, tag, index, onRemove }: { url: string; kind: 'image' | 'video' | 'audio'; tag: string | null; index: number; onRemove?: () => void }) {
+  return (
+    <div className="relative group">
+      {kind === 'image' && (
+        <img src={url} alt={`ref ${index + 1}`} className="aspect-square w-full rounded object-cover" />
+      )}
+      {kind === 'video' && (
+        <video src={url} className="aspect-square w-full rounded object-cover" muted preload="metadata" />
+      )}
+      {kind === 'audio' && (
+        <div className="rounded bg-muted/30 p-1.5">
+          <audio src={url} controls className="w-full" />
+        </div>
+      )}
+      {tag && (
+        <span className="absolute bottom-0 left-0 right-0 text-[8px] text-center bg-black/60 text-white rounded-b">{tag}</span>
+      )}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="absolute top-0 right-0 bg-black/70 text-white text-[10px] leading-none rounded-bl px-1 py-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+          aria-label="remove"
+        >×</button>
+      )}
     </div>
   )
 }
 
 export const blockDef: BlockDef = {
   type: 'seedance',
-  label: 'Seedance 2.0 (OpenRouter)',
-  description: 'ByteDance Seedance 2.0 / 2.0 Fast video generation via OpenRouter — text, image-to-video, and reference-to-video.',
-  size: 'lg',
+  label: 'Seedance 2 (PiAPI)',
+  description: 'ByteDance Seedance 2 / 2 Fast via PiAPI — text→video, first/last frame, or omni reference (image + video + audio).',
+  size: 'huge',
   canStart: true,
   inputs: [
     { name: 'image', kind: PORT_IMAGE, required: false },
+    { name: 'video', kind: PORT_VIDEO, required: false },
+    { name: 'audio', kind: PORT_AUDIO, required: false },
     { name: 'text', kind: PORT_TEXT, required: false, hidden: true },
   ],
   outputs: [
     { name: 'video', kind: PORT_VIDEO },
   ],
-  suggestedUpstream: ['uploadImageToTmpfiles', 'promptWriter', 'i2vPromptWriter'],
+  suggestedUpstream: ['uploadImageToTmpfiles', 'promptWriter', 'i2vPromptWriter', 'elevenLabsTts', 'nanoBanana2'],
   suggestedDownstream: ['videoViewer', 'videoFx', 'civitaiShare'],
-  configKeys: ['model', 'prompt', 'resolution', 'aspect', 'duration', 'seed', 'audio', 'watermark', 'frame_mode', 'use_upstream_prompt'],
+  configKeys: ['task_type', 'mode', 'resolution', 'aspect', 'duration', 'prompt', 'use_upstream_prompt', 'local_images', 'local_videos', 'local_audios'],
   component: SeedanceBlock,
 }

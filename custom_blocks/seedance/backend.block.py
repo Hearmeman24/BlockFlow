@@ -190,6 +190,12 @@ async def _run_job(job_id: str, api_key: str, payload: dict[str, Any]) -> None:
     try:
         submit_resp = await _submit(api_key, payload)
         remote_id = submit_resp.get("id")
+        if not remote_id:
+            # OpenRouter occasionally returns 200 with an error body instead of
+            # a 4xx — surface that so we don't poll /videos/None and report a
+            # misleading 404 to the user.
+            err = submit_resp.get("error") or submit_resp
+            raise RuntimeError(f"submit returned no id: {json.dumps(err)[:600]}")
         polling_url = submit_resp.get("polling_url") or f"{OPENROUTER_VIDEO_URL}/{remote_id}"
         with JOBS_LOCK:
             rec = JOBS.get(job_id)

@@ -40,7 +40,30 @@ SEEDANCE_DIR = config.LOCAL_OUTPUT_DIR / "seedance"
 SEEDANCE_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_MODES = {"text_to_video", "first_last_frames", "omni_reference"}
-ALLOWED_TASK_TYPES = {"seedance-2", "seedance-2-fast"}
+
+# seedance-2 family — `mode`-driven, 4-15 continuous duration, 6 ARs + auto,
+#   ALL face references blocked at upstream visual review (no pre-submission).
+# *-preview-vip family — `mode`-less, 5/10/15 duration enum, 4 ARs only,
+#   non-real faces allowed (tightening), pre-submission moderation +
+#   refund on block. With `video_urls` set, output length = input video
+#   length and the `duration` field is ignored upstream.
+ALLOWED_TASK_TYPES = {
+    "seedance-2",
+    "seedance-2-fast",
+    "seedance-2-preview-vip",
+    "seedance-2-fast-preview-vip",
+}
+VIP_TASK_TYPES = {"seedance-2-preview-vip", "seedance-2-fast-preview-vip"}
+
+VIP_ALLOWED_DURATIONS = {5, 10, 15}
+VIP_ALLOWED_ASPECTS = {"16:9", "9:16", "4:3", "3:4"}
+TASK_TYPE_RESOLUTIONS: dict[str, set[str]] = {
+    "seedance-2": {"480p", "720p", "1080p"},
+    "seedance-2-fast": {"480p", "720p"},
+    "seedance-2-preview-vip": {"720p", "1080p"},
+    "seedance-2-fast-preview-vip": {"720p"},
+}
+
 ALLOWED_RESOLUTIONS = {"480p", "720p", "1080p"}
 ALLOWED_ASPECTS = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "auto"}
 MAX_REFERENCES_TOTAL = 12
@@ -97,35 +120,28 @@ def health() -> JSONResponse:
         "piapi_key_present": bool(_api_key()),
         "modes": sorted(ALLOWED_MODES),
         "task_types": sorted(ALLOWED_TASK_TYPES),
+        "vip_task_types": sorted(VIP_TASK_TYPES),
+        "vip_allowed_durations": sorted(VIP_ALLOWED_DURATIONS),
+        "vip_allowed_aspects": sorted(VIP_ALLOWED_ASPECTS),
+        "task_type_resolutions": {k: sorted(v) for k, v in TASK_TYPE_RESOLUTIONS.items()},
     })
 
 
-def _validate_and_build_input(body: dict[str, Any]) -> dict[str, Any]:
-    mode = str(body.get("mode") or "").strip()
-    if mode not in ALLOWED_MODES:
-        raise ValueError(f"mode must be one of {sorted(ALLOWED_MODES)}")
+def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str, Any]:
+    """Build the `input` payload for PiAPI. Schema branches by task_type family:
+
+    - seedance-2 / seedance-2-fast: `mode` enum, 4-15 continuous duration,
+      6 ARs + auto, 480p/720p/1080p (480p Fast caps at 720p).
+    - *-preview-vip: no `mode` field, 5/10/15 duration enum (ignored when
+      `video_urls` present), 4 ARs only, 720p/1080p (Fast VIP is 720p-only).
+    """
+    is_vip = task_type in VIP_TASK_TYPES
 
     prompt = str(body.get("prompt") or "").strip()
     if not prompt:
         raise ValueError("prompt is required")
     if len(prompt) > 4000:
         raise ValueError("prompt exceeds 4000 chars")
-
-    duration_raw = body.get("duration", 5)
-    try:
-        duration = int(duration_raw)
-    except (TypeError, ValueError):
-        duration = 5
-    if duration < MIN_OUTPUT_DURATION or duration > MAX_OUTPUT_DURATION:
-        raise ValueError(f"duration must be {MIN_OUTPUT_DURATION}-{MAX_OUTPUT_DURATION}")
-
-    resolution = str(body.get("resolution") or "480p").lower()
-    if resolution not in ALLOWED_RESOLUTIONS:
-        raise ValueError(f"resolution must be one of {sorted(ALLOWED_RESOLUTIONS)}")
-
-    aspect_ratio = str(body.get("aspect_ratio") or "16:9")
-    if aspect_ratio not in ALLOWED_ASPECTS:
-        raise ValueError(f"aspect_ratio must be one of {sorted(ALLOWED_ASPECTS)}")
 
     def _clean_list(key: str) -> list[str]:
         raw = body.get(key) or []
@@ -137,7 +153,64 @@ def _validate_and_build_input(body: dict[str, Any]) -> dict[str, Any]:
     videos = _clean_list("video_urls")
     audios = _clean_list("audio_urls")
 
-    payload: dict[str, Any] = {
+    allowed_resolutions = TASK_TYPE_RESOLUTIONS[task_type]
+    resolution = str(body.get("resolution") or sorted(allowed_resolutions)[0]).lower()
+    if resolution not in allowed_resolutions:
+        raise ValueError(f"resolution for {task_type} must be one of {sorted(allowed_resolutions)}")
+
+    aspect_ratio = str(body.get("aspect_ratio") or "16:9")
+
+    # === VIP family: mode-less, restricted enums ===
+    if is_vip:
+        allowed_aspects = VIP_ALLOWED_ASPECTS
+        if aspect_ratio not in allowed_aspects:
+            raise ValueError(f"aspect_ratio for {task_type} must be one of {sorted(allowed_aspects)}")
+
+        duration_raw = body.get("duration", 5)
+        try:
+            duration = int(duration_raw)
+        except (TypeError, ValueError):
+            duration = 5
+        if duration not in VIP_ALLOWED_DURATIONS:
+            raise ValueError(f"duration for {task_type} must be one of {sorted(VIP_ALLOWED_DURATIONS)}")
+
+        if images and len(images) > MAX_IMAGE_REFS:
+            raise ValueError(f"VIP accepts at most {MAX_IMAGE_REFS} images (got {len(images)})")
+        if videos and len(videos) > MAX_VIDEO_REFS:
+            raise ValueError(f"VIP accepts at most {MAX_VIDEO_REFS} videos (got {len(videos)})")
+        if audios and len(audios) > MAX_AUDIO_REFS:
+            raise ValueError(f"VIP accepts at most {MAX_AUDIO_REFS} audios (got {len(audios)})")
+        if audios and not (images or videos):
+            raise ValueError("audio-only is not allowed; pair with image or video")
+
+        payload: dict[str, Any] = {
+            "prompt": prompt,
+            "duration": duration,
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+        }
+        if images: payload["image_urls"] = images
+        if videos: payload["video_urls"] = videos
+        if audios: payload["audio_urls"] = audios
+        return payload
+
+    # === seedance-2 family: mode-driven ===
+    mode = str(body.get("mode") or "").strip()
+    if mode not in ALLOWED_MODES:
+        raise ValueError(f"mode must be one of {sorted(ALLOWED_MODES)}")
+
+    duration_raw = body.get("duration", 5)
+    try:
+        duration = int(duration_raw)
+    except (TypeError, ValueError):
+        duration = 5
+    if duration < MIN_OUTPUT_DURATION or duration > MAX_OUTPUT_DURATION:
+        raise ValueError(f"duration must be {MIN_OUTPUT_DURATION}-{MAX_OUTPUT_DURATION}")
+
+    if aspect_ratio not in ALLOWED_ASPECTS:
+        raise ValueError(f"aspect_ratio must be one of {sorted(ALLOWED_ASPECTS)}")
+
+    payload = {
         "prompt": prompt,
         "mode": mode,
         "duration": duration,
@@ -156,7 +229,6 @@ def _validate_and_build_input(body: dict[str, Any]) -> dict[str, Any]:
         if videos or audios:
             raise ValueError("first_last_frames accepts images only (no videos or audio)")
         payload["image_urls"] = images
-        # aspect_ratio is ignored upstream in this mode; pass it anyway
         payload["aspect_ratio"] = aspect_ratio
     elif mode == "omni_reference":
         total = len(images) + len(videos) + len(audios)
@@ -175,12 +247,9 @@ def _validate_and_build_input(body: dict[str, Any]) -> dict[str, Any]:
         if aspect_ratio == "auto":
             aspect_ratio = "16:9"
         payload["aspect_ratio"] = aspect_ratio
-        if images:
-            payload["image_urls"] = images
-        if videos:
-            payload["video_urls"] = videos
-        if audios:
-            payload["audio_urls"] = audios
+        if images: payload["image_urls"] = images
+        if videos: payload["video_urls"] = videos
+        if audios: payload["audio_urls"] = audios
 
     return payload
 
@@ -247,10 +316,13 @@ async def _run_job(job_id: str, api_key: str, task_type: str, input_payload: dic
 
             poll_data = (poll.get("data") if isinstance(poll, dict) else None) or {}
             remote_status = str(poll_data.get("status") or "").lower()
+            logs_raw = poll_data.get("logs") or []
+            remote_logs = [str(x) for x in logs_raw if isinstance(x, str)]
             with JOBS_LOCK:
                 rec = JOBS.get(job_id)
                 if rec is not None:
                     rec["remote_status"] = remote_status
+                    rec["remote_logs"] = remote_logs
 
             if remote_status == "completed":
                 output = poll_data.get("output") or {}
@@ -267,6 +339,7 @@ async def _run_job(job_id: str, api_key: str, task_type: str, input_payload: dic
                         rec["video_url"] = rel_url
                         rec["remote_url"] = video_url
                         rec["usage"] = (poll_data.get("meta") or {}).get("usage")
+                        rec["remote_logs"] = remote_logs
                         rec["ended_at"] = time.time()
                 return
 
@@ -296,7 +369,7 @@ async def run(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": f"task_type must be one of {sorted(ALLOWED_TASK_TYPES)}"}, status_code=400)
 
     try:
-        input_payload = _validate_and_build_input(body)
+        input_payload = _validate_and_build_input(body, task_type)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
@@ -309,12 +382,13 @@ async def run(request: Request) -> JSONResponse:
         "video_url": None,
         "remote_url": None,
         "usage": None,
+        "remote_logs": [],
         "error": "",
         "started_at": time.time(),
         "ended_at": None,
         "cancel_requested": False,
         "task_type": task_type,
-        "mode": input_payload["mode"],
+        "mode": input_payload.get("mode"),
     }
     with JOBS_LOCK:
         JOBS[job_id] = record

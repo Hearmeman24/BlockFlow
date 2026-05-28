@@ -25,20 +25,66 @@ const CANCEL_ENDPOINT = (id: string) => `/api/blocks/seedance/cancel/${id}`
 const TMPFILES_UPLOAD_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload'
 
 type Mode = 'text_to_video' | 'first_last_frames' | 'omni_reference'
-type TaskType = 'seedance-2' | 'seedance-2-fast'
+type TaskType =
+  | 'seedance-2'
+  | 'seedance-2-fast'
+  | 'seedance-2-preview-vip'
+  | 'seedance-2-fast-preview-vip'
 
-const TASK_TYPE_OPTIONS: Array<{ value: TaskType; label: string; resolutions: string[] }> = [
-  { value: 'seedance-2-fast', label: 'Seedance 2 Fast', resolutions: ['480p', '720p'] },
-  { value: 'seedance-2', label: 'Seedance 2 (Pro)', resolutions: ['480p', '720p', '1080p'] },
+interface TaskTypeInfo {
+  value: TaskType
+  label: string
+  family: 'seedance2' | 'vip'
+  resolutions: string[]
+  aspects: string[]
+  durations: number[] | 'continuous'
+  hint: string
+}
+
+const TASK_TYPE_OPTIONS: TaskTypeInfo[] = [
+  {
+    value: 'seedance-2-fast',
+    label: 'Seedance 2 Fast',
+    family: 'seedance2',
+    resolutions: ['480p', '720p'],
+    aspects: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
+    durations: 'continuous',
+    hint: 'Cheap, mode-driven. Real and non-real faces blocked at upstream — silent degradation possible.',
+  },
+  {
+    value: 'seedance-2',
+    label: 'Seedance 2 (Pro)',
+    family: 'seedance2',
+    resolutions: ['480p', '720p', '1080p'],
+    aspects: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
+    durations: 'continuous',
+    hint: 'Mode-driven. Real and non-real faces blocked at upstream — silent degradation possible.',
+  },
+  {
+    value: 'seedance-2-fast-preview-vip',
+    label: 'Seedance 2 Fast (VIP)',
+    family: 'vip',
+    resolutions: ['720p'],
+    aspects: ['16:9', '9:16', '4:3', '3:4'],
+    durations: [5, 10, 15],
+    hint: 'AI/non-real faces allowed. Pre-submission moderation refunds blocked requests. With video_urls, output length = input video length.',
+  },
+  {
+    value: 'seedance-2-preview-vip',
+    label: 'Seedance 2 (VIP)',
+    family: 'vip',
+    resolutions: ['720p', '1080p'],
+    aspects: ['16:9', '9:16', '4:3', '3:4'],
+    durations: [5, 10, 15],
+    hint: 'AI/non-real faces allowed. Pre-submission moderation refunds blocked requests. With video_urls, output length = input video length.',
+  },
 ]
 
 const MODE_OPTIONS: Array<{ value: Mode; label: string; hint: string }> = [
   { value: 'text_to_video', label: 'Text → Video', hint: 'Pure prompt, no references.' },
   { value: 'first_last_frames', label: 'First / Last Frame', hint: '1–2 images as start/end frames.' },
-  { value: 'omni_reference', label: 'Omni Reference', hint: 'Mix images + 1 video + audio (up to 12 total).' },
+  { value: 'omni_reference', label: 'Omni Reference', hint: 'Mix images + videos + audio (up to 12 total).' },
 ]
-
-const ASPECT_OPTIONS = ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'] as const
 
 interface JobSnap {
   job_id: string
@@ -47,6 +93,7 @@ interface JobSnap {
   video_url?: string | null
   error?: string
   usage?: { consume?: number } | null
+  remote_logs?: string[]
 }
 
 function toText(value: unknown): string {
@@ -145,10 +192,28 @@ function SeedanceBlock({
 
   const taskTypeInfo = TASK_TYPE_OPTIONS.find((o) => o.value === taskType) ?? TASK_TYPE_OPTIONS[0]
   const availableResolutions = taskTypeInfo.resolutions
+  const availableAspects = taskTypeInfo.aspects
+  const isVip = taskTypeInfo.family === 'vip'
+  // VIP family ignores `mode` — refs are implicit from which arrays you fill.
+  const effectiveMode: Mode = isVip
+    ? (allVideoUrls.length > 0 || allAudioUrls.length > 0 || allImageUrls.length > 0
+        ? 'omni_reference'
+        : 'text_to_video')
+    : mode
+  // VIP with video_urls: output length = input video length; duration is ignored.
+  const durationLockedByVideo = isVip && allVideoUrls.length > 0
 
   useEffect(() => {
     if (!availableResolutions.includes(resolution)) setResolution(availableResolutions[0])
   }, [taskType, availableResolutions, resolution, setResolution])
+
+  useEffect(() => {
+    if (!availableAspects.includes(aspect)) setAspect(availableAspects[0])
+  }, [taskType, availableAspects, aspect, setAspect])
+
+  useEffect(() => {
+    if (isVip && ![5, 10, 15].includes(duration)) setDuration(5)
+  }, [isVip, duration, setDuration])
 
   useEffect(() => {
     fetch(HEALTH_ENDPOINT)
@@ -219,25 +284,35 @@ function SeedanceBlock({
 
       const body: Record<string, unknown> = {
         task_type: taskType,
-        mode,
         prompt: finalPrompt,
         duration,
         resolution,
         aspect_ratio: aspect,
       }
-      if (mode === 'first_last_frames') {
-        if (imageUrls.length === 0) throw new Error('First/Last Frame mode needs 1–2 images.')
-        body.image_urls = imageUrls.slice(0, 2)
-      } else if (mode === 'omni_reference') {
-        if (imageUrls.length + videoUrls.length + audioUrls.length === 0) {
-          throw new Error('Omni Reference needs at least one image, video, or audio reference.')
-        }
+      if (isVip) {
+        // VIP: no `mode`. Refs are implicit. Audio-only is still illegal.
         if (audioUrls.length > 0 && imageUrls.length === 0 && videoUrls.length === 0) {
           throw new Error('Audio-only is not allowed — pair with at least one image or video.')
         }
         if (imageUrls.length > 0) body.image_urls = imageUrls.slice(0, 9)
         if (videoUrls.length > 0) body.video_urls = videoUrls.slice(0, 3)
         if (audioUrls.length > 0) body.audio_urls = audioUrls.slice(0, 3)
+      } else {
+        body.mode = mode
+        if (mode === 'first_last_frames') {
+          if (imageUrls.length === 0) throw new Error('First/Last Frame mode needs 1–2 images.')
+          body.image_urls = imageUrls.slice(0, 2)
+        } else if (mode === 'omni_reference') {
+          if (imageUrls.length + videoUrls.length + audioUrls.length === 0) {
+            throw new Error('Omni Reference needs at least one image, video, or audio reference.')
+          }
+          if (audioUrls.length > 0 && imageUrls.length === 0 && videoUrls.length === 0) {
+            throw new Error('Audio-only is not allowed — pair with at least one image or video.')
+          }
+          if (imageUrls.length > 0) body.image_urls = imageUrls.slice(0, 9)
+          if (videoUrls.length > 0) body.video_urls = videoUrls.slice(0, 3)
+          if (audioUrls.length > 0) body.audio_urls = audioUrls.slice(0, 3)
+        }
       }
 
       setStatusMessage('Submitting…')
@@ -284,39 +359,45 @@ function SeedanceBlock({
     else setLocalAudioUrls((p) => p.filter((u) => u !== url))
   }
 
-  const showImageRefs = mode === 'first_last_frames' || mode === 'omni_reference'
-  const showVideoRefs = mode === 'omni_reference'
-  const showAudioRefs = mode === 'omni_reference'
+  // Ref visibility: VIP always supports all three; seedance-2 depends on mode.
+  const showImageRefs = isVip || mode === 'first_last_frames' || mode === 'omni_reference'
+  const showVideoRefs = isVip || mode === 'omni_reference'
+  const showAudioRefs = isVip || mode === 'omni_reference'
 
   return (
     <div className="space-y-3">
-      {/* Mode */}
+      {/* Model */}
       <div className="space-y-1">
-        <Label className="text-[11px]">Mode</Label>
-        <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
+        <Label className="text-[11px]">Model</Label>
+        <Select value={taskType} onValueChange={(v) => setTaskType(v as TaskType)}>
           <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent>
-            {MODE_OPTIONS.map((m) => (
-              <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
+            {TASK_TYPE_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
             ))}
           </SelectContent>
         </Select>
-        <p className="text-[10px] text-muted-foreground">{MODE_OPTIONS.find((m) => m.value === mode)?.hint}</p>
+        <p className="text-[10px] text-muted-foreground">{taskTypeInfo.hint}</p>
       </div>
 
-      {/* Model + Resolution */}
-      <div className="grid grid-cols-2 gap-2">
+      {/* Mode — seedance-2 family only */}
+      {!isVip && (
         <div className="space-y-1">
-          <Label className="text-[11px]">Model</Label>
-          <Select value={taskType} onValueChange={(v) => setTaskType(v as TaskType)}>
+          <Label className="text-[11px]">Mode</Label>
+          <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
             <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {TASK_TYPE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              {MODE_OPTIONS.map((m) => (
+                <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>
+          <p className="text-[10px] text-muted-foreground">{MODE_OPTIONS.find((m) => m.value === mode)?.hint}</p>
         </div>
+      )}
+
+      {/* Resolution + Aspect */}
+      <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <Label className="text-[11px]">Resolution</Label>
           <Select value={resolution} onValueChange={setResolution}>
@@ -328,32 +409,52 @@ function SeedanceBlock({
             </SelectContent>
           </Select>
         </div>
-      </div>
-
-      {/* Aspect + Duration */}
-      <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
           <Label className="text-[11px]">Aspect ratio</Label>
           <Select value={aspect} onValueChange={setAspect}>
             <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {ASPECT_OPTIONS.map((a) => (
+              {availableAspects.map((a) => (
                 <SelectItem key={a} value={a}>{a}</SelectItem>
               ))}
-              {mode === 'first_last_frames' && <SelectItem value="auto">auto (detect)</SelectItem>}
+              {!isVip && mode === 'first_last_frames' && <SelectItem value="auto">auto (detect)</SelectItem>}
             </SelectContent>
           </Select>
-          {mode === 'first_last_frames' && (
+          {!isVip && mode === 'first_last_frames' && (
             <p className="text-[10px] text-muted-foreground italic">Ignored upstream in this mode.</p>
           )}
         </div>
-        <div className="space-y-1">
-          <div className="flex items-center justify-between">
-            <Label className="text-[11px]">Duration</Label>
-            <span className="text-[11px] font-mono">{duration}s</span>
-          </div>
-          <Slider min={4} max={15} step={1} value={[duration]} onValueChange={(v) => setDuration(v[0])} />
+      </div>
+
+      {/* Duration */}
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <Label className="text-[11px]">Duration</Label>
+          <span className="text-[11px] font-mono">
+            {durationLockedByVideo ? '= input video length' : `${duration}s`}
+          </span>
         </div>
+        {isVip ? (
+          <Select
+            value={String(duration)}
+            onValueChange={(v) => setDuration(Number(v))}
+            disabled={durationLockedByVideo}
+          >
+            <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {[5, 10, 15].map((d) => (
+                <SelectItem key={d} value={String(d)}>{d}s</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Slider min={4} max={15} step={1} value={[duration]} onValueChange={(v) => setDuration(v[0])} />
+        )}
+        {durationLockedByVideo && (
+          <p className="text-[10px] text-muted-foreground italic">
+            VIP with a video reference: the output length always matches the input video.
+          </p>
+        )}
       </div>
 
       {/* Prompt */}
@@ -380,7 +481,7 @@ function SeedanceBlock({
         {useUpstreamPrompt && upstreamPrompt && (
           <p className="text-[10px] text-muted-foreground italic line-clamp-2">Upstream: {upstreamPrompt}</p>
         )}
-        {mode === 'omni_reference' && (allImageUrls.length + allVideoUrls.length + allAudioUrls.length > 0) && (
+        {(isVip || mode === 'omni_reference') && (allImageUrls.length + allVideoUrls.length + allAudioUrls.length > 0) && (
           <TagBadges
             imageUrls={allImageUrls}
             videoUrls={allVideoUrls}
@@ -433,6 +534,24 @@ function SeedanceBlock({
       {/* Health */}
       {healthy === false && (
         <p className="text-[10px] text-red-400">Set PiAPI key in Settings → Credentials.</p>
+      )}
+
+      {/* PiAPI logs — surfaces content-restriction / retry / billing notes upstream emits */}
+      {progress?.remote_logs && progress.remote_logs.length > 0 && (
+        <div className="rounded border border-border/60 p-1.5 space-y-0.5 max-h-[140px] overflow-y-auto">
+          <p className="text-[10px] font-medium text-muted-foreground">Upstream logs</p>
+          {progress.remote_logs.map((line, i) => {
+            const danger = /content restriction|rejected|may contain a real person|violation/i.test(line)
+            return (
+              <p
+                key={i}
+                className={`text-[10px] font-mono leading-tight ${danger ? 'text-red-400' : 'text-muted-foreground'}`}
+              >
+                {line}
+              </p>
+            )
+          })}
+        </div>
       )}
 
       {/* Preview */}

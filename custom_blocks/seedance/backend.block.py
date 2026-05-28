@@ -166,14 +166,6 @@ def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str,
         if aspect_ratio not in allowed_aspects:
             raise ValueError(f"aspect_ratio for {task_type} must be one of {sorted(allowed_aspects)}")
 
-        duration_raw = body.get("duration", 5)
-        try:
-            duration = int(duration_raw)
-        except (TypeError, ValueError):
-            duration = 5
-        if duration not in VIP_ALLOWED_DURATIONS:
-            raise ValueError(f"duration for {task_type} must be one of {sorted(VIP_ALLOWED_DURATIONS)}")
-
         if images and len(images) > MAX_IMAGE_REFS:
             raise ValueError(f"VIP accepts at most {MAX_IMAGE_REFS} images (got {len(images)})")
         if videos and len(videos) > MAX_VIDEO_REFS:
@@ -185,13 +177,30 @@ def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str,
 
         payload: dict[str, Any] = {
             "prompt": prompt,
-            "duration": duration,
             "aspect_ratio": aspect_ratio,
             "resolution": resolution,
         }
         if images: payload["image_urls"] = images
         if videos: payload["video_urls"] = videos
         if audios: payload["audio_urls"] = audios
+
+        # `duration` is meaningful ONLY without a video reference. When
+        # `video_urls` is present, PiAPI sets output length = input video
+        # length — but only if `duration` is OMITTED. Sending duration=5
+        # caps the output to 5s (a 9s input then renders just 5s). The PiAPI
+        # VIP video-reference example sends no duration; the completed VIP
+        # response echoes duration:0. So drop it (and skip enum validation,
+        # which is irrelevant) whenever a video reference is supplied.
+        if not videos:
+            duration_raw = body.get("duration", 5)
+            try:
+                duration = int(duration_raw)
+            except (TypeError, ValueError):
+                duration = 5
+            if duration not in VIP_ALLOWED_DURATIONS:
+                raise ValueError(f"duration for {task_type} must be one of {sorted(VIP_ALLOWED_DURATIONS)}")
+            payload["duration"] = duration
+
         return payload
 
     # === seedance-2 family: mode-driven ===

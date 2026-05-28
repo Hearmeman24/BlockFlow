@@ -176,16 +176,36 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
       // Merge per-image: each image's job_ids[0] is the canonical source
       // of model_hashes; fall back to the first job in the run.
       const fallback = jobMetaByJob.values().next().value
+      // Merge any field the saved per-image meta doesn't already have.
+      // The saved record only contains what comfy_gen's frontend explicitly
+      // wrote into jobMeta (seed, software, inference_settings, width,
+      // height, sometimes prompt). Anything else — prompt, negative_prompt,
+      // model_hashes, lora_hashes, model_cls — lives only on the backend
+      // job snapshot and would otherwise be lost. _build_civitai_meta will
+      // synthesise a generic "AI generation with <models>" fallback prompt
+      // if the real one is missing; the user noticed that on a finished
+      // CivitAI post.
       const merged: PerImageMeta[] = artifact.metadata.map((m) => {
-        if (m.model_hashes || m.lora_hashes) return m
         const ids = (m.job_ids as string[] | undefined) || []
         const enrich = (ids[0] && jobMetaByJob.get(ids[0])) || fallback
         if (!enrich) return m
-        return {
-          ...m,
-          model_hashes: (enrich.model_hashes as PerImageMeta['model_hashes']) || m.model_hashes,
-          lora_hashes: (enrich.lora_hashes as PerImageMeta['lora_hashes']) || m.lora_hashes,
+        const out: PerImageMeta = { ...m }
+        for (const [key, value] of Object.entries(enrich)) {
+          if (value === undefined || value === null || value === '') continue
+          if (Array.isArray(value) && value.length === 0) continue
+          if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) continue
+          // Don't clobber what the user-emitted per-image meta already
+          // chose to record — that was intentional. Only fill blanks.
+          const existing = (out as Record<string, unknown>)[key]
+          const existingEmpty =
+            existing === undefined ||
+            existing === null ||
+            existing === '' ||
+            (Array.isArray(existing) && existing.length === 0) ||
+            (typeof existing === 'object' && existing !== null && !Array.isArray(existing) && Object.keys(existing as Record<string, unknown>).length === 0)
+          if (existingEmpty) (out as Record<string, unknown>)[key] = value
         }
+        return out
       })
       setEnrichedMetadata(merged)
     })()

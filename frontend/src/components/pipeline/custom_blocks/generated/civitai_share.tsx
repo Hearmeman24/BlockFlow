@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useSessionState } from '@/lib/use-session-state'
 import { ApprovalGate } from '@/components/civitai/approval-gate'
+import { BLOCKFLOW_DESCRIPTION } from '@/components/civitai/constants'
 import { pickFiles } from '@/lib/file-picker'
 import {
   PORT_IMAGE,
@@ -399,7 +400,7 @@ function CivitAIShareBlock({
         throw new Error(msg)
       }
 
-      const description = `Generated with comfy-gen (https://github.com/Hearmeman24/comfy-gen) and BlockFlow (https://github.com/Hearmeman24/BlockFlow) — open-source tools for running ComfyUI workflows on serverless GPUs.`
+      const description = BLOCKFLOW_DESCRIPTION
 
       setStatusMessage(`Sharing ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'}...`)
       setStatus(`Uploading ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'}...`)

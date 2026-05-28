@@ -3,6 +3,7 @@
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { ResourcesList } from './resources-list'
 
 /**
  * Resolved CivitAI resource — what /resolve-hashes returns for one hash, with
@@ -86,73 +87,7 @@ export function ApprovalGate({
         )}
       </div>
 
-      <div className="space-y-0.5">
-        <p className="text-[10px] font-medium text-muted-foreground">Detected resources</p>
-        {resolved.length === 0 ? (
-          <p className="text-[10px] text-muted-foreground italic">None detected</p>
-        ) : (
-          resolved.map((r, i) => {
-            const baseType = (r.type || '').toLowerCase()
-            const isLoraFamily =
-              baseType === 'lora' || baseType === 'locon' || baseType === 'lycoris'
-            const typeLabel = r.type
-              ? isLoraFamily && r.strength !== undefined
-                ? `${r.type} @ ${r.strength}`
-                : r.type
-              : r.strength !== undefined
-                ? `lora @ ${r.strength}`
-                : '—'
-            return (
-              <div
-                key={`${r.sha256}-${i}`}
-                className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5"
-              >
-                <span
-                  className={`text-[10px] flex-1 min-w-0 truncate ${
-                    r.resolved ? 'text-foreground' : 'text-yellow-500 italic'
-                  }`}
-                >
-                  {r.resolved ? (
-                    <>
-                      {r.name}
-                      {r.versionName && r.versionName !== r.name && (
-                        <span className="text-muted-foreground"> ({r.versionName})</span>
-                      )}
-                    </>
-                  ) : (
-                    `${r.filename} — Unknown, not on CivitAI`
-                  )}
-                </span>
-                <span className="text-[9px] text-muted-foreground ml-2 shrink-0">
-                  {typeLabel}
-                </span>
-              </div>
-            )
-          })
-        )}
-      </div>
-
-      {manualResources.length > 0 && (
-        <div className="space-y-0.5">
-          <p className="text-[10px] font-medium text-muted-foreground">Manual links</p>
-          {manualResources.map((r) => (
-            <div
-              key={r.modelVersionId}
-              className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5"
-            >
-              <span className="text-[10px] flex-1 min-w-0 truncate">
-                {r.name || `v${r.modelVersionId}`}
-                {r.versionName && r.versionName !== r.name && (
-                  <span className="text-muted-foreground"> ({r.versionName})</span>
-                )}
-              </span>
-              {r.type && (
-                <span className="text-[9px] text-muted-foreground ml-2 shrink-0">{r.type}</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      <ResourcesList resolved={resolved} manualResources={manualResources} />
 
       <div className="flex items-center gap-2 pt-1">
         <Switch checked={nsfw} onCheckedChange={onNsfwChange} />

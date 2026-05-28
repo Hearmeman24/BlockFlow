@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { ApprovalGate, type GateResolvedRow, type GateManualResource } from './approval-gate'
+import { ResourcesList } from './resources-list'
 import {
   BLOCKFLOW_DESCRIPTION,
   CIVITAI_TOKEN_KEY,
@@ -23,17 +24,48 @@ import {
   extractShareableArtifact,
   pickShareMeta,
   hasResolvableHashes,
+  type PerImageMeta,
   type ShareableArtifact,
 } from './extract-shareable'
 import type { RunEntry } from '@/lib/types'
 
 type ModalStep =
   | { kind: 'picker' }
-  | { kind: 'resolving' }
-  | { kind: 'gate'; resolved: GateResolvedRow[]; warning?: string }
+  | { kind: 'gate' }
   | { kind: 'submitting' }
   | { kind: 'done'; postUrl: string; imageCount: number }
   | { kind: 'error'; message: string }
+
+/** Aggregate all unique sha256 hashes across every image's metadata in the
+ *  artifact. In the typical case a batch shares the same model_hashes, but
+ *  this is robust against per-image variation (e.g. dataset_create with
+ *  per-prompt preset switches) and dedupes so /resolve-hashes only sees
+ *  each sha once. */
+function collectAllHashRequests(metadata: PerImageMeta[]) {
+  const seen = new Set<string>()
+  const out: Array<{ filename: string; sha256: string; strength?: number }> = []
+  for (const m of metadata) {
+    const modelHashes = (m.model_hashes || {}) as Record<
+      string,
+      { sha256?: string; strength?: number }
+    >
+    for (const [filename, info] of Object.entries(modelHashes)) {
+      const sha = info?.sha256
+      if (!sha || seen.has(sha)) continue
+      seen.add(sha)
+      out.push({ filename, sha256: sha, strength: info.strength })
+    }
+    const loraHashes = (m.lora_hashes || {}) as Record<string, string>
+    const loras = (m.loras || []) as Array<{ name: string; strength?: number }>
+    for (const [filename, sha] of Object.entries(loraHashes)) {
+      if (!sha || seen.has(sha)) continue
+      seen.add(sha)
+      const matched = loras.find((l) => l.name === filename)
+      out.push({ filename, sha256: sha, strength: matched?.strength ?? 1.0 })
+    }
+  }
+  return out
+}
 
 interface SubmitToCivitaiModalProps {
   run: RunEntry
@@ -70,6 +102,14 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
   const [resourceError, setResourceError] = useState('')
   const [resourceLoading, setResourceLoading] = useState(false)
 
+  // Resolved-hashes preview. Computed once when the modal opens (or on
+  // first artifact change) and reused across the picker preview AND the
+  // gate panel. The picker shows it categorised so the user can see what
+  // will be linked BEFORE clicking Continue.
+  const [resolvedRows, setResolvedRows] = useState<GateResolvedRow[]>([])
+  const [resolving, setResolving] = useState(false)
+  const [resolveError, setResolveError] = useState('')
+
   // Gate / submit state
   const [step, setStep] = useState<ModalStep>({ kind: 'picker' })
   const [nsfw, setNsfw] = useState(true)
@@ -91,6 +131,50 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
       setManualResources([])
       setResourceInput('')
       setResourceError('')
+      setResolvedRows([])
+      setResolveError('')
+    }
+  }, [open, artifact])
+
+  // Resolve every detected sha256 in the artifact's metadata once when the
+  // modal opens. This populates the categorised preview in the picker step
+  // (and the same list inside the gate later). Failure is non-fatal — the
+  // user can still submit; the gate will just show "No resources detected".
+  useEffect(() => {
+    if (!open || !artifact) return
+    const requests = collectAllHashRequests(artifact.metadata)
+    if (requests.length === 0) {
+      setResolvedRows([])
+      return
+    }
+    let cancelled = false
+    setResolving(true)
+    setResolveError('')
+    void (async () => {
+      try {
+        const res = await fetch(RESOLVE_HASHES_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            hashes: requests.map((r) => ({ filename: r.filename, sha256: r.sha256 })),
+          }),
+        })
+        const data = await res.json()
+        if (cancelled) return
+        if (data.ok) {
+          const rows = data.resolved as Array<Omit<GateResolvedRow, 'strength'>>
+          setResolvedRows(rows.map((row, i) => ({ ...row, strength: requests[i].strength })))
+        } else {
+          setResolveError(data.error || 'Failed to resolve resources')
+        }
+      } catch (e) {
+        if (!cancelled) setResolveError(e instanceof Error ? e.message : String(e))
+      } finally {
+        if (!cancelled) setResolving(false)
+      }
+    })()
+    return () => {
+      cancelled = true
     }
   }, [open, artifact])
 
@@ -146,66 +230,23 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
     [manualResources],
   )
 
-  const proceedToGate = useCallback(async () => {
+  const proceedToGate = useCallback(() => {
     if (!artifact || selected.size === 0 || !token) return
-
-    setStep({ kind: 'resolving' })
-
-    const selectedIndices = Array.from(selected).sort((a, b) => a - b)
-    const shareMeta = pickShareMeta(artifact.metadata, selectedIndices)
-    const warning = hasResolvableHashes(shareMeta)
-      ? undefined
-      : 'No model hashes — post will not link to any CivitAI model.'
-
-    // Build resolve-hashes request from the chosen metadata.
-    const modelHashes = (shareMeta.model_hashes || {}) as Record<
-      string,
-      { sha256?: string; strength?: number }
-    >
-    const loraHashes = (shareMeta.lora_hashes || {}) as Record<string, string>
-    const loras = (shareMeta.loras || []) as Array<{ name: string; strength?: number }>
-
-    const requests: Array<{ filename: string; sha256: string; strength?: number }> = []
-    for (const [filename, info] of Object.entries(modelHashes)) {
-      if (!info?.sha256) continue
-      requests.push({ filename, sha256: info.sha256, strength: info.strength })
-    }
-    if (requests.length === 0) {
-      for (const [filename, sha] of Object.entries(loraHashes)) {
-        const matched = loras.find((l) => l.name === filename)
-        requests.push({ filename, sha256: sha, strength: matched?.strength ?? 1.0 })
-      }
-    }
-
-    let resolved: GateResolvedRow[] = []
-    if (requests.length > 0) {
-      try {
-        const res = await fetch(RESOLVE_HASHES_ENDPOINT, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            hashes: requests.map((r) => ({ filename: r.filename, sha256: r.sha256 })),
-          }),
-        })
-        const data = await res.json()
-        if (data.ok) {
-          const rows = data.resolved as Array<Omit<GateResolvedRow, 'strength'>>
-          resolved = rows.map((row, i) => ({ ...row, strength: requests[i].strength }))
-        } else {
-          setStep({ kind: 'error', message: data.error || 'Failed to resolve hashes' })
-          return
-        }
-      } catch (e) {
-        setStep({ kind: 'error', message: e instanceof Error ? e.message : String(e) })
-        return
-      }
-    }
-
-    setStep({ kind: 'gate', resolved, warning })
+    setStep({ kind: 'gate' })
   }, [artifact, selected, token])
 
+  // Computed lazily — used by the gate to set the warning banner.
+  const gateWarning = (() => {
+    if (!artifact || selected.size === 0) return undefined
+    const selectedIndices = Array.from(selected).sort((a, b) => a - b)
+    const shareMeta = pickShareMeta(artifact.metadata, selectedIndices)
+    return hasResolvableHashes(shareMeta)
+      ? undefined
+      : 'No model hashes — post will not link to any CivitAI model.'
+  })()
+
   const submitToCivitai = useCallback(
-    async (gateState: { resolved: GateResolvedRow[] }) => {
+    async () => {
       if (!artifact) return
       setStep({ kind: 'submitting' })
 
@@ -241,9 +282,6 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
         } else {
           setStep({ kind: 'error', message: data.error || 'Share failed' })
         }
-        // Reference resolved to avoid React lint flagging the unused param;
-        // resolved is currently only used by the gate component above.
-        void gateState
       } catch (e) {
         setStep({ kind: 'error', message: e instanceof Error ? e.message : String(e) })
       }
@@ -440,6 +478,20 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
               )}
             </div>
 
+            {/* Pre-resolved resource preview — same categorised view the
+                gate uses, surfaced earlier so the user knows what's about
+                to be linked before clicking Continue. */}
+            <div className="space-y-1 rounded-md border border-border/60 p-2 bg-muted/10">
+              <p className="text-[11px] font-medium">Resources that will be linked</p>
+              {resolving ? (
+                <p className="text-[10px] text-muted-foreground">Resolving from CivitAI…</p>
+              ) : resolveError ? (
+                <p className="text-[10px] text-yellow-500">⚠ {resolveError}</p>
+              ) : (
+                <ResourcesList resolved={resolvedRows} manualResources={manualResources} />
+              )}
+            </div>
+
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
@@ -451,13 +503,9 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
           </div>
         )}
 
-        {step.kind === 'resolving' && (
-          <p className="text-xs text-muted-foreground">Resolving CivitAI resources…</p>
-        )}
-
         {step.kind === 'gate' && (
           <ApprovalGate
-            resolved={step.resolved}
+            resolved={resolvedRows}
             manualResources={manualResources}
             mediaCount={selected.size}
             promptPreview={
@@ -469,9 +517,9 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
               .filter(Boolean)}
             nsfw={nsfw}
             onNsfwChange={setNsfw}
-            onApprove={() => submitToCivitai({ resolved: step.resolved })}
+            onApprove={() => submitToCivitai()}
             onCancel={() => setStep({ kind: 'picker' })}
-            warning={step.warning}
+            warning={gateWarning}
           />
         )}
 

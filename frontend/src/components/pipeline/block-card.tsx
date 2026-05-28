@@ -338,6 +338,9 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
               setExecutionStatus={handleSetExecutionStatus}
               setOutputHint={handleSetOutputHint}
               setHeaderActions={setHeaderActions}
+              hasUpstreamProducer={(portKind) =>
+                getUpstreamProducers(block.id, portKind).length > 0
+              }
             />
           </CardContent>
         </>

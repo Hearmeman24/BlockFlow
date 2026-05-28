@@ -79,20 +79,39 @@ function VideoLoaderBlock({
     setOutput('video', [ref])
   }, [localUrl, remoteUrl, setOutput])
 
-  // Pipeline execute: ensure both uploads are done (or attempted) before
-  // downstream consumers run.
+  // Pipeline execute: ensure both uploads are done (or attempted), then
+  // RE-EMIT the VideoRef. The run reset clears every block's outputs to {}
+  // before execute, and the edit-time useEffect above does NOT re-fire
+  // (localUrl/remoteUrl are unchanged), so without this the upstream video
+  // is lost mid-run and downstream consumers resolve inputs.video to
+  // undefined. Mirrors upload_image_to_tmpfiles. Use the values returned by
+  // ensure* — the useSessionState writes are async and haven't landed by the
+  // time the runner resolves the next block's inputs.
   useEffect(() => {
     registerExecute(async () => {
       if (!selectedFile && !localUrl && !remoteUrl) {
         throw new Error('Select a video file before running this block')
       }
-      // If we have a file but uploads haven't finished, kick them off / wait.
+      let local = localUrl
+      let remote = remoteUrl
       if (selectedFile) {
-        await Promise.all([
+        // Remote (tmpfiles) failure is non-fatal — local-only consumers can
+        // still proceed — so don't let it abort the local emit.
+        const [l, r] = await Promise.allSettled([
           ensureLocal(selectedFile),
           ensureRemote(selectedFile),
         ])
+        if (l.status === 'fulfilled') local = l.value
+        if (r.status === 'fulfilled') remote = r.value
+        if (l.status === 'rejected' && !local) {
+          throw l.reason instanceof Error ? l.reason : new Error(String(l.reason))
+        }
       }
+      if (!local && !remote) {
+        throw new Error('Video upload failed — no local or remote URL available')
+      }
+      const ref: VideoRef = { kind: 'video-ref', local, url: remote || undefined }
+      setOutput('video', [ref])
       setStatusMessage('Video ready')
     })
   })

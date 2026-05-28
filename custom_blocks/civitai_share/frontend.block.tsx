@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useSessionState } from '@/lib/use-session-state'
 import { ApprovalGate } from '@/components/civitai/approval-gate'
-import { BLOCKFLOW_DESCRIPTION } from '@/components/civitai/constants'
+import { BLOCKFLOW_DESCRIPTION, directBackendUrl } from '@/components/civitai/constants'
 import { pickFiles } from '@/lib/file-picker'
 import {
   PORT_IMAGE,
@@ -404,7 +404,9 @@ function CivitAIShareBlock({
       setStatus(`Uploading ${freshMedia.length} file${freshMedia.length === 1 ? '' : 's'}...`)
 
       try {
-        const res = await fetch(SHARE_ENDPOINT, {
+        // Bypass Next.js dev proxy for the long-running upload — see
+        // directBackendUrl docstring in @/components/civitai/constants.
+        const res = await fetch(directBackendUrl(SHARE_ENDPOINT), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

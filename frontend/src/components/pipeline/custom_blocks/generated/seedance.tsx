@@ -101,6 +101,40 @@ function SeedanceBlock({
   const [healthy, setHealthy] = useState<boolean | null>(null)
   const [progress, setProgress] = useState<JobSnap | null>(null)
   const cancelRef = useRef<() => void>(() => {})
+  const promptRef = useRef<HTMLTextAreaElement | null>(null)
+
+  const insertTag = useCallback((tag: string) => {
+    const el = promptRef.current
+    setPrompt((current) => {
+      // No focus / ref not mounted → append at end with leading space.
+      if (!el || document.activeElement !== el) {
+        const sep = current.length === 0 || /\s$/.test(current) ? '' : ' '
+        const next = `${current}${sep}${tag} `
+        // Restore caret to end on next paint so subsequent inserts append correctly.
+        if (el) {
+          requestAnimationFrame(() => {
+            el.focus()
+            el.setSelectionRange(next.length, next.length)
+          })
+        }
+        return next
+      }
+      const start = el.selectionStart ?? current.length
+      const end = el.selectionEnd ?? current.length
+      const before = current.slice(0, start)
+      const after = current.slice(end)
+      const needsLeadingSpace = before.length > 0 && !/\s$/.test(before)
+      const needsTrailingSpace = after.length === 0 || !/^\s/.test(after)
+      const insertion = `${needsLeadingSpace ? ' ' : ''}${tag}${needsTrailingSpace ? ' ' : ''}`
+      const next = `${before}${insertion}${after}`
+      const caret = before.length + insertion.length
+      requestAnimationFrame(() => {
+        el.focus()
+        el.setSelectionRange(caret, caret)
+      })
+      return next
+    })
+  }, [setPrompt])
 
   const upstreamImageUrls = Array.from(new Set(toPublicUrls(inputs.image)))
   const upstreamVideoUrls = asUrlList(inputs.video).map(toLocalOrigin)
@@ -337,15 +371,25 @@ function SeedanceBlock({
           </button>
         </div>
         <textarea
+          ref={promptRef}
           aria-label="Prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder={mode === 'omni_reference' ? 'Use @image1, @video1, @audio1 to reference inputs by position…' : 'A cinematic shot of…'}
+          placeholder={mode === 'omni_reference' ? 'Tag refs with @Image1 / @Video1 / @Audio1 and say what each contributes…' : 'A cinematic shot of…'}
           className="w-full min-h-[70px] text-[11px] rounded border border-border/60 bg-background p-2"
           disabled={useUpstreamPrompt && !!upstreamPrompt}
         />
         {useUpstreamPrompt && upstreamPrompt && (
           <p className="text-[10px] text-muted-foreground italic line-clamp-2">Upstream: {upstreamPrompt}</p>
+        )}
+        {mode === 'omni_reference' && (allImageUrls.length + allVideoUrls.length + allAudioUrls.length > 0) && (
+          <TagBadges
+            imageUrls={allImageUrls}
+            videoUrls={allVideoUrls}
+            audioUrls={allAudioUrls}
+            disabled={useUpstreamPrompt && !!upstreamPrompt}
+            onInsert={insertTag}
+          />
         )}
       </div>
 
@@ -480,6 +524,59 @@ function RefThumb({ url, kind, tag, index, onRemove }: { url: string; kind: 'ima
           aria-label="remove"
         >×</button>
       )}
+    </div>
+  )
+}
+
+interface TagBadgesProps {
+  imageUrls: string[]
+  videoUrls: string[]
+  audioUrls: string[]
+  disabled: boolean
+  onInsert: (tag: string) => void
+}
+
+function TagBadges({ imageUrls, videoUrls, audioUrls, disabled, onInsert }: TagBadgesProps) {
+  // Numbering follows attachment order across the merged upstream+local arrays
+  // — same order PiAPI sees, which is what the model resolves @ImageN against.
+  const groups: Array<{ prefix: 'Image' | 'Video' | 'Audio'; urls: string[]; kind: 'image' | 'video' | 'audio' }> = [
+    { prefix: 'Image', urls: imageUrls, kind: 'image' },
+    { prefix: 'Video', urls: videoUrls, kind: 'video' },
+    { prefix: 'Audio', urls: audioUrls, kind: 'audio' },
+  ]
+  return (
+    <div className="space-y-1 rounded border border-border/60 p-1.5">
+      <p className="text-[10px] text-muted-foreground">
+        Click a badge to insert the tag at the cursor. Tags bind a role-clause to a specific asset.
+      </p>
+      <div className="flex flex-wrap gap-1">
+        {groups.flatMap((g) =>
+          g.urls.map((url, i) => {
+            const tag = `@${g.prefix}${i + 1}`
+            return (
+              <button
+                key={`${g.prefix}-${i}`}
+                type="button"
+                disabled={disabled}
+                onClick={() => onInsert(tag)}
+                title={url}
+                className="group flex items-center gap-1 rounded border border-border/60 bg-muted/20 px-1.5 py-0.5 text-[10px] font-mono hover:border-primary hover:bg-primary/10 disabled:opacity-50 transition-colors"
+              >
+                {g.kind === 'image' && (
+                  <img src={url} alt={tag} className="h-4 w-4 rounded-sm object-cover" />
+                )}
+                {g.kind === 'video' && (
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-sm bg-violet-500/30 text-[8px]">▶</span>
+                )}
+                {g.kind === 'audio' && (
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-sm bg-amber-500/30 text-[8px]">♪</span>
+                )}
+                <span>{tag}</span>
+              </button>
+            )
+          }),
+        )}
+      </div>
     </div>
   )
 }

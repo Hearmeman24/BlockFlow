@@ -349,14 +349,28 @@ function CivitAIShareBlock({
 
   useEffect(() => {
     registerExecute(async (freshInputs) => {
+      // Diagnostic logs for sgs-ui-9jk follow-up — investigating why a real
+      // upstream image isn't reaching collectMedia. Will be removed after
+      // root cause is identified.
+      console.log('[civitai_share] executeFn inputs:', {
+        image: freshInputs.image,
+        imageType: typeof freshInputs.image,
+        imageIsArray: Array.isArray(freshInputs.image),
+        video: freshInputs.video,
+        videoType: typeof freshInputs.video,
+        metadataKeys: freshInputs.metadata && typeof freshInputs.metadata === 'object'
+          ? Object.keys(freshInputs.metadata as Record<string, unknown>)
+          : null,
+      })
       const freshMedia = collectMedia(freshInputs)
+      console.log('[civitai_share] collectMedia result:', freshMedia, 'length:', freshMedia.length)
       if (freshMedia.length === 0) {
         // Diagnose: distinguish wired-but-empty from no-upstream-at-all so
         // the user knows whether the upstream block failed to emit or
         // whether no producer is connected.
         const wired = freshInputs.image !== undefined || freshInputs.video !== undefined
         throw new Error(wired
-          ? 'Upstream produced no usable media URLs — check that the upstream block actually emits to its image/video output port'
+          ? `Upstream produced no usable media URLs — got image=${JSON.stringify(freshInputs.image)?.slice(0,200)}, video=${JSON.stringify(freshInputs.video)?.slice(0,200)}`
           : 'No media input — load files manually or connect a producer upstream')
       }
       if (!token) throw new Error('CivitAI API key not set')

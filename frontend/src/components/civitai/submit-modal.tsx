@@ -375,7 +375,7 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle>Submit to CivitAI</DialogTitle>
           <DialogDescription>
@@ -426,37 +426,76 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
                 </div>
               </div>
               <div className="grid grid-cols-4 gap-1.5">
-                {artifact.urls.map((url, i) => (
-                  <button
-                    key={url}
-                    type="button"
-                    onClick={() => toggleIndex(i)}
-                    className={`relative aspect-square rounded overflow-hidden border-2 transition-colors ${
-                      selected.has(i)
-                        ? 'border-emerald-500'
-                        : 'border-border/40 opacity-60 hover:opacity-100'
-                    }`}
-                  >
-                    {artifact.kind === 'video' ? (
-                      // No autoplay; just show the URL as a thumbnail
-                      // placeholder. Real video preview not worth the perf
-                      // cost in a picker grid.
-                      <div className="flex h-full w-full items-center justify-center bg-muted text-[9px] text-muted-foreground">
-                        video
-                      </div>
-                    ) : (
-                      // eslint-disable-next-line @next/next/no-img-element -- /outputs/ paths aren't statically optimisable
-                      <img src={url} alt="" className="h-full w-full object-cover" />
-                    )}
-                    {selected.has(i) && (
-                      <div className="absolute top-1 right-1 size-4 rounded-full bg-emerald-500 flex items-center justify-center">
-                        <svg viewBox="0 0 12 12" className="size-2.5 text-white" fill="none" stroke="currentColor" strokeWidth="2">
-                          <path d="M2 6l3 3 5-6" />
-                        </svg>
-                      </div>
-                    )}
-                  </button>
-                ))}
+                {artifact.urls.map((url, i) => {
+                  const isSelected = selected.has(i)
+                  // For video, render the real element with native controls
+                  // so the user can play it inline. Selection toggle moves
+                  // to an explicit checkbox button so click-to-play and
+                  // click-to-select don't conflict. For images, the whole
+                  // cell remains a single click target (toggle on click).
+                  return (
+                    <div
+                      key={url}
+                      className={`relative aspect-square rounded overflow-hidden border-2 transition-colors ${
+                        isSelected ? 'border-emerald-500' : 'border-border/40 opacity-60'
+                      }`}
+                    >
+                      {artifact.kind === 'video' ? (
+                        // #t=0.1 forces the video to seek to a real frame
+                        // for the thumbnail; preload=metadata avoids
+                        // downloading the whole file just for the picker.
+                        <video
+                          src={`${url}#t=0.1`}
+                          controls
+                          muted
+                          preload="metadata"
+                          aria-label="Generated video preview"
+                          className="h-full w-full object-cover bg-neutral-950"
+                        >
+                          <track kind="captions" />
+                        </video>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => toggleIndex(i)}
+                          className="absolute inset-0 cursor-pointer"
+                          aria-label={isSelected ? 'Deselect image' : 'Select image'}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element -- /outputs/ paths aren't statically optimisable */}
+                          <img src={url} alt="" className="h-full w-full object-cover" />
+                        </button>
+                      )}
+                      {/* Explicit selection checkbox overlay — clickable
+                          for both kinds; for video it's the only way to
+                          toggle (rest of the cell is the player). */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          toggleIndex(i)
+                        }}
+                        className={`absolute top-1 right-1 size-5 rounded-full flex items-center justify-center transition-colors ${
+                          isSelected
+                            ? 'bg-emerald-500'
+                            : 'bg-black/60 border border-white/30 hover:bg-black/80'
+                        }`}
+                        aria-label={isSelected ? 'Deselect' : 'Select'}
+                      >
+                        {isSelected && (
+                          <svg
+                            viewBox="0 0 12 12"
+                            className="size-3 text-white"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                          >
+                            <path d="M2 6l3 3 5-6" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  )
+                })}
               </div>
             </div>
 
@@ -518,7 +557,7 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
                       key={r.modelVersionId}
                       className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5"
                     >
-                      <span className="text-[10px] flex-1 min-w-0 truncate">
+                      <span className="text-[10px] flex-1 min-w-0 break-all">
                         {r.name || `v${r.modelVersionId}`}
                         {r.versionName && r.versionName !== r.name && (
                           <span className="text-muted-foreground"> ({r.versionName})</span>

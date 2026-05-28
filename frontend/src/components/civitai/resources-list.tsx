@@ -62,7 +62,7 @@ function ResourceRow({ row }: { row: GateResolvedRow }) {
   return (
     <div className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
       <span
-        className={`text-[10px] flex-1 min-w-0 truncate ${
+        className={`text-[10px] flex-1 min-w-0 break-all ${
           row.resolved ? 'text-foreground' : 'text-yellow-500 italic'
         }`}
       >
@@ -87,7 +87,7 @@ function ResourceRow({ row }: { row: GateResolvedRow }) {
 function ManualRow({ row }: { row: GateManualResource }) {
   return (
     <div className="flex items-center justify-between rounded border border-border/40 px-1.5 py-0.5">
-      <span className="text-[10px] flex-1 min-w-0 truncate">
+      <span className="text-[10px] flex-1 min-w-0 break-all">
         {row.name || `v${row.modelVersionId}`}
         {row.versionName && row.versionName !== row.name && (
           <span className="text-muted-foreground"> ({row.versionName})</span>

@@ -270,7 +270,32 @@ function VideoLoaderBlock({
         </div>
       )}
 
-      {uploadError && <p className="text-[10px] text-yellow-500">{uploadError}</p>}
+      {uploadError && (
+        <div className="space-y-1">
+          <p className="text-[10px] text-yellow-500">{uploadError}</p>
+          {selectedFile && !remoteUrl && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-[11px]"
+              disabled={uploadingRemote}
+              onClick={() => {
+                setUploadError('')
+                void ensureRemote(selectedFile).catch(() => {})
+              }}
+            >
+              {uploadingRemote ? 'retrying…' : 'Retry tmpfiles upload'}
+            </Button>
+          )}
+          {!remoteUrl && (
+            <p className="text-[10px] text-muted-foreground">
+              Without the tmpfiles URL, downstream blocks that fetch from a remote server (PiAPI, OpenRouter)
+              can't reach this video — they need an externally-fetchable URL.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

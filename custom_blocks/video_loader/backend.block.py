@@ -65,6 +65,9 @@ async def upload(request: Request) -> JSONResponse:
             headers={
                 "Content-Type": f"multipart/form-data; boundary={boundary}",
                 "Content-Length": str(len(multipart_body)),
+                # Cloudflare in front of tmpfiles 403s python-urllib's
+                # default User-Agent. Mirrors upload_image_to_tmpfiles.
+                "User-Agent": "Mozilla/5.0 (compatible; SGS-UI/1.0)",
             },
         )
         with urllib.request.urlopen(req, timeout=120) as resp:

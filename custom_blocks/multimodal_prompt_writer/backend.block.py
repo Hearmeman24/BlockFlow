@@ -13,7 +13,6 @@ Mirrors the i2v_prompt_writer block, but:
 """
 from __future__ import annotations
 
-import base64
 import json
 import logging
 from pathlib import Path
@@ -22,11 +21,13 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, services, state, tmpfiles
+from backend import config, image_payload, services, state, tmpfiles
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+OPENROUTER_IMAGE_PAYLOAD_LIMIT_BYTES = 20 * 1024 * 1024
 
 _N_PROMPTS_DIRECTIVE = (
     "\n\n"
@@ -139,9 +140,12 @@ def get_models(
     """
     models, error, from_cache = services._get_openrouter_models(refresh=bool(refresh))
     needs: set[str] = set()
-    if require_image: needs.add("image")
-    if require_video: needs.add("video")
-    if require_audio: needs.add("audio")
+    if require_image:
+        needs.add("image")
+    if require_video:
+        needs.add("video")
+    if require_audio:
+        needs.add("audio")
 
     filtered: list[dict[str, Any]] = []
     for m in models:
@@ -166,22 +170,60 @@ def get_models(
     return JSONResponse(resp)
 
 
+def _local_image_path(raw: str) -> Path | None:
+    if not raw:
+        return None
+    if not tmpfiles.is_local_path(raw):
+        return None
+    if raw.startswith("/outputs/"):
+        return config.LOCAL_OUTPUT_DIR / raw.split("/outputs/", 1)[1]
+    return Path(raw)
+
+
 def _resolve_image_url(raw: str) -> str | None:
-    """Convert a local /outputs path into a data URI so the LLM can read it.
-    Remote URLs pass through unchanged."""
+    """Convert one local image path into a data URI; remote URLs pass through."""
     if not raw:
         return None
     if not tmpfiles.is_local_path(raw):
         return raw
-    if raw.startswith("/outputs/"):
-        local_path = config.LOCAL_OUTPUT_DIR / raw.split("/outputs/", 1)[1]
-    else:
-        local_path = Path(raw)
-    if not local_path.exists():
-        return None
-    mime = tmpfiles.MIME_TYPES.get(local_path.suffix.lower(), "image/png")
-    b64 = base64.b64encode(local_path.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{b64}"
+    resolved = _resolve_image_urls_for_payload([raw])
+    return resolved[0] if resolved else None
+
+
+def _resolve_image_urls_for_payload(image_urls: list[str]) -> list[str]:
+    """Resolve image refs for OpenRouter while keeping local data URIs under budget."""
+    resolved: list[str | None] = [None] * len(image_urls)
+    local_sources: list[tuple[int, image_payload.ImagePayloadSource]] = []
+
+    for idx, raw in enumerate(image_urls):
+        if not raw:
+            continue
+        if not tmpfiles.is_local_path(raw):
+            resolved[idx] = raw
+            continue
+
+        local_path = _local_image_path(raw)
+        if local_path is None or not local_path.exists():
+            raise ValueError(f"image not found: {raw}")
+        content_type = image_payload.mime_for_name(local_path.name, "image/png")
+        local_sources.append((
+            idx,
+            image_payload.ImagePayloadSource(
+                name=local_path.name,
+                data=local_path.read_bytes(),
+                content_type=content_type,
+            ),
+        ))
+
+    if local_sources:
+        prepared = image_payload.prepare_data_uris_for_payload(
+            [src for _, src in local_sources],
+            max_payload_bytes=OPENROUTER_IMAGE_PAYLOAD_LIMIT_BYTES,
+        )
+        for (idx, _), item in zip(local_sources, prepared, strict=True):
+            resolved[idx] = item.data_uri
+
+    return [url for url in resolved if url]
 
 
 @router.post("/generate")
@@ -210,13 +252,11 @@ async def generate(request: Request) -> JSONResponse:
     if not (image_urls or video_url or audio_url or user_prompt or upstream_text):
         return JSONResponse({"ok": False, "error": "at least one reference (image/video/audio) or text input is required"}, status_code=400)
 
-    # Resolve any local /outputs image paths into data URIs.
-    resolved_images: list[str] = []
-    for u in image_urls:
-        r = _resolve_image_url(u)
-        if r is None:
-            return JSONResponse({"ok": False, "error": f"image not found: {u}"}, status_code=400)
-        resolved_images.append(r)
+    # Resolve any local /outputs image paths into budgeted data URIs.
+    try:
+        resolved_images = _resolve_image_urls_for_payload(image_urls)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     effective_system_prompt = system_prompt
     if num_prompts > 1:

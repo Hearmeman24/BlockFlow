@@ -2,11 +2,10 @@
 
 import {
   DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { getNodeType, type NodeTypeDef } from '@/lib/pipeline/registry'
+import type { NodeTypeDef } from '@/lib/pipeline/registry'
+import { BlockPickerMenuContent } from './block-picker-menu'
 
 export function BlockConnector({ end }: { end?: boolean } = {}) {
   return (
@@ -42,20 +41,6 @@ export function InsertBlockConnector({
     return <BlockConnector />
   }
 
-  const ordered = [...validTypes]
-    .map((def) => {
-      let suggested = false
-      if (upstreamType) {
-        if (def.suggestedUpstream?.includes(upstreamType)) suggested = true
-        else {
-          const u = getNodeType(upstreamType)
-          if (u?.suggestedDownstream?.includes(def.type)) suggested = true
-        }
-      }
-      return { def, suggested }
-    })
-    .sort((a, b) => (a.suggested === b.suggested ? 0 : a.suggested ? -1 : 1))
-
   return (
     <div className="flex items-center shrink-0 group/insert relative">
       <div className="w-10 h-[2px] bg-muted-foreground/25" />
@@ -72,23 +57,7 @@ export function InsertBlockConnector({
               </svg>
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            {ordered.map(({ def, suggested }) => (
-              <DropdownMenuItem key={def.type} onClick={() => onInsert(def.type)}>
-                <div className="flex flex-col">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-medium">{def.label}</span>
-                    {suggested && (
-                      <span className="rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] px-1 py-0 leading-tight font-medium uppercase tracking-wider">
-                        Suggested
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-xs text-muted-foreground">{def.description}</span>
-                </div>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
+          <BlockPickerMenuContent validTypes={validTypes} upstreamType={upstreamType} onSelect={onInsert} />
         </DropdownMenu>
       </div>
     </div>

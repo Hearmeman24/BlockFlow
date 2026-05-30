@@ -127,13 +127,16 @@ def main() -> None:
             print("[app] WARNING: Frontend did not respond in time")
 
         url = f"http://localhost:{FRONTEND_PORT}"
-        print(f"[app] Opening {url}")
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", url])
-        elif sys.platform == "win32":
-            os.startfile(url)
-        elif sys.platform == "linux":
-            subprocess.Popen(["xdg-open", url])
+        if os.environ.get("BLOCKFLOW_NO_OPEN") == "1":
+            print(f"[app] Ready at {url}")
+        else:
+            print(f"[app] Opening {url}")
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", url])
+            elif sys.platform == "win32":
+                os.startfile(url)
+            elif sys.platform == "linux":
+                subprocess.Popen(["xdg-open", url])
 
         print("[app] Running. Press Ctrl+C to stop.")
         # Wait for either process to exit

@@ -85,3 +85,10 @@ def test_backend_command_uses_uvicorn_module():
     command = app._backend_command(8123)
 
     assert command[-5:] == ["backend.main:app", "--host", "127.0.0.1", "--port", "8123"]
+
+
+def test_no_open_env_is_documented_for_smoke_tests():
+    source = APP_PATH.read_text(encoding="utf-8")
+
+    assert "BLOCKFLOW_NO_OPEN" in source
+    assert "Ready at" in source

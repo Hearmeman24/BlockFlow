@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react'
 
-export type SettingsTabId = 'credentials' | 'endpoints' | 'storage' | 'app'
+export type SettingsTabId = 'credentials' | 'endpoints' | 'storage' | 'app' | 'keyboard'
 
 type TabSpec = {
   id: SettingsTabId
@@ -15,6 +15,7 @@ export const SETTINGS_TABS: readonly TabSpec[] = [
   { id: 'endpoints', label: 'Endpoints', description: 'ComfyGen & LoRA trainer' },
   { id: 'storage', label: 'Storage', description: 'Volume usage & installed presets' },
   { id: 'app', label: 'App', description: 'Output dir, history retention' },
+  { id: 'keyboard', label: 'Keyboard', description: 'Shortcut bindings' },
 ] as const
 
 interface Props {

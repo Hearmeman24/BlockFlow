@@ -85,11 +85,17 @@ describe('SettingsLayout', () => {
     expect(onTabChange).not.toHaveBeenCalled()
   })
 
-  test('SETTINGS_TABS export lists exactly the four tabs in order', () => {
+  test('SETTINGS_TABS export lists the tabs in the expected order', () => {
     // The page above this component reads SETTINGS_TABS for URL-state plumbing,
     // so its shape + order is part of the contract.
     const ids = SETTINGS_TABS.map((t) => t.id)
-    expect(ids).toEqual(['credentials', 'endpoints', 'storage', 'app'] satisfies SettingsTabId[])
+    expect(ids).toEqual([
+      'credentials',
+      'endpoints',
+      'storage',
+      'app',
+      'keyboard',
+    ] satisfies SettingsTabId[])
   })
 
   test('renders the page heading "Settings"', () => {

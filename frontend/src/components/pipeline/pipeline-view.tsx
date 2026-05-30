@@ -6,6 +6,8 @@ import { PipelineStartDot } from './block-connector'
 import { AddBlockButton } from './add-block-button'
 import { ChainRenderer } from './chain-renderer'
 import { PannableCanvas } from './pannable-canvas'
+import { BlockPicker } from './block-picker'
+import { useCanvasShortcuts } from '@/hooks/use-canvas-shortcuts'
 
 function EmptyPipelineState({ onAdd }: { onAdd: (type: string) => void }) {
   const starters = getStarterTypes()
@@ -32,27 +34,46 @@ function EmptyPipelineState({ onAdd }: { onAdd: (type: string) => void }) {
 
 export function PipelineView() {
   const { pipeline, addBlock } = usePipeline()
+  const { pickerState, closePicker } = useCanvasShortcuts()
   const blocks = pipeline.blocks
+
+  const picker = (
+    <BlockPicker
+      open={pickerState.open}
+      onOpenChange={(open) => {
+        if (!open) closePicker()
+      }}
+      validTypes={pickerState.validTypes}
+      upstreamType={pickerState.upstreamType}
+      onSelect={pickerState.onSelect}
+    />
+  )
 
   if (blocks.length === 0) {
     return (
-      <PannableCanvas>
-        <EmptyPipelineState onAdd={(type) => addBlock(type)} />
-      </PannableCanvas>
+      <>
+        <PannableCanvas>
+          <EmptyPipelineState onAdd={(type) => addBlock(type)} />
+        </PannableCanvas>
+        {picker}
+      </>
     )
   }
 
   return (
-    <PannableCanvas>
-      <div className="flex items-center gap-0 p-8 min-w-max">
-        <PipelineStartDot />
-        <ChainRenderer
-          chain={blocks}
-          numberingPrefix=""
-          ancestors={[]}
-          isTrunk
-        />
-      </div>
-    </PannableCanvas>
+    <>
+      <PannableCanvas>
+        <div className="flex items-center gap-0 p-8 min-w-max">
+          <PipelineStartDot />
+          <ChainRenderer
+            chain={blocks}
+            numberingPrefix=""
+            ancestors={[]}
+            isTrunk
+          />
+        </div>
+      </PannableCanvas>
+      {picker}
+    </>
   )
 }

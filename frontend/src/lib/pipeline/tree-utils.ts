@@ -116,3 +116,76 @@ export function buildGlobalIndex(blocks: PipelineBlock[]): Map<string, number> {
   }
   return map
 }
+
+// ---- Keyboard navigation helpers ----
+//
+// "Above" / "Below" reason about fork lanes. At a fork, lanes are ordered
+// top→bottom: branches[0] (up), trunk-after-fork (center), branches[1] (down).
+// Outside any fork, above/below are null.
+
+type Lane = 'trunk' | 0 | 1
+
+interface LaneCtx {
+  fork: PipelineBlock
+  lane: Lane
+}
+
+function findLaneCtx(blocks: PipelineBlock[], id: string): LaneCtx | null {
+  function visit(chain: PipelineBlock[], parent: LaneCtx | null): LaneCtx | null {
+    for (let i = 0; i < chain.length; i++) {
+      const b = chain[i]
+      if (b.id === id) return parent
+      if (b.branches) {
+        const trunkRest = chain.slice(i + 1)
+        const trunkRes = visit(trunkRest, { fork: b, lane: 'trunk' })
+        if (trunkRes) return trunkRes
+        for (let bi = 0; bi < b.branches.length; bi++) {
+          const branchRes = visit(b.branches[bi], { fork: b, lane: bi as 0 | 1 })
+          if (branchRes) return branchRes
+        }
+        return null
+      }
+    }
+    return null
+  }
+  return visit(blocks, null)
+}
+
+function laneHeadId(
+  blocks: PipelineBlock[],
+  fork: PipelineBlock,
+  lane: Lane,
+): string | null {
+  if (lane === 'trunk') {
+    const loc = findBlockInTree(blocks, fork.id)
+    if (!loc) return null
+    return loc.chain[loc.index + 1]?.id ?? null
+  }
+  return fork.branches?.[lane]?.[0]?.id ?? null
+}
+
+export function getNextBlock(blocks: PipelineBlock[], id: string): string | null {
+  const loc = findBlockInTree(blocks, id)
+  return loc?.chain[loc.index + 1]?.id ?? null
+}
+
+export function getPrevBlock(blocks: PipelineBlock[], id: string): string | null {
+  const loc = findBlockInTree(blocks, id)
+  return loc?.chain[loc.index - 1]?.id ?? null
+}
+
+export function getBlockAbove(blocks: PipelineBlock[], id: string): string | null {
+  const ctx = findLaneCtx(blocks, id)
+  if (!ctx) return null
+  if (ctx.lane === 'trunk') return laneHeadId(blocks, ctx.fork, 0)
+  if (ctx.lane === 1) return laneHeadId(blocks, ctx.fork, 'trunk')
+  return null
+}
+
+export function getBlockBelow(blocks: PipelineBlock[], id: string): string | null {
+  const ctx = findLaneCtx(blocks, id)
+  if (!ctx) return null
+  if (ctx.lane === 0) return laneHeadId(blocks, ctx.fork, 'trunk')
+  if (ctx.lane === 'trunk') return laneHeadId(blocks, ctx.fork, 1)
+  return null
+}

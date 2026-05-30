@@ -249,8 +249,12 @@ function getRequiredInputNames(type: string): Set<string> {
 
 interface PipelineContextValue {
   pipeline: Pipeline
-  addBlock: (type: string, atIndex?: number) => void
+  /** Returns the id of the newly created block (the primary one, not auto-inserted prereqs). */
+  addBlock: (type: string, atIndex?: number) => string
   removeBlock: (blockId: string) => void
+  /** Per-tab block selection — drives keyboard navigation + the canvas ring. */
+  selectedBlockId: string | null
+  setSelectedBlockId: (id: string | null) => void
   setBlockLabel: (blockId: string, label: string) => void
   blockStates: Map<string, BlockState>
   setBlockOutput: (blockId: string, portName: string, value: unknown) => void
@@ -289,7 +293,8 @@ interface PipelineContextValue {
   /** Add an empty branch forking from a block. */
   addBranch: (forkBlockId: string) => void
   /** Add a block to a specific branch of a fork block. */
-  addBlockToBranch: (forkBlockId: string, branchIndex: number, type: string, atIndex?: number) => void
+  /** Returns the id of the newly added block. */
+  addBlockToBranch: (forkBlockId: string, branchIndex: number, type: string, atIndex?: number) => string
   /** Remove an entire branch from a fork block. */
   removeBranch: (forkBlockId: string, branchIndex: number) => void
   /** Get valid block types for a position within a branch. */
@@ -338,6 +343,12 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
   const [isRunning, setIsRunning] = useState<boolean>(initialRuntime.current.isRunning)
   const [runningBlockId, setRunningBlockId] = useState<string | null>(initialRuntime.current.runningBlockId)
   const [iterationState, setIterationState] = useState<IterationState | null>(null)
+  // Per-tab block selection (sgs-ui-77x). Local state only — not persisted; clears
+  // automatically when a block is removed from the tree.
+  const [selectedBlockId, setSelectedBlockIdState] = useState<string | null>(null)
+  const setSelectedBlockId = useCallback((id: string | null) => {
+    setSelectedBlockIdState(id)
+  }, [])
   const iterationStateRef = useRef<IterationState | null>(null)
   const pipelineRef = useRef(pipeline)
   const blockStatesRef = useRef(blockStates)
@@ -548,8 +559,9 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     [buildProducerMapFromAncestors, pipeline.blocks],
   )
 
-  const addBlock = useCallback((type: string, atIndex?: number) => {
+  const addBlock = useCallback((type: string, atIndex?: number): string => {
     const def = getBlockDef(type)
+    const newBlockId = `block-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     updatePipeline((prev) => {
       const blocks = [...prev.blocks]
       const insertAt = atIndex ?? blocks.length
@@ -563,12 +575,12 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         }
       }
 
-      const id = `block-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
       // When prereqs were just inserted, append after them; otherwise insert at requested position
       const finalIndex = (prereqs && prereqs.length > 0 && prev.blocks.length === 0) ? blocks.length : insertAt
-      blocks.splice(finalIndex, 0, { id, type })
+      blocks.splice(finalIndex, 0, { id: newBlockId, type })
       return { ...prev, blocks }
     })
+    return newBlockId
   }, [updatePipeline])
 
   const removeBlock = useCallback((blockId: string) => {
@@ -601,6 +613,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         return next
       })
     }
+    // Clear selection if the selected block was just removed (sgs-ui-77x).
+    setSelectedBlockIdState((prev) => (prev && idsToClean.has(prev) ? null : prev))
   }, [persistRuntimeSnapshot, updatePipeline])
 
   const toggleBlockDisabled = useCallback((blockId: string) => {
@@ -1218,7 +1232,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
   }, [updatePipeline])
 
   const addBlockToBranch = useCallback(
-    (forkBlockId: string, branchIndex: number, type: string, atIndex?: number) => {
+    (forkBlockId: string, branchIndex: number, type: string, atIndex?: number): string => {
       const id = `block-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
       updatePipeline((prev) => {
         const next = structuredClone(prev)
@@ -1229,6 +1243,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         branch.splice(insertAt, 0, { id, type })
         return next
       })
+      return id
     },
     [updatePipeline],
   )
@@ -1266,6 +1281,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
           return next
         })
       }
+      // Clear selection if it pointed into the removed branch (sgs-ui-77x).
+      setSelectedBlockIdState((prev) => (prev && idsToClean.has(prev) ? null : prev))
     },
     [persistRuntimeSnapshot, updatePipeline],
   )
@@ -1393,6 +1410,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         getAddableTypesForBranch,
         iterationState,
         isLooping: loopingTabs[tabId] ?? false,
+        selectedBlockId,
+        setSelectedBlockId,
       }}
     >
       {children}

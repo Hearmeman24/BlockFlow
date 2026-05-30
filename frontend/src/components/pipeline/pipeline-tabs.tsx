@@ -7,6 +7,7 @@ import { BlockLayoutProvider, useBlockLayout } from '@/lib/pipeline/block-layout
 import { PipelineProvider } from '@/lib/pipeline/pipeline-context'
 import { usePipelineTabs, type TabRunState } from '@/lib/pipeline/tabs-context'
 import { PipelineView } from './pipeline-view'
+import { ShortcutPrefsProvider } from '@/lib/settings/shortcuts-client'
 import { JobManager } from './job-manager'
 
 export function PipelineTabs() {
@@ -90,7 +91,9 @@ function PipelineTabsContent() {
               aria-hidden={!active}
             >
               <PipelineProvider tabId={tab.id} flowJson={tab.flowJson}>
-                <PipelineView />
+                <ShortcutPrefsProvider>
+                  <PipelineView />
+                </ShortcutPrefsProvider>
               </PipelineProvider>
             </div>
           )

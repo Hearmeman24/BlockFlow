@@ -139,6 +139,44 @@ def put_app_pref(name: str, body: AppPrefBody) -> JSONResponse:
     return JSONResponse({"name": name, "saved": True})
 
 
+# === shortcut prefs =========================================================
+# Stores per-shortcut enable/disable flags in settings_app_prefs under the
+# namespaced key "shortcut.<id>.enabled". The sentinel id "__master__" is the
+# master enable/disable toggle. (sgs-ui-77x)
+
+_SHORTCUT_PREFIX = "shortcut."
+_SHORTCUT_SUFFIX = ".enabled"
+
+
+def _read_shortcut_prefs() -> dict[str, bool]:
+    out: dict[str, bool] = {}
+    with settings_store._get_conn() as conn:
+        rows = conn.execute(
+            "SELECT name, value FROM settings_app_prefs WHERE name LIKE ?",
+            (f"{_SHORTCUT_PREFIX}%{_SHORTCUT_SUFFIX}",),
+        ).fetchall()
+    for row in rows:
+        name = row["name"]
+        sid = name[len(_SHORTCUT_PREFIX) : -len(_SHORTCUT_SUFFIX)]
+        out[sid] = row["value"] == "true"
+    return out
+
+
+@router.get("/api/settings/shortcuts")
+def get_shortcut_prefs() -> dict[str, bool]:
+    return _read_shortcut_prefs()
+
+
+@router.put("/api/settings/shortcuts")
+def put_shortcut_prefs(prefs: dict[str, bool]) -> dict[str, bool]:
+    for sid, enabled in prefs.items():
+        settings_store.set_app_pref(
+            f"{_SHORTCUT_PREFIX}{sid}{_SHORTCUT_SUFFIX}",
+            "true" if enabled else "false",
+        )
+    return _read_shortcut_prefs()
+
+
 # === validation =============================================================
 
 @router.post("/api/settings/validate/{service}")

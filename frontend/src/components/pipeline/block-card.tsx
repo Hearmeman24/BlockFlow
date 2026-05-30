@@ -77,7 +77,10 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
     toggleBlockDisabled,
     iterationState,
     setOutputHint,
+    selectedBlockId,
+    setSelectedBlockId,
   } = usePipeline()
+  const isSelected = selectedBlockId === block.id
   const { mode: blockLayoutMode } = useBlockLayout()
 
   // Hooks must run on every render in the same order, before any conditional
@@ -165,13 +168,15 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
   const isReducedLayout = blockLayoutMode === 'reduced'
   const isExpandedLayout = blockLayoutMode === 'expanded'
 
+  const selectionRing = isSelected ? 'ring-2 ring-emerald-400/70 ring-offset-2 ring-offset-background' : ''
   const cardClasses = isDisabled
-    ? `flex flex-col shrink-0 overflow-hidden border-2 border-dashed ${sizeClass.width} ${sizeClass.minHeight} opacity-50 ${borderColor} panningDisabled wheelDisabled`
+    ? `flex flex-col shrink-0 overflow-hidden border-2 border-dashed ${sizeClass.width} ${sizeClass.minHeight} opacity-50 ${borderColor} ${selectionRing} panningDisabled wheelDisabled`
     : [
         'flex flex-col shrink-0 border-2',
         sizeClass.width,
         sizeClass.minHeight,
         borderColor,
+        selectionRing,
         'panningDisabled wheelDisabled',
         isReducedLayout ? `${sizeClass.reducedHeight} overflow-hidden` : '',
         blockLayoutMode === 'auto' ? 'max-h-[85vh] overflow-hidden' : '',
@@ -186,7 +191,15 @@ export function BlockCard({ block, displayNumber }: BlockCardProps) {
     <Card className={cardClasses}>
       <CardHeader className="flex flex-row items-center justify-between py-2.5 px-4 shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xs text-muted-foreground font-mono shrink-0">{displayNumber}</span>
+          <button
+            type="button"
+            data-testid="block-card-select"
+            onClick={() => setSelectedBlockId(block.id)}
+            className="text-xs text-muted-foreground font-mono shrink-0 cursor-pointer hover:text-foreground transition-colors"
+            aria-label="Select block"
+          >
+            {displayNumber}
+          </button>
           <EditableTitle
             value={displayLabel}
             onChange={(v) => setBlockLabel(block.id, v === def.label ? '' : v)}

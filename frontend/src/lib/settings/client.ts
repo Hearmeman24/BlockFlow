@@ -140,6 +140,23 @@ export async function setAppPref(name: string, value: string): Promise<void> {
   await _throwIfNonOk(res)
 }
 
+export const ASSET_STORAGE_MODE_PREF = 'asset_storage_mode'
+export const ASSET_STORAGE_MODES = ['local_only', 'tmpfiles', 'r2_signed'] as const
+export type AssetStorageMode = typeof ASSET_STORAGE_MODES[number]
+
+export function isAssetStorageMode(value: string | null | undefined): value is AssetStorageMode {
+  return ASSET_STORAGE_MODES.includes(value as AssetStorageMode)
+}
+
+export async function getAssetStorageMode(): Promise<AssetStorageMode> {
+  const value = await getAppPref(ASSET_STORAGE_MODE_PREF)
+  return isAssetStorageMode(value) ? value : 'tmpfiles'
+}
+
+export async function setAssetStorageMode(value: AssetStorageMode): Promise<void> {
+  await setAppPref(ASSET_STORAGE_MODE_PREF, value)
+}
+
 // === validation =============================================================
 
 export async function validateService(service: string): Promise<ValidationResult> {

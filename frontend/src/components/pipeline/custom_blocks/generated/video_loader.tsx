@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useSessionState } from '@/lib/use-session-state'
+import { getAssetStorageMode, type AssetStorageMode } from '@/lib/settings/client'
 import {
   PORT_VIDEO,
   type BlockDef,
@@ -63,6 +64,21 @@ function VideoLoaderBlock({
   const [uploadingLocal, setUploadingLocal] = useState(false)
   const [uploadingRemote, setUploadingRemote] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const [assetMode, setAssetMode] = useState<AssetStorageMode>('tmpfiles')
+  const remoteEnabled = assetMode !== 'local_only'
+  const remoteLabel = assetMode === 'r2_signed' ? 'R2 signed URL' : 'tmpfiles URL'
+
+  useEffect(() => {
+    let cancelled = false
+    getAssetStorageMode()
+      .then((mode) => {
+        if (!cancelled) setAssetMode(mode)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Edit-time emit: surface the VideoRef downstream as soon as either URL is
   // available. Remote URL may lag local; consumers tolerate `url` undefined.
@@ -74,10 +90,10 @@ function VideoLoaderBlock({
     const ref: VideoRef = {
       kind: 'video-ref',
       local: localUrl,
-      url: remoteUrl || undefined,
+      url: remoteEnabled ? remoteUrl || undefined : undefined,
     }
     setOutput('video', [ref])
-  }, [localUrl, remoteUrl, setOutput])
+  }, [localUrl, remoteEnabled, remoteUrl, setOutput])
 
   // Pipeline execute: ensure both uploads are done (or attempted), then
   // RE-EMIT the VideoRef. The run reset clears every block's outputs to {}
@@ -97,12 +113,12 @@ function VideoLoaderBlock({
       if (selectedFile) {
         // Remote (tmpfiles) failure is non-fatal — local-only consumers can
         // still proceed — so don't let it abort the local emit.
-        const [l, r] = await Promise.allSettled([
-          ensureLocal(selectedFile),
-          ensureRemote(selectedFile),
-        ])
+        const promises = remoteEnabled
+          ? [ensureLocal(selectedFile), ensureRemote(selectedFile)]
+          : [ensureLocal(selectedFile)]
+        const [l, r] = await Promise.allSettled(promises)
         if (l.status === 'fulfilled') local = l.value
-        if (r.status === 'fulfilled') remote = r.value
+        if (remoteEnabled && r?.status === 'fulfilled') remote = r.value
         if (l.status === 'rejected' && !local) {
           throw l.reason instanceof Error ? l.reason : new Error(String(l.reason))
         }
@@ -110,7 +126,7 @@ function VideoLoaderBlock({
       if (!local && !remote) {
         throw new Error('Video upload failed — no local or remote URL available')
       }
-      const ref: VideoRef = { kind: 'video-ref', local, url: remote || undefined }
+      const ref: VideoRef = { kind: 'video-ref', local, url: remoteEnabled ? remote || undefined : undefined }
       setOutput('video', [ref])
       setStatusMessage('Video ready')
     })
@@ -155,11 +171,12 @@ function VideoLoaderBlock({
   }
 
   const ensureRemote = async (file: File): Promise<string> => {
+    if (!remoteEnabled) throw new Error('Remote asset upload disabled by local-only storage mode')
     if (remoteUrl) return remoteUrl
     setUploadingRemote(true)
     try {
       const res = await postFile(UPLOAD_ENDPOINT, file)
-      if (!res?.ok) throw new Error(res?.error ?? 'Tmpfiles upload failed')
+      if (!res?.ok) throw new Error(res?.error ?? `${remoteLabel} upload failed`)
       const url = String(res.video_url || '').trim()
       if (!url) throw new Error('upload returned no video_url')
       setRemoteUrl(url)
@@ -168,7 +185,7 @@ function VideoLoaderBlock({
       // Remote failure is non-fatal — downstream consumers that only need
       // local can still proceed. Show a warning rather than swallowing.
       const msg = e instanceof Error ? e.message : String(e)
-      setUploadError(`Tmpfiles upload failed: ${msg}`)
+      setUploadError(`${remoteLabel} upload failed: ${msg}`)
       throw e
     } finally {
       setUploadingRemote(false)
@@ -192,10 +209,10 @@ function VideoLoaderBlock({
       setUploadedFingerprint(fp)
     }
 
-    // Kick off both uploads in parallel; do not block UI. Errors surface via
+    // Kick off uploads in parallel; do not block UI. Errors surface via
     // uploadError. Caller awaits via ensureLocal/Remote on pipeline run.
     void ensureLocal(file).catch(() => {})
-    void ensureRemote(file).catch(() => {})
+    if (remoteEnabled) void ensureRemote(file).catch(() => {})
   }
 
   const openFilePicker = async () => {
@@ -218,15 +235,15 @@ function VideoLoaderBlock({
   }
 
   const statusLine = (() => {
-    if (uploadingLocal || uploadingRemote) {
+    if (uploadingLocal || (remoteEnabled && uploadingRemote)) {
       const parts: string[] = []
       if (uploadingLocal) parts.push('saving locally')
-      if (uploadingRemote) parts.push('uploading to tmpfiles')
+      if (remoteEnabled && uploadingRemote) parts.push(`uploading to ${remoteLabel}`)
       return parts.join(' · ') + '…'
     }
     const parts: string[] = []
     if (localUrl) parts.push('local')
-    if (remoteUrl) parts.push('tmpfiles')
+    if (remoteEnabled && remoteUrl) parts.push(remoteLabel)
     if (parts.length === 0) return 'No file loaded'
     return `Saved · ${parts.join(' + ')}`
   })()
@@ -234,7 +251,15 @@ function VideoLoaderBlock({
   return (
     <div className="space-y-3">
       <p className="text-[10px] text-muted-foreground">
-        Auto: saves to <span className="font-mono">/outputs</span> and uploads to tmpfiles.org in parallel — downstream blocks pick whichever URL they need.
+        {remoteEnabled ? (
+          <>
+            Auto: saves to <span className="font-mono">/outputs</span> and mirrors to {remoteLabel} for remote providers.
+          </>
+        ) : (
+          <>
+            Local only: saves to <span className="font-mono">/outputs</span>. Remote provider blocks need a fetchable URL.
+          </>
+        )}
       </p>
 
       {!previewUrl ? (
@@ -282,9 +307,9 @@ function VideoLoaderBlock({
               <Input value={localUrl} readOnly className="h-7 text-[10px] font-mono" />
             </div>
           )}
-          {remoteUrl && (
+          {remoteEnabled && remoteUrl && (
             <div>
-              <Label className="text-[10px]">Tmpfiles</Label>
+              <Label className="text-[10px]">{remoteLabel}</Label>
               <Input value={remoteUrl} readOnly className="h-7 text-[10px] font-mono" />
             </div>
           )}
@@ -294,7 +319,7 @@ function VideoLoaderBlock({
       {uploadError && (
         <div className="space-y-1">
           <p className="text-[10px] text-yellow-500">{uploadError}</p>
-          {selectedFile && !remoteUrl && (
+          {remoteEnabled && selectedFile && !remoteUrl && (
             <Button
               type="button"
               variant="outline"
@@ -306,12 +331,12 @@ function VideoLoaderBlock({
                 void ensureRemote(selectedFile).catch(() => {})
               }}
             >
-              {uploadingRemote ? 'retrying…' : 'Retry tmpfiles upload'}
+              {uploadingRemote ? 'retrying…' : `Retry ${remoteLabel} upload`}
             </Button>
           )}
-          {!remoteUrl && (
+          {remoteEnabled && !remoteUrl && (
             <p className="text-[10px] text-muted-foreground">
-              Without the tmpfiles URL, downstream blocks that fetch from a remote server (PiAPI, OpenRouter)
+              Without a remote URL, downstream blocks that fetch from a remote server (PiAPI, OpenRouter)
               can't reach this video — they need an externally-fetchable URL.
             </p>
           )}

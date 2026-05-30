@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
 import type { ImageRef } from '@/lib/image-ref'
+import { getAssetStorageMode, type AssetStorageMode } from '@/lib/settings/client'
 import {
   PORT_IMAGE,
   PORT_TEXT,
@@ -170,6 +171,22 @@ function UploadImageBlock({
   const resolvedRef = useRef<Record<string, UploadState>>({})
   const [isDragging, setIsDragging] = useState(false)
   const dragCounterRef = useRef(0)
+  const [assetMode, setAssetMode] = useState<AssetStorageMode>('tmpfiles')
+
+  useEffect(() => {
+    let cancelled = false
+    getAssetStorageMode()
+      .then((mode) => {
+        if (!cancelled) setAssetMode(mode)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const remoteEnabled = assetMode !== 'local_only'
+  const remoteLabel = assetMode === 'r2_signed' ? 'R2 signed URL' : 'tmpfiles URL'
 
   // Cleanup preview URLs on unmount
   useEffect(() => {
@@ -194,7 +211,7 @@ function UploadImageBlock({
       return {
         kind: 'image-ref' as const,
         local: u?.local || entry.previewUrl,
-        ...(u?.url ? { url: u.url } : {}),
+        ...(remoteEnabled && u?.url ? { url: u.url } : {}),
       }
     })
     if (refs.length === 0) {
@@ -204,7 +221,7 @@ function UploadImageBlock({
     } else {
       setOutput('image', refs)
     }
-  }, [files, uploads, setOutput])
+  }, [files, uploads, remoteEnabled, setOutput])
 
   const kickOffUploads = useCallback(async (entry: FileEntry) => {
     const fp = entry.fingerprint
@@ -234,14 +251,14 @@ function UploadImageBlock({
 
     // Public URL — required for any RunPod-backed downstream block. Done in
     // parallel; if it fails, downstream URL consumers will surface the error.
-    if (!resolvedRef.current[fp]?.url && !inFlightRef.current[fp].url) {
+    if (remoteEnabled && !resolvedRef.current[fp]?.url && !inFlightRef.current[fp].url) {
       const p = uploadToEndpoint(prepared, TMPFILES_ENDPOINT)
       inFlightRef.current[fp].url = p
       p.then((url) => recordResolved('url', url))
         .catch((e) => recordError('url', e))
         .finally(() => { if (inFlightRef.current[fp]) inFlightRef.current[fp].url = undefined })
     }
-  }, [uploads, setUploads])
+  }, [remoteEnabled, setUploads])
 
   const addFiles = useCallback(async (newFiles: File[]) => {
     const imageFiles = newFiles.filter((f) => f.type.startsWith('image/'))
@@ -291,13 +308,13 @@ function UploadImageBlock({
       const inflight = inFlightRef.current[entry.fingerprint]
       const promises: Promise<unknown>[] = []
       if (inflight?.local) promises.push(inflight.local)
-      if (inflight?.url) promises.push(inflight.url)
+      if (remoteEnabled && inflight?.url) promises.push(inflight.url)
       if (promises.length > 0) {
         setStatusMessage(`Finishing upload ${i + 1}/${entries.length}...`)
         await Promise.allSettled(promises)
       }
     }
-  }, [setStatusMessage])
+  }, [remoteEnabled, setStatusMessage])
 
   useEffect(() => {
     registerExecute(async () => {
@@ -312,12 +329,15 @@ function UploadImageBlock({
         return {
           kind: 'image-ref' as const,
           local: u?.local || entry.previewUrl,
-          ...(u?.url ? { url: u.url } : {}),
+          ...(remoteEnabled && u?.url ? { url: u.url } : {}),
         }
       })
       const errors = files
         .map((e) => resolvedRef.current[e.fingerprint])
-        .flatMap((u) => [u?.localError, u?.urlError].filter((s): s is string => !!s))
+        .flatMap((u) => [
+          u?.localError,
+          remoteEnabled ? u?.urlError : undefined,
+        ].filter((s): s is string => !!s))
       if (errors.length > 0) {
         // Surface the first failure so downstream blocks aren't run with a
         // partial payload. (Tmpfiles being down breaks RunPod consumers;
@@ -368,13 +388,14 @@ function UploadImageBlock({
     for (const f of files) {
       const u = uploads[f.fingerprint]
       if (u?.local) localDone++
-      if (u?.url) urlDone++
-      if (u?.localError || u?.urlError) errors++
+      if (remoteEnabled && u?.url) urlDone++
+      if (u?.localError || (remoteEnabled && u?.urlError)) errors++
     }
-    const pending = files.length * 2 - localDone - urlDone
-    if (pending > 0) return `Uploading… (${localDone + urlDone}/${files.length * 2})`
+    const expected = files.length * (remoteEnabled ? 2 : 1)
+    const pending = expected - localDone - urlDone
+    if (pending > 0) return `Uploading… (${localDone + urlDone}/${expected})`
     if (errors > 0) return `Ready · ${errors} upload error${errors === 1 ? '' : 's'}`
-    return 'Ready'
+    return remoteEnabled ? 'Ready' : 'Ready · local only'
   })()
 
   return (
@@ -398,7 +419,9 @@ function UploadImageBlock({
               or drag &amp; drop images here
             </p>
             <p className="text-[10px] text-muted-foreground/70">
-              Saved locally + uploaded for remote endpoints automatically.
+              {remoteEnabled
+                ? `Saved locally + mirrored to ${remoteLabel} for remote endpoints.`
+                : 'Saved locally only. Remote provider blocks need a fetchable URL.'}
             </p>
           </div>
         </div>
@@ -430,9 +453,9 @@ function UploadImageBlock({
                       title="Local /outputs save"
                     >local</span>
                     <span
-                      className={`text-[8px] px-1 rounded ${urlReady ? 'bg-emerald-500/70 text-white' : 'bg-black/60 text-muted-foreground'}`}
-                      title="Public URL upload (tmpfiles.org)"
-                    >url</span>
+                      className={`text-[8px] px-1 rounded ${remoteEnabled && urlReady ? 'bg-emerald-500/70 text-white' : 'bg-black/60 text-muted-foreground'}`}
+                      title={remoteEnabled ? remoteLabel : 'Remote upload disabled by local-only storage mode'}
+                    >{remoteEnabled ? 'url' : 'local only'}</span>
                   </div>
                   <button
                     type="button"
@@ -449,6 +472,9 @@ function UploadImageBlock({
           <p className="text-[10px] text-muted-foreground text-center">
             {files.length} image{files.length === 1 ? '' : 's'} selected
             {uploadSummary ? ` · ${uploadSummary}` : ''}
+          </p>
+          <p className="text-[10px] text-muted-foreground text-center">
+            Remote asset mode: {remoteEnabled ? remoteLabel : 'local only'}
           </p>
 
           <div className="grid grid-cols-2 gap-2">

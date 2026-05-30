@@ -1,16 +1,17 @@
 'use client'
 
 import { useEffect, useState, type ReactNode } from 'react'
-import { usePathname, useRouter } from 'next/navigation'
+import { usePathname } from 'next/navigation'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { PipelineTabsProvider } from '@/lib/pipeline/tabs-context'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { NavBar } from '@/components/nav-bar'
 import { Sidebar } from '@/components/sidebar'
 import { PipelineTabs } from '@/components/pipeline/pipeline-tabs'
-import { WelcomeToBlockFlow, hasSeenBlockFlowWelcome } from '@/components/welcome-to-blockflow'
+import { WelcomeToBlockFlow } from '@/components/welcome-to-blockflow'
 import { ComfyGenWizard } from '@/components/wizard/comfygen-wizard'
 import { setAdvancedMode } from '@/lib/pipeline/registry'
+import { ASSET_STORAGE_MODE_PREF, getAppPref, isAssetStorageMode } from '@/lib/settings/client'
 import '@/components/pipeline/custom_blocks/_register'
 
 function useFeatureFlags() {
@@ -34,7 +35,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [comfyGenWizardOpen, setComfyGenWizardOpen] = useState(false)
   useEffect(() => { setMounted(true) }, [])
   const pathname = usePathname()
-  const router = useRouter()
   const isGenerateRoute = pathname === '/generate'
   const pipelineShellClass = isGenerateRoute
     ? 'h-screen bg-background'
@@ -45,7 +45,18 @@ export function AppShell({ children }: { children: ReactNode }) {
       setWelcomeOpen(false)
       return
     }
-    setWelcomeOpen(!hasSeenBlockFlowWelcome())
+    let cancelled = false
+    getAppPref(ASSET_STORAGE_MODE_PREF)
+      .then((value) => {
+        if (cancelled) return
+        setWelcomeOpen(!isAssetStorageMode(value))
+      })
+      .catch(() => {
+        if (!cancelled) setWelcomeOpen(true)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [mounted, isGenerateRoute])
 
   useEffect(() => {
@@ -74,10 +85,6 @@ export function AppShell({ children }: { children: ReactNode }) {
               onSetUpComfyGen={() => {
                 setWelcomeOpen(false)
                 setComfyGenWizardOpen(true)
-              }}
-              onOpenCredentials={() => {
-                setWelcomeOpen(false)
-                router.push('/settings?tab=credentials')
               }}
               onDismiss={() => setWelcomeOpen(false)}
             />

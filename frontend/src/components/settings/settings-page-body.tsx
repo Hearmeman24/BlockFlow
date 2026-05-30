@@ -6,7 +6,8 @@ import { AppTab } from './app-tab'
 import { CredentialsTab } from './credentials-tab'
 import { EndpointsTab } from './endpoints-tab'
 import { KeyboardTab } from './keyboard-tab'
-import { SETTINGS_TABS, SettingsLayout, type SettingsTabId } from './layout'
+import { SettingsLayout, type SettingsTabId } from './layout'
+import { StorageTab } from './storage-tab'
 import { ShortcutPrefsProvider } from '@/lib/settings/shortcuts-client'
 
 // BlockFlow version. Hardcoded for now; in production this could be read at
@@ -39,12 +40,7 @@ export function SettingsPageBody() {
     <SettingsLayout activeTab={activeTab} onTabChange={setTab}>
       {activeTab === 'credentials' && <CredentialsTab />}
       {activeTab === 'endpoints' && <EndpointsTab />}
-      {activeTab === 'storage' && (
-        <Placeholder
-          section="Storage"
-          stage="Deferred until preset installer (sgs-ui-wisp-las.3) lands"
-        />
-      )}
+      {activeTab === 'storage' && <StorageTab />}
       {activeTab === 'app' && <AppTab version={BLOCKFLOW_VERSION} />}
       {activeTab === 'keyboard' && (
         <ShortcutPrefsProvider>
@@ -52,16 +48,5 @@ export function SettingsPageBody() {
         </ShortcutPrefsProvider>
       )}
     </SettingsLayout>
-  )
-}
-
-function Placeholder({ section, stage }: { section: string; stage: string }) {
-  const tab = SETTINGS_TABS.find((t) => t.label === section)
-  return (
-    <div className="rounded-lg border border-border/50 bg-card/40 p-6">
-      <h2 className="text-lg font-semibold mb-2">{section}</h2>
-      <p className="text-sm text-muted-foreground mb-1">{tab?.description}</p>
-      <p className="text-xs text-muted-foreground/70 italic">UI lands in: {stage}</p>
-    </div>
   )
 }

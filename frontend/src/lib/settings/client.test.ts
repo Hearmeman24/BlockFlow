@@ -32,6 +32,8 @@ import {
   wizardTiers,
   installPreset,
   InstallRefusedError,
+  getAssetStorageMode,
+  setAssetStorageMode,
 } from './client'
 
 type MockResponse = {
@@ -270,6 +272,46 @@ describe('app-prefs', () => {
     expect(url).toBe('/api/settings/app-prefs/retention_days')
     expect(init.method).toBe('PUT')
     expect(JSON.parse(init.body as string)).toEqual({ value: '90' })
+  })
+
+  test('getAssetStorageMode defaults to tmpfiles when unset', async () => {
+    const fetchMock = mockFetch([
+      { body: JSON.stringify({ name: 'asset_storage_mode', value: null }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await getAssetStorageMode()).toBe('tmpfiles')
+    expect(fetchMock).toHaveBeenCalledWith('/api/settings/app-prefs/asset_storage_mode', expect.anything())
+  })
+
+  test('getAssetStorageMode returns stored valid mode', async () => {
+    const fetchMock = mockFetch([
+      { body: JSON.stringify({ name: 'asset_storage_mode', value: 'r2_signed' }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await getAssetStorageMode()).toBe('r2_signed')
+  })
+
+  test('getAssetStorageMode falls back to tmpfiles for invalid stored mode', async () => {
+    const fetchMock = mockFetch([
+      { body: JSON.stringify({ name: 'asset_storage_mode', value: 'public_forever' }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await getAssetStorageMode()).toBe('tmpfiles')
+  })
+
+  test('setAssetStorageMode persists only supported modes', async () => {
+    const fetchMock = mockFetch([{ body: JSON.stringify({ saved: true }) }])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await setAssetStorageMode('local_only')
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/settings/app-prefs/asset_storage_mode')
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(init.body as string)).toEqual({ value: 'local_only' })
   })
 })
 

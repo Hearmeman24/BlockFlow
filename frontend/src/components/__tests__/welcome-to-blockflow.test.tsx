@@ -1,128 +1,135 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import {
-  WELCOME_STORAGE_KEY,
-  WelcomeToBlockFlow,
-  hasSeenBlockFlowWelcome,
-} from '../welcome-to-blockflow'
+vi.mock('@/lib/settings/client', () => ({
+  setAssetStorageMode: vi.fn(),
+  setCredential: vi.fn(),
+}))
 
-function installLocalStorageStub() {
-  const store = new Map<string, string>()
-  const storage = {
-    getItem: vi.fn((key: string) => store.get(key) ?? null),
-    setItem: vi.fn((key: string, value: string) => {
-      store.set(key, value)
-    }),
-    removeItem: vi.fn((key: string) => {
-      store.delete(key)
-    }),
-    clear: vi.fn(() => {
-      store.clear()
-    }),
-  }
-  Object.defineProperty(window, 'localStorage', {
-    configurable: true,
-    value: storage,
-  })
-  Object.defineProperty(globalThis, 'localStorage', {
-    configurable: true,
-    value: storage,
-  })
-}
+import { setAssetStorageMode, setCredential } from '@/lib/settings/client'
+import { WelcomeToBlockFlow } from '../welcome-to-blockflow'
 
-describe('WelcomeToBlockFlow', () => {
+describe('WelcomeToBlockFlow setup wizard', () => {
   beforeEach(() => {
-    installLocalStorageStub()
-    localStorage.clear()
+    vi.mocked(setAssetStorageMode).mockReset()
+    vi.mocked(setCredential).mockReset()
+    vi.mocked(setAssetStorageMode).mockResolvedValue(undefined)
+    vi.mocked(setCredential).mockResolvedValue(undefined)
   })
 
-  test('renders the first-run choices for ComfyGen and non-ComfyGen blocks', () => {
+  test('requires an asset storage decision before showing ComfyGen choices', () => {
     render(
       <WelcomeToBlockFlow
         open
         onSetUpComfyGen={() => {}}
-        onOpenCredentials={() => {}}
         onDismiss={() => {}}
       />,
     )
 
-    expect(screen.getByRole('heading', { name: /welcome to blockflow/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /set up comfygen/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /start without comfygen/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /open credentials/i })).toBeInTheDocument()
-    expect(screen.getByText(/provider blocks/i)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /choose asset storage/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /local only/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /temporary public urls/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /private r2 signed urls/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /set up comfygen/i })).not.toBeInTheDocument()
   })
 
-  test('does not render when closed', () => {
-    render(
-      <WelcomeToBlockFlow
-        open={false}
-        onSetUpComfyGen={() => {}}
-        onOpenCredentials={() => {}}
-        onDismiss={() => {}}
-      />,
-    )
-
-    expect(screen.queryByRole('heading', { name: /welcome to blockflow/i })).not.toBeInTheDocument()
-  })
-
-  test('Set up ComfyGen marks the welcome seen and opens setup', async () => {
-    const user = userEvent.setup()
-    const onSetUpComfyGen = vi.fn()
-
-    render(
-      <WelcomeToBlockFlow
-        open
-        onSetUpComfyGen={onSetUpComfyGen}
-        onOpenCredentials={() => {}}
-        onDismiss={() => {}}
-      />,
-    )
-
-    await user.click(screen.getByRole('button', { name: /set up comfygen/i }))
-
-    expect(onSetUpComfyGen).toHaveBeenCalledTimes(1)
-    expect(localStorage.getItem(WELCOME_STORAGE_KEY)).toBe('1')
-    expect(hasSeenBlockFlowWelcome()).toBe(true)
-  })
-
-  test('Start without ComfyGen marks the welcome seen and dismisses it', async () => {
+  test('local-only mode persists and advances to the ComfyGen choice', async () => {
     const user = userEvent.setup()
     const onDismiss = vi.fn()
-
     render(
       <WelcomeToBlockFlow
         open
         onSetUpComfyGen={() => {}}
-        onOpenCredentials={() => {}}
         onDismiss={onDismiss}
       />,
     )
 
-    await user.click(screen.getByRole('button', { name: /start without comfygen/i }))
+    await user.click(screen.getByRole('button', { name: /local only/i }))
+
+    expect(setAssetStorageMode).toHaveBeenCalledWith('local_only')
+    expect(await screen.findByRole('heading', { name: /set up comfygen/i })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /start blockflow/i }))
 
     expect(onDismiss).toHaveBeenCalledTimes(1)
-    expect(localStorage.getItem(WELCOME_STORAGE_KEY)).toBe('1')
   })
 
-  test('Open Credentials marks the welcome seen and opens credentials settings', async () => {
+  test('tmpfiles mode persists without asking for credentials', async () => {
     const user = userEvent.setup()
-    const onOpenCredentials = vi.fn()
-
     render(
       <WelcomeToBlockFlow
         open
         onSetUpComfyGen={() => {}}
-        onOpenCredentials={onOpenCredentials}
         onDismiss={() => {}}
       />,
     )
 
-    await user.click(screen.getByRole('button', { name: /open credentials/i }))
+    await user.click(screen.getByRole('button', { name: /temporary public urls/i }))
 
-    expect(onOpenCredentials).toHaveBeenCalledTimes(1)
-    expect(localStorage.getItem(WELCOME_STORAGE_KEY)).toBe('1')
+    expect(setAssetStorageMode).toHaveBeenCalledWith('tmpfiles')
+    expect(setCredential).not.toHaveBeenCalled()
+    expect(await screen.findByRole('heading', { name: /set up comfygen/i })).toBeInTheDocument()
+  })
+
+  test('R2 mode requires credentials, saves them, and advances', async () => {
+    const user = userEvent.setup()
+    render(
+      <WelcomeToBlockFlow
+        open
+        onSetUpComfyGen={() => {}}
+        onDismiss={() => {}}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /private r2 signed urls/i }))
+    await user.type(screen.getByLabelText(/r2 endpoint url/i), 'https://acct.r2.cloudflarestorage.com')
+    await user.type(screen.getByLabelText(/r2 access key id/i), 'access')
+    await user.type(screen.getByLabelText(/r2 secret access key/i), 'secret')
+    await user.type(screen.getByLabelText(/r2 bucket/i), 'private-assets')
+    await user.click(screen.getByRole('button', { name: /save r2 and continue/i }))
+
+    await waitFor(() => {
+      expect(setCredential).toHaveBeenCalledWith('r2_endpoint_url', 'https://acct.r2.cloudflarestorage.com')
+      expect(setCredential).toHaveBeenCalledWith('r2_access_key_id', 'access')
+      expect(setCredential).toHaveBeenCalledWith('r2_secret_access_key', 'secret')
+      expect(setCredential).toHaveBeenCalledWith('r2_bucket', 'private-assets')
+      expect(setAssetStorageMode).toHaveBeenCalledWith('r2_signed')
+    })
+    expect(await screen.findByRole('heading', { name: /set up comfygen/i })).toBeInTheDocument()
+  })
+
+  test('R2 mode does not continue with missing fields', async () => {
+    const user = userEvent.setup()
+    render(
+      <WelcomeToBlockFlow
+        open
+        onSetUpComfyGen={() => {}}
+        onDismiss={() => {}}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /private r2 signed urls/i }))
+    await user.click(screen.getByRole('button', { name: /save r2 and continue/i }))
+
+    expect(await screen.findByText(/all r2 fields are required/i)).toBeInTheDocument()
+    expect(setAssetStorageMode).not.toHaveBeenCalled()
+  })
+
+  test('ComfyGen setup callback fires from the final step', async () => {
+    const user = userEvent.setup()
+    const onSetUpComfyGen = vi.fn()
+    render(
+      <WelcomeToBlockFlow
+        open
+        onSetUpComfyGen={onSetUpComfyGen}
+        onDismiss={() => {}}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /temporary public urls/i }))
+    await user.click(await screen.findByRole('button', { name: /set up comfygen/i }))
+
+    expect(onSetUpComfyGen).toHaveBeenCalledTimes(1)
   })
 })

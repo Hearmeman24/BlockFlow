@@ -117,6 +117,28 @@ describe('BlockPicker', () => {
     expect(onSelect).toHaveBeenCalledWith('b')
   })
 
+  it('arrow keys scroll the highlighted item into view', () => {
+    const scrollSpy = vi.fn()
+    // jsdom does not implement scrollIntoView — install a spy so we can assert
+    // the picker called it on the new highlight.
+    Element.prototype.scrollIntoView = scrollSpy
+
+    const many = Array.from({ length: 20 }, (_, i) => def(`t${i}`, `Type ${i}`))
+    render(
+      <BlockPicker
+        open
+        onOpenChange={() => {}}
+        validTypes={many}
+        onSelect={() => {}}
+      />,
+    )
+    const input = screen.getByLabelText('Search blocks') as HTMLInputElement
+    act(() => {
+      fireEvent.keyDown(input, { key: 'ArrowDown' })
+    })
+    expect(scrollSpy).toHaveBeenCalled()
+  })
+
   it('suggested types rank first', () => {
     render(
       <BlockPicker

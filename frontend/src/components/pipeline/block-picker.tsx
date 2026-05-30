@@ -23,6 +23,7 @@ export function BlockPicker({
   const [query, setQuery] = useState('')
   const [highlightIndex, setHighlightIndex] = useState(0)
   const listRef = useRef<HTMLUListElement | null>(null)
+  const itemRefs = useRef<Array<HTMLLIElement | null>>([])
 
   const ordered = useMemo(
     () => orderedAddableTypes(validTypes, upstreamType),
@@ -51,6 +52,12 @@ export function BlockPicker({
       setHighlightIndex(Math.max(0, filtered.length - 1))
     }
   }, [filtered.length, highlightIndex])
+
+  // Keep the highlighted item visible inside the scrollable list.
+  useEffect(() => {
+    const el = itemRefs.current[highlightIndex]
+    el?.scrollIntoView?.({ block: 'nearest' })
+  }, [highlightIndex])
 
   function commit(index: number) {
     const target = filtered[index]
@@ -109,6 +116,9 @@ export function BlockPicker({
             {filtered.map(({ def, suggested }, i) => (
               <li
                 key={def.type}
+                ref={(el) => {
+                  itemRefs.current[i] = el
+                }}
                 role="option"
                 aria-selected={i === highlightIndex}
                 data-testid={`block-picker-item-${def.type}`}

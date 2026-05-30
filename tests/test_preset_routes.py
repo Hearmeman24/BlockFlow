@@ -574,6 +574,32 @@ def _wait_for_install_state(*targets: str, attempts: int = 200, sleep_s: float =
         _t.sleep(sleep_s)
 
 
+def test_delete_paths_uses_resolved_sidecar_command(monkeypatch, tmp_path):
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.setenv("PATH", "")
+
+    captured: dict[str, object] = {}
+
+    def fake_capture(args, **kwargs):
+        captured["args"] = args
+        return 0, _delete_response([{"path": "/runpod-volume/a.safetensors", "deleted": True}]), ""
+
+    monkeypatch.setattr(preset_routes, "_run_comfy_gen_capture", fake_capture)
+
+    result = preset_routes._delete_paths(
+        ["/runpod-volume/a.safetensors"],
+        endpoint_id="ep-sidecar",
+        log_fp=io.StringIO(),
+    )
+
+    assert result["ok"] is True
+    assert captured["args"][:2] == [str(sidecar), "delete"]
+
+
 # === Stage B: uninstall (sgs-ui-i7j) ========================================
 
 def test_uninstall_drops_settings_row(client, install_ready, mocker):
@@ -593,7 +619,8 @@ def test_uninstall_drops_settings_row(client, install_ready, mocker):
 
     delete_paths: list[list[str]] = []
     def _popen_side_effect(args, *a, **kw):
-        assert args[:2] == ["comfy-gen", "delete"]
+        assert Path(args[0]).name == "comfy-gen"
+        assert args[1] == "delete"
         batch_path = args[args.index("--batch") + 1]
         with open(batch_path) as f:
             delete_paths.append(json.load(f))

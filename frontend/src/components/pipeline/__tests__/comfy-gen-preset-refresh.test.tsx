@@ -126,6 +126,20 @@ beforeEach(() => {
 })
 
 describe('ComfyGen preset refresh state', () => {
+  test('shows the resolved comfy-gen CLI mode from health', async () => {
+    vi.mocked(fetch).mockImplementation(async (url: string) => {
+      if (url.includes('/health')) {
+        return { json: async () => ({ ok: true, mode: 'sidecar', path: '/tmp/blockflow/venv/bin/comfy-gen' }) } as Response
+      }
+      if (url.includes('/cache')) return { json: async () => ({ ok: true }) } as Response
+      return { json: async () => ({ ok: true }) } as Response
+    })
+
+    renderBlock()
+
+    expect(await screen.findByText(/CLI: sidecar/i)).toBeInTheDocument()
+  })
+
   test('shows reload control when installed preset metadata is newer and reapplies current preset', async () => {
     sessionStorage.setItem('block_b1_selected_preset', JSON.stringify('preset-a::0'))
     sessionStorage.setItem('block_b1_preset_applied_updated_at', JSON.stringify('2026-05-27T05:00:00+00:00'))

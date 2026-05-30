@@ -402,7 +402,8 @@ def test_install_drives_state_through_full_event_stream(client, mocker):
 
     # Verify the CLI was invoked with the right argv shape.
     args = preset_routes.subprocess.Popen.call_args.args[0]
-    assert args[:2] == ["comfy-gen", "install-preset"]
+    assert Path(args[0]).name == "comfy-gen"
+    assert args[1] == "install-preset"
     assert "--preset-id" in args and preset["id"] in args
     assert "--volume-id" in args and "vol_test" in args
 
@@ -1083,7 +1084,8 @@ def test_install_mode_gpu_uses_old_download_cli(client, mocker):
     assert s["state"] == "completed", s
 
     args = preset_routes.subprocess.Popen.call_args.args[0]
-    assert args[:2] == ["comfy-gen", "download"]
+    assert Path(args[0]).name == "comfy-gen"
+    assert args[1] == "download"
     assert "install-preset" not in args
     assert "--batch" in args
     assert "--endpoint-id" in args and "ep_test" in args

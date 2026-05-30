@@ -19,7 +19,6 @@ from __future__ import annotations
 import collections
 import json
 import re
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -33,7 +32,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend import civitai_client, config, lora_metadata, settings_store
+from backend import civitai_client, comfy_gen_cli, config, lora_metadata, settings_store
 
 router = APIRouter()
 
@@ -203,10 +202,12 @@ def _fetch_loras_from_comfygen(endpoint_id: str) -> list[str]:
     `comfy-gen list` always emits JSON on stdout; the response shape is
     {ok, model_type, files: [{filename, path, size_mb}], ...}.
     """
-    if not shutil.which("comfy-gen"):
-        raise HTTPException(status_code=500, detail="comfy-gen CLI not found on PATH")
+    try:
+        comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+    except comfy_gen_cli.ComfyGenNotFound as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     proc = subprocess.run(
-        ["comfy-gen", "list", "loras", "--endpoint-id", endpoint_id],
+        comfy_gen.command("list", "loras", "--endpoint-id", endpoint_id),
         capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
     )
     if proc.returncode != 0:
@@ -242,8 +243,12 @@ def _delete_subprocess(filenames: list[str], endpoint_id: str) -> list[dict[str,
         json.dump(paths, tf)
         batch_file = tf.name
     try:
+        try:
+            comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+        except comfy_gen_cli.ComfyGenNotFound as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         proc = subprocess.run(
-            ["comfy-gen", "delete", "--batch", batch_file, "--endpoint-id", endpoint_id],
+            comfy_gen.command("delete", "--batch", batch_file, "--endpoint-id", endpoint_id),
             capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
         )
     finally:
@@ -295,8 +300,12 @@ def _run_download_streaming(
                     pass
 
     try:
+        try:
+            comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+        except comfy_gen_cli.ComfyGenNotFound as exc:
+            return (False, str(exc))
         proc = subprocess.Popen(
-            ["comfy-gen", "download", "--batch", batch_file, "--endpoint-id", endpoint_id],
+            comfy_gen.command("download", "--batch", batch_file, "--endpoint-id", endpoint_id),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         pump = threading.Thread(target=_pump, args=(proc.stderr,), daemon=True)

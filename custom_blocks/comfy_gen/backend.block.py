@@ -17,7 +17,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, media_meta, services, state
+from backend import comfy_gen_cli, config, media_meta, services, state
 
 router = APIRouter()
 
@@ -155,17 +155,17 @@ def _run_refresh(cmd: list[str]) -> None:
 @router.post("/refresh-cache")
 def refresh_cache(payload: dict[str, Any] = {}) -> JSONResponse:
     """Start comfy-gen info in background, returns immediately."""
-    import shutil
-
     with _refresh_lock:
         if _refresh_state["running"]:
             return JSONResponse({"ok": True, "already_running": True})
 
-        if not shutil.which("comfy-gen"):
-            return JSONResponse({"ok": False, "error": "comfy-gen CLI not found on PATH"})
+        try:
+            comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+        except comfy_gen_cli.ComfyGenNotFound as exc:
+            return JSONResponse({"ok": False, "error": str(exc)})
 
         eid = str(payload.get("endpoint_id", "")).strip() or config.RUNPOD_ENDPOINT_ID or ""
-        cmd = ["comfy-gen", "info"]
+        cmd = comfy_gen.command("info")
         if eid:
             cmd.extend(["--endpoint-id", eid])
 
@@ -250,14 +250,14 @@ def _run_download(cmd: list[str]) -> None:
 @router.post("/download-models")
 def download_models(payload: dict[str, Any] = {}) -> JSONResponse:
     """Start comfy-gen download --batch in background."""
-    import shutil
-
     with _download_lock:
         if _download_state["running"]:
             return JSONResponse({"ok": True, "already_running": True})
 
-        if not shutil.which("comfy-gen"):
-            return JSONResponse({"ok": False, "error": "comfy-gen CLI not found on PATH"})
+        try:
+            comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+        except comfy_gen_cli.ComfyGenNotFound as exc:
+            return JSONResponse({"ok": False, "error": str(exc)})
 
         models = payload.get("models", [])
         if not models:
@@ -286,7 +286,7 @@ def download_models(payload: dict[str, Any] = {}) -> JSONResponse:
         json.dump(batch, tmp)
         tmp.close()
 
-        cmd = ["comfy-gen", "download", "--batch", tmp.name]
+        cmd = comfy_gen.command("download", "--batch", tmp.name)
         if eid:
             cmd.extend(["--endpoint-id", eid])
 
@@ -319,21 +319,20 @@ def download_status() -> JSONResponse:
 @router.get("/health")
 def health_check() -> JSONResponse:
     """Check if comfy-gen CLI is installed and reachable."""
-    import shutil
-
-    path = shutil.which("comfy-gen")
-    if not path:
-        return JSONResponse({"ok": False, "error": "comfy-gen CLI not found on PATH"})
+    try:
+        comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+    except comfy_gen_cli.ComfyGenNotFound as exc:
+        return JSONResponse({"ok": False, "error": str(exc)})
     try:
         result = subprocess.run(
-            ["comfy-gen", "--help"],
+            comfy_gen.command("--help"),
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
             return JSONResponse({"ok": False, "error": f"comfy-gen --help exited with code {result.returncode}"})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)})
-    return JSONResponse({"ok": True, "path": path})
+    return JSONResponse({"ok": True, "path": str(comfy_gen.path), "mode": comfy_gen.mode})
 
 
 
@@ -1290,7 +1289,8 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
         services._update_job(job_id, status="SUBMITTING")
 
         # Build comfy-gen command
-        cmd = ["comfy-gen", "submit", workflow_path, "--timeout", str(config.POLL_TIMEOUT_SEC)]
+        comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+        cmd = comfy_gen.command("submit", workflow_path, "--timeout", str(config.POLL_TIMEOUT_SEC))
         if endpoint_id:
             cmd.extend(["--endpoint-id", endpoint_id])
         for node_id, local_path in file_inputs.items():
@@ -1822,11 +1822,12 @@ def cancel(job_id: str) -> JSONResponse:
     remote_cancel_status = "no_remote_id"
     remote_cancel_error = ""
     if remote_job_id:
-        cmd = ["comfy-gen", "cancel", remote_job_id]
-        if endpoint_id:
-            cmd.extend(["--endpoint-id", endpoint_id])
-        print(f"[comfy-gen] Cancel command: {' '.join(cmd)}", flush=True)
         try:
+            comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+            cmd = comfy_gen.command("cancel", remote_job_id)
+            if endpoint_id:
+                cmd.extend(["--endpoint-id", endpoint_id])
+            print(f"[comfy-gen] Cancel command: {' '.join(cmd)}", flush=True)
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if result.returncode == 0:
                 cancelled_remote = True

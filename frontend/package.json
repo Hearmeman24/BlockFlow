@@ -8,6 +8,7 @@
     "prebuild": "node scripts/gen-custom-block-registry.mjs",
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "node scripts/prepare-standalone-build.mjs && node scripts/verify-standalone-build.mjs",
     "start": "next start",
     "lint": "eslint",
     "pretest": "node scripts/gen-custom-block-registry.mjs",

@@ -130,6 +130,33 @@ def test_sync_shells_out_and_refreshes_cache(client, monkeypatch, tmp_path) -> N
     assert data["stale"] is False
 
 
+def test_fetch_loras_uses_resolved_sidecar_command(monkeypatch, tmp_path) -> None:
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr(config, "COMFY_GEN_INFO_CACHE_PATH", tmp_path / "comfy_gen_info_cache.json")
+
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = json.dumps({"ok": True, "files": [{"filename": "fresh.safetensors"}]})
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(lora_routes.subprocess, "run", fake_run)
+
+    assert lora_routes._fetch_loras_from_comfygen("ep-sidecar") == ["fresh.safetensors"]
+    assert captured["args"][:3] == [str(sidecar), "list", "loras"]
+    assert "--endpoint-id" in captured["args"]
+
+
 # ---- POST /api/loras/delete ----
 
 def test_delete_batch_drops_db_rows_for_deleted_only(client, monkeypatch) -> None:

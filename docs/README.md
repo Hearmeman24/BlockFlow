@@ -11,6 +11,8 @@ so it can evolve independently.
 | [`testing.md`](testing.md) | TDD doctrine, how to run + write tests |
 | [`private-blocks.md`](private-blocks.md) | Optional `private_blocks/` overlay for blocks that stay out of the public build |
 | [`generate-ideas.md`](generate-ideas.md) | Notes on the prompt-writer "generate ideas" feature |
+| [`frontend-standalone-build.md`](frontend-standalone-build.md) | Prebuilt Next.js standalone frontend packaging |
+| [`npm-release.md`](npm-release.md) | npm package bootstrap, trusted publishing, and release flow |
 
 ## For contributors
 

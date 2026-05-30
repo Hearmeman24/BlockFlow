@@ -20,9 +20,10 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 def resolve_user_data_dir() -> Path:
     """Resolution order:
       1. $BLOCKFLOW_DATA_DIR (explicit override; respected verbatim).
-      2. macOS:   ~/Library/Application Support/blockflow
+      2. $BLOCKFLOW_HOME (portable product home; respected verbatim).
+      3. macOS:   ~/Library/Application Support/BlockFlow
       3. Linux:   $XDG_DATA_HOME/blockflow if set, else ~/.local/share/blockflow
-      4. Windows: %LOCALAPPDATA%\\blockflow if set, else ~/AppData/Local/blockflow
+      4. Windows: %LOCALAPPDATA%\\BlockFlow if set, else ~/AppData/Local/BlockFlow
                   (LOCALAPPDATA is machine-local — right choice for a multi-GB
                   SQLite DB; APPDATA would sync via Windows roaming profiles.)
       5. Other:   ~/.blockflow (catch-all so worktrees don't fragment).
@@ -30,8 +31,11 @@ def resolve_user_data_dir() -> Path:
     explicit = os.environ.get("BLOCKFLOW_DATA_DIR")
     if explicit:
         return Path(explicit).expanduser()
+    home = os.environ.get("BLOCKFLOW_HOME")
+    if home:
+        return Path(home).expanduser()
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "blockflow"
+        return Path.home() / "Library" / "Application Support" / "BlockFlow"
     if sys.platform.startswith("linux"):
         xdg = os.environ.get("XDG_DATA_HOME")
         if xdg:
@@ -40,8 +44,8 @@ def resolve_user_data_dir() -> Path:
     if sys.platform == "win32" or sys.platform.startswith("cygwin"):
         local_appdata = os.environ.get("LOCALAPPDATA")
         if local_appdata:
-            return Path(local_appdata) / "blockflow"
-        return Path.home() / "AppData" / "Local" / "blockflow"
+            return Path(local_appdata) / "BlockFlow"
+        return Path.home() / "AppData" / "Local" / "BlockFlow"
     return Path.home() / ".blockflow"
 
 

@@ -641,6 +641,7 @@ function ComfyGenBlock({
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [workflowError, setWorkflowError] = useState('')
   const [cliMissing, setCliMissing] = useState<string | null>(null)
+  const [cliHealth, setCliHealth] = useState<{ mode: string; path?: string } | null>(null)
   const [missingModels, setMissingModels] = useState<MissingModel[] | null>(null)
   const [downloadRunning, setDownloadRunning] = useState(false)
   const [downloadStatus, setDownloadStatus] = useState('')
@@ -710,8 +711,19 @@ function ComfyGenBlock({
   useEffect(() => {
     fetch('/api/blocks/comfy_gen/health')
       .then((r) => r.json())
-      .then((d) => { if (!d.ok) setCliMissing(d.error || 'comfy-gen CLI not available') })
-      .catch(() => setCliMissing('Could not reach backend'))
+      .then((d) => {
+        if (!d.ok) {
+          setCliMissing(d.error || 'comfy-gen CLI not available')
+          setCliHealth(null)
+          return
+        }
+        setCliMissing(null)
+        if (d.mode) setCliHealth({ mode: d.mode, path: d.path })
+      })
+      .catch(() => {
+        setCliMissing('Could not reach backend')
+        setCliHealth(null)
+      })
     fetch(CACHE_ENDPOINT)
       .then((r) => r.json())
       .then((d) => { if (d.ok) applyCacheData(d) })
@@ -1906,9 +1918,14 @@ function ComfyGenBlock({
 
       {cliMissing && (
         <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-[11px] text-yellow-200">
-          <span className="font-medium">comfy-gen CLI not found.</span>{' '}
-          Install it with <code className="rounded bg-muted px-1 py-0.5 text-[10px]">pip install comfy-gen</code> and restart the app.
+          <span className="font-medium">ComfyGen CLI unavailable.</span>{' '}
+          {cliMissing}
         </div>
+      )}
+      {cliHealth && (
+        <p className="text-[10px] text-muted-foreground" title={cliHealth.path || undefined}>
+          CLI: {cliHealth.mode}
+        </p>
       )}
       {/* Progress */}
       {progress && (

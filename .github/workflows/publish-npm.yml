@@ -1,0 +1,93 @@
+name: Publish npm package
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  npx-smoke:
+    name: Cross-platform npx smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Build frontend standalone bundle
+        run: npm --prefix frontend run build
+
+      - name: Run packaged npx smoke
+        run: node scripts/smoke_npm_package.mjs
+
+  publish:
+    name: Build, verify, and publish
+    needs: npx-smoke
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@hearmeman24/blockflow
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Set up uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install frontend dependencies
+        run: npm --prefix frontend ci
+
+      - name: Run Python package tests
+        run: |
+          uv run --extra dev pytest \
+            tests/test_app_launcher.py \
+            tests/test_user_data_dir.py \
+            tests/test_npm_package_metadata.py \
+            tests/test_comfy_gen_cli_resolver.py
+
+      - name: Run frontend packaging tests
+        run: npm --prefix frontend test -- verify-standalone-build.test.ts
+
+      - name: Build frontend standalone bundle
+        run: npm --prefix frontend run build
+
+      - name: Verify npm tarball contents
+        run: |
+          npm pack --dry-run 2>&1 | tee /tmp/blockflow-pack.txt
+          grep -q "frontend/.next/standalone/server.js" /tmp/blockflow-pack.txt
+          grep -q "frontend/.next/standalone/.next/static/" /tmp/blockflow-pack.txt
+          grep -q "frontend/.next/standalone/public/logo.png" /tmp/blockflow-pack.txt
+          ! grep -q "__pycache__" /tmp/blockflow-pack.txt
+
+      - name: Publish to npm
+        run: npm publish

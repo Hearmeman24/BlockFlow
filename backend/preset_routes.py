@@ -47,7 +47,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend import config, preset_resolver, runpod_api, settings_store
+from backend import comfy_gen_cli, config, preset_resolver, runpod_api, settings_store
 
 router = APIRouter()
 
@@ -596,13 +596,17 @@ def _delete_paths(
         json.dump(paths, tf)
         paths_file = tf.name
     try:
+        try:
+            comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+        except comfy_gen_cli.ComfyGenNotFound as exc:
+            return {"ok": False, "results": [], "error": str(exc)}
         rc, stdout, stderr = _run_comfy_gen_capture(
-            [
-                "comfy-gen", "delete",
+            comfy_gen.command(
+                "delete",
                 "--batch", paths_file,
                 "--endpoint-id", endpoint_id,
                 "--timeout", "300",
-            ],
+            ),
             log_fp=log_fp,
             label="delete",
             timeout=360,
@@ -796,12 +800,19 @@ def _run_gpu_install_subprocess(
             json.dump(batch_spec, tf)
             batch_path = tf.name
 
-        args = [
-            "comfy-gen", "download",
+        try:
+            comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+        except comfy_gen_cli.ComfyGenNotFound as exc:
+            _install_state["state"] = "error"
+            _install_state["error"] = str(exc)
+            return
+
+        args = comfy_gen.command(
+            "download",
             "--batch", batch_path,
             "--endpoint-id", endpoint_id,
             "--timeout", "3600",
-        ]
+        )
         proc = subprocess.Popen(
             args,
             stdout=subprocess.PIPE,
@@ -932,11 +943,19 @@ def _run_install_subprocess(
     log_fp = log_path.open("a", buffering=1)
     log_fp.write(f"\n\n=== {_now_iso()} preset={preset_id} START (install-preset CLI) ===\n")
 
-    args = [
-        "comfy-gen", "install-preset",
+    try:
+        comfy_gen = comfy_gen_cli.resolve_comfy_gen()
+    except comfy_gen_cli.ComfyGenNotFound as exc:
+        _install_state["state"] = "error"
+        _install_state["error"] = str(exc)
+        log_fp.close()
+        return
+
+    args = comfy_gen.command(
+        "install-preset",
         "--preset-id", preset_id,
         "--volume-id", volume_id,
-    ]
+    )
     # sgs-ui-h1c.1.4 / sgs-ui-8ef: tokens are passed via env, not argv, so
     # they don't surface in `ps aux` or process listings. comfy-gen reads
     # env first and falls back to deprecated --civitai-token/--hf-token.

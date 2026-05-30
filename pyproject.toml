@@ -1,6 +1,6 @@
 [project]
 name = "blockflow"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local-only visual pipeline UI for AI image/video generation via RunPod serverless"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,6 +10,7 @@ dependencies = [
     "loguru>=0.7",
     "curl_cffi>=0.7",
     "Pillow>=10",
+    "comfy-gen>=0.2,<0.3",
 ]
 
 [project.optional-dependencies]

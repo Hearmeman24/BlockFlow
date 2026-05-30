@@ -407,3 +407,64 @@ VALIDATOR_CREDENTIALS: dict[str, tuple[str, ...]] = {
     "civitai": ("civitai_api_key",),
     "huggingface": ("hf_token",),
 }
+
+# Maps validator service name → the credentials that MUST be non-empty for the
+# validator to even be runnable. Narrower than VALIDATOR_CREDENTIALS: r2 omits
+# r2_endpoint_url because an empty endpoint means "use the AWS S3 default"
+# (mirrors wizard_routes.REQUIRED_R2_CREDS). Used by service_status() to decide
+# `credentials_missing`.
+REQUIRED_CREDENTIALS: dict[str, tuple[str, ...]] = {
+    "runpod": ("runpod_api_key",),
+    "r2": ("r2_access_key_id", "r2_secret_access_key", "r2_bucket"),
+    "openrouter": ("openrouter_api_key",),
+    "civitai": ("civitai_api_key",),
+    "huggingface": ("hf_token",),
+}
+
+# A cached validation verdict older than this is reported as `stale` and must be
+# re-run before it counts as usable. Mirrors wizard_routes.VALIDATION_TTL_SECONDS.
+VALIDATION_TTL_SECONDS = 600
+
+
+def credentials_missing(service: str) -> bool:
+    """Whether any required credential for `service` is empty/unset."""
+    fields = REQUIRED_CREDENTIALS.get(service, ())
+    return any(not settings_store.get_credential(f) for f in fields)
+
+
+def service_status(service: str) -> dict[str, Any]:
+    """Read-only gating status for a validator service, derived from the cached
+    verdict (NO live network call).
+
+    Status values:
+      - credentials_missing: a required credential is empty in Settings.
+      - unvalidated:         creds present but no validation has been recorded.
+      - stale:               last validation older than VALIDATION_TTL_SECONDS.
+      - invalid:             last validation ran and returned ok=False.
+      - valid:               last validation ok=True and fresh.
+    """
+    if credentials_missing(service):
+        return {"status": "credentials_missing", "validated_at": None, "error": None}
+
+    record = settings_store.get_credential_validation(service)
+    if record is None:
+        return {"status": "unvalidated", "validated_at": None, "error": None}
+
+    if not record["ok"]:
+        return {
+            "status": "invalid",
+            "validated_at": record["validated_at"],
+            "error": record["error"],
+        }
+
+    from datetime import datetime, timezone
+    try:
+        ts = datetime.fromisoformat(record["validated_at"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return {"status": "stale", "validated_at": record["validated_at"], "error": None}
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    if age > VALIDATION_TTL_SECONDS:
+        return {"status": "stale", "validated_at": record["validated_at"], "error": None}
+    return {"status": "valid", "validated_at": record["validated_at"], "error": None}

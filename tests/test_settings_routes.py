@@ -272,3 +272,78 @@ def test_credentials_endpoints_prefs_are_isolated_namespaces(client):
     assert client.get("/api/settings/credentials/comfygen").json()["value"] == "this_is_a_credential"
     assert client.get("/api/settings/endpoints/comfygen").json()["endpoint_id"] == "ep_real"
     assert client.get("/api/settings/app-prefs/comfygen").json()["value"] == "this_is_a_pref"
+
+
+# === GET validation status (sgs-ui storage R2 gating) =======================
+# The Storage tab needs to read the *cached* validation verdict for a service
+# WITHOUT running a live (slow, network) validation. GET mirrors the wizard's
+# _service_status state machine: credentials_missing | unvalidated | stale |
+# invalid | valid, with the same 10-minute freshness TTL.
+
+def _stamp_r2_validation(ok: bool, *, age_seconds: int = 0, error=None):
+    from datetime import datetime, timezone, timedelta
+    ts = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat(timespec="seconds")
+    settings_store.set_credential_validation("r2", {"ok": ok, "error": error, "validated_at": ts})
+
+
+def _configure_r2():
+    settings_store.set_credential("r2_access_key_id", "AKIA_TEST")
+    settings_store.set_credential("r2_secret_access_key", "sekret")
+    settings_store.set_credential("r2_bucket", "my-bucket")
+
+
+def test_validation_status_unknown_service_404(client):
+    r = client.get("/api/settings/validate/not_a_service")
+    assert r.status_code == 404
+
+
+def test_validation_status_credentials_missing(client):
+    r = client.get("/api/settings/validate/r2")
+    assert r.status_code == 200
+    assert r.json()["status"] == "credentials_missing"
+
+
+def test_validation_status_unvalidated_when_creds_present_no_verdict(client):
+    _configure_r2()
+    r = client.get("/api/settings/validate/r2")
+    assert r.json()["status"] == "unvalidated"
+
+
+def test_validation_status_valid_when_fresh_ok(client):
+    _configure_r2()
+    _stamp_r2_validation(True, age_seconds=0)
+    body = client.get("/api/settings/validate/r2").json()
+    assert body["status"] == "valid"
+    assert body["validated_at"]
+
+
+def test_validation_status_stale_when_ok_but_old(client):
+    _configure_r2()
+    _stamp_r2_validation(True, age_seconds=601)
+    assert client.get("/api/settings/validate/r2").json()["status"] == "stale"
+
+
+def test_validation_status_invalid_surfaces_error(client):
+    _configure_r2()
+    _stamp_r2_validation(False, error="head_bucket AccessDenied")
+    body = client.get("/api/settings/validate/r2").json()
+    assert body["status"] == "invalid"
+    assert body["error"] == "head_bucket AccessDenied"
+
+
+def test_validation_status_endpoint_url_is_optional_for_r2(client):
+    """r2_endpoint_url empty (AWS S3 default) must NOT report credentials_missing
+    once the three required fields are present."""
+    _configure_r2()  # leaves r2_endpoint_url unset
+    assert client.get("/api/settings/validate/r2").json()["status"] == "unvalidated"
+
+
+def test_validation_status_changing_credential_resets_to_unvalidated(client):
+    """Regression: store auto-clears the cached verdict when an underlying
+    credential changes, so the status endpoint must drop back to unvalidated."""
+    _configure_r2()
+    _stamp_r2_validation(True, age_seconds=0)
+    assert client.get("/api/settings/validate/r2").json()["status"] == "valid"
+    # mutate a dependency credential
+    client.put("/api/settings/credentials/r2_bucket", json={"value": "other-bucket"})
+    assert client.get("/api/settings/validate/r2").json()["status"] == "unvalidated"

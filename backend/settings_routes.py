@@ -179,6 +179,21 @@ def put_shortcut_prefs(prefs: dict[str, bool]) -> dict[str, bool]:
 
 # === validation =============================================================
 
+@router.get("/api/settings/validate/{service}")
+def get_validation_status(service: str) -> JSONResponse:
+    """Read the *cached* validation verdict for a service without running a
+    live (slow/network) validation. Returns the gating status the Storage tab
+    and others use to decide whether a feature is unlocked:
+    credentials_missing | unvalidated | stale | invalid | valid.
+    """
+    if service not in settings_validators.VALIDATORS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no validator available for service: {service}",
+        )
+    return JSONResponse(settings_validators.service_status(service))
+
+
 @router.post("/api/settings/validate/{service}")
 def validate_service(service: str) -> JSONResponse:
     validator = settings_validators.VALIDATORS.get(service)

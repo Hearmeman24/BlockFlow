@@ -165,6 +165,22 @@ export async function validateService(service: string): Promise<ValidationResult
   return (await res.json()) as ValidationResult
 }
 
+// Read-only gating status for a service, derived from the cached verdict (no
+// live network call). Mirrors the backend `service_status` state machine.
+export type ValidationStatus = 'valid' | 'unvalidated' | 'stale' | 'invalid' | 'credentials_missing'
+
+export type ValidationStatusResult = {
+  status: ValidationStatus
+  validated_at: string | null
+  error: string | null
+}
+
+export async function getValidationStatus(service: string): Promise<ValidationStatusResult> {
+  const res = await fetch(`/api/settings/validate/${encodeURIComponent(service)}`, { method: 'GET' })
+  await _throwIfNonOk(res)
+  return (await res.json()) as ValidationStatusResult
+}
+
 // === wizard (ComfyGen) ======================================================
 
 export type TierId = 'budget' | 'recommended' | 'performance'

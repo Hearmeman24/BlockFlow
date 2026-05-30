@@ -6,6 +6,8 @@ import { PipelineTabsProvider } from '@/lib/pipeline/tabs-context'
 import { registerBlockDef } from '@/lib/pipeline/registry'
 import { blockDef as seedanceBlockDef } from '../custom_blocks/generated/seedance'
 
+type ExecuteFn = (inputs: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
+
 beforeAll(() => {
   registerBlockDef({
     type: 'seedance_source_o1q',
@@ -69,5 +71,46 @@ describe('Seedance source mode UI', () => {
     expect(screen.getByRole('button', { name: /images source mode/i })).toHaveTextContent(
       'Images: closest upstream',
     )
+  })
+
+  it('submits a local upstream image path instead of treating it as absent', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/blocks/seedance/health') {
+        return Promise.resolve(new Response(JSON.stringify({ piapi_key_present: true }), { status: 200 }))
+      }
+      if (url === '/api/blocks/seedance/run') {
+        return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'stop after submit' }), { status: 200 }))
+      }
+      return Promise.reject(new Error(`Unhandled fetch: ${url}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    sessionStorage.setItem('block_seedance-local_mode', JSON.stringify('omni_reference'))
+    sessionStorage.setItem('block_seedance-local_prompt', JSON.stringify('make this move'))
+    let execute: ExecuteFn | null = null
+    const Seedance = seedanceBlockDef.component
+
+    render(
+      <PipelineTabsProvider>
+        <PipelineProvider tabId="seedance-local-ref-test">
+          <Seedance
+            blockId="seedance-local"
+            inputs={{ image: '/outputs/gpt_image_piapi/frame.png' }}
+            setOutput={() => {}}
+            registerExecute={(fn) => { execute = fn as ExecuteFn }}
+            setStatusMessage={() => {}}
+          />
+        </PipelineProvider>
+      </PipelineTabsProvider>,
+    )
+    await waitFor(() => expect(execute).toBeTruthy())
+
+    await expect(execute!({ image: '/outputs/gpt_image_piapi/frame.png' }, new AbortController().signal))
+      .rejects.toThrow('stop after submit')
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/blocks/seedance/run', expect.objectContaining({
+      method: 'POST',
+      body: expect.stringContaining('"/outputs/gpt_image_piapi/frame.png"'),
+    }))
   })
 })

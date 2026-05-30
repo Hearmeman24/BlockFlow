@@ -63,13 +63,12 @@ type JobSnap = {
   dataset: DatasetValue | null
 }
 
-import { toPublicUrls } from '@/lib/image-ref'
+import { toBackendResolvableUrls } from '@/lib/image-ref'
 
 function toReferenceUrls(value: unknown): string[] {
-  // RunPod's Nano Banana 2 endpoint can only fetch http(s) URLs — bare
-  // /outputs paths are not externally reachable. Dedupe to handle upstream
-  // pair-outputs (e.g. I2V Prompt Writer with N>1) that repeat refs.
-  return Array.from(new Set(toPublicUrls(value)))
+  // The backend resolves local /outputs paths to public URLs before handing
+  // them to the RunPod Nano Banana endpoint.
+  return Array.from(new Set(toBackendResolvableUrls(value)))
 }
 
 function toPromptList(value: unknown): string[] {

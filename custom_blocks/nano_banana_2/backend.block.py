@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, settings_store
+from backend import config, settings_store, tmpfiles
 
 router = APIRouter()
 
@@ -231,7 +231,10 @@ async def run(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": f"unsupported aspect_ratio {aspect_ratio!r}"}, status_code=400)
     if not isinstance(refs_raw, list):
         return JSONResponse({"ok": False, "error": "reference_image_urls must be a list"}, status_code=400)
-    references = [u.strip() for u in refs_raw if isinstance(u, str) and u.strip()]
+    try:
+        references = [tmpfiles.ensure_public_url(u.strip()) for u in refs_raw if isinstance(u, str) and u.strip()]
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     if len(references) > MAX_REFERENCE_IMAGES:
         return JSONResponse({"ok": False, "error": f"max {MAX_REFERENCE_IMAGES} reference images"}, status_code=400)
     if not references:

@@ -66,6 +66,29 @@ export function toPublicUrl(input: unknown): string | undefined {
 }
 
 /**
+ * URLs suitable for block backends that can resolve local `/outputs/...`
+ * paths before invoking remote providers. Prefer the local side of a VideoRef
+ * when it exists; fall back to a public URL for remote-only refs.
+ */
+export function toBackendResolvableUrls(input: unknown): string[] {
+  const out: string[] = []
+  for (const item of normalize(input)) {
+    if (typeof item === 'string') {
+      out.push(item)
+      continue
+    }
+    if (item.local) {
+      out.push(item.local)
+      continue
+    }
+    if (item.url && isHttpUrl(item.url)) {
+      out.push(item.url)
+    }
+  }
+  return out.filter((s) => s.length > 0)
+}
+
+/**
  * URLs/paths preferring the local form — for use inside this app
  * (browser preview via FastAPI's /outputs route). Falls back to the
  * public URL when no local form exists.

@@ -68,6 +68,32 @@ export function toPublicUrl(input: unknown): string | undefined {
 }
 
 /**
+ * URLs suitable for provider submission when a backend can resolve local
+ * `/outputs/...` paths before calling the remote provider. Per item, prefer
+ * the local side when present so expired or forbidden public mirrors do not
+ * win over files already available to the backend.
+ */
+export function toBackendResolvableUrls(input: unknown): string[] {
+  const out: string[] = []
+  for (const item of normalize(input)) {
+    if (typeof item === 'string') {
+      out.push(item)
+      continue
+    }
+    if (item.local) {
+      out.push(item.local)
+      continue
+    }
+    if (item.url && isHttpUrl(item.url)) {
+      out.push(item.url)
+    }
+  }
+  return out.filter((s) => s.length > 0)
+}
+
+export const toPublicOrDisplayUrls = toBackendResolvableUrls
+
+/**
  * URLs/paths preferring the local form — for use inside this app (browser
  * display via FastAPI's /outputs route, or backend disk reads). Falls back
  * to the public URL when no local form exists.

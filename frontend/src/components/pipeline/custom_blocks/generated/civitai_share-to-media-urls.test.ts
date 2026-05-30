@@ -50,9 +50,8 @@ describe('civitai_share toMediaUrls', () => {
     expect(toMediaUrls(true)).toEqual([])
   })
 
-  it('delegates ImageRef-shaped values to toPublicUrls', () => {
-    // ImageRef with public URL → returned via toPublicUrls
+  it('prefers ImageRef local paths because the backend uploads local files itself', () => {
     const ref = { kind: 'image-ref', local: '/outputs/x.png', url: 'https://cdn.example.com/x.png' }
-    expect(toMediaUrls(ref)).toEqual(['https://cdn.example.com/x.png'])
+    expect(toMediaUrls(ref)).toEqual(['/outputs/x.png'])
   })
 })

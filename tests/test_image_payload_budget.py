@@ -106,6 +106,26 @@ def test_multimodal_prompt_writer_resolves_local_images_under_payload_budget(tmp
     assert sum(_data_uri_payload_size(url) for url in resolved) <= 900_000
 
 
+def test_multimodal_prompt_writer_converts_local_video_audio_to_public_urls(monkeypatch: pytest.MonkeyPatch):
+    spec = importlib.util.spec_from_file_location(
+        "multimodal_prompt_writer_media_refs",
+        ROOT / "custom_blocks" / "multimodal_prompt_writer" / "backend.block.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+
+    monkeypatch.setattr(
+        mod.tmpfiles,
+        "ensure_public_url",
+        lambda url: f"https://tmpfiles.test/dl/{Path(url).name}" if url.startswith("/outputs/") else url,
+    )
+
+    assert mod._resolve_fetchable_media_url("/outputs/video_viewer/clip.mp4") == "https://tmpfiles.test/dl/clip.mp4"
+    assert mod._resolve_fetchable_media_url("/outputs/tts/voice.mp3") == "https://tmpfiles.test/dl/voice.mp3"
+    assert mod._resolve_fetchable_media_url("https://cdn.test/clip.mp4") == "https://cdn.test/clip.mp4"
+
+
 def test_tmpfiles_upload_compresses_large_image_before_external_post(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

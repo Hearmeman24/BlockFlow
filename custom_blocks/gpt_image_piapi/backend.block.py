@@ -239,6 +239,18 @@ def _validate_run_body(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _download_url(url: str, timeout: int = 60) -> tuple[bytes, str, str]:
+    if url.startswith("/outputs/"):
+        local_path = config.LOCAL_OUTPUT_DIR / url.split("/outputs/", 1)[1]
+        if not local_path.exists():
+            raise RuntimeError(f"Local reference not found: {url}")
+        content_type = mimetypes.guess_type(local_path.name)[0] or "application/octet-stream"
+        return local_path.read_bytes(), local_path.name, content_type
+
+    local_candidate = Path(url)
+    if not url.startswith(("http://", "https://")) and local_candidate.exists():
+        content_type = mimetypes.guess_type(local_candidate.name)[0] or "application/octet-stream"
+        return local_candidate.read_bytes(), local_candidate.name, content_type
+
     req = urllib.request.Request(url, method="GET", headers={"User-Agent": PIAPI_UA})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = resp.read()

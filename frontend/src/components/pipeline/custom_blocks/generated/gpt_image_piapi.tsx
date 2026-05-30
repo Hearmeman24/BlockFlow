@@ -16,7 +16,7 @@ import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { usePromptLibrary } from '@/lib/use-prompt-library'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
-import { toPublicUrls } from '@/lib/image-ref'
+import { toBackendResolvableUrls, toDisplayUrls } from '@/lib/image-ref'
 import {
   PORT_IMAGE,
   PORT_TEXT,
@@ -92,7 +92,7 @@ function GptImagePiapiBlock({
   const { userPrompts, addPrompt, deletePrompt } = usePromptLibrary()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
 
-  const upstreamRefs = useMemo(() => Array.from(new Set(toPublicUrls(inputs.image))), [inputs.image])
+  const upstreamRefs = useMemo(() => Array.from(new Set(toDisplayUrls(inputs.image))), [inputs.image])
   const refUrls = useMemo(() => Array.from(new Set([...upstreamRefs, ...localRefs])), [localRefs, upstreamRefs])
   const upstreamPrompt = toText(inputs.text).trim()
   const mode = refUrls.length > 0 ? 'Edit' : 'Generate'
@@ -188,7 +188,7 @@ function GptImagePiapiBlock({
 
   useEffect(() => {
     registerExecute(async (freshInputs, signal) => {
-      const upstream = Array.from(new Set(toPublicUrls(freshInputs.image)))
+      const upstream = Array.from(new Set(toBackendResolvableUrls(freshInputs.image)))
       const refs = Array.from(new Set([...upstream, ...localRefs])).slice(0, MAX_REFERENCES)
       const finalPrompt = useUpstreamPrompt
         ? toText(freshInputs.text).trim() || prompt

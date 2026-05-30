@@ -14,8 +14,11 @@ import { usePromptSourceSelector } from '@/lib/pipeline/prompt-source-selector'
 import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
-import { toPublicUrls } from '@/lib/image-ref'
-import { toPublicUrls as toPublicVideoUrls, toDisplayUrls as toDisplayVideoUrls } from '@/lib/video-ref'
+import { toBackendResolvableUrls as toBackendResolvableImageUrls } from '@/lib/image-ref'
+import {
+  toBackendResolvableUrls as toBackendResolvableVideoUrls,
+  toDisplayUrls as toDisplayVideoUrls,
+} from '@/lib/video-ref'
 import {
   PORT_IMAGE,
   PORT_TEXT,
@@ -121,14 +124,6 @@ function asUrlList(value: unknown): string[] {
   return []
 }
 
-function toLocalOrigin(u: string): string {
-  // Upstream may emit /outputs/... paths — make them absolute so PiAPI can fetch.
-  if (u.startsWith('/outputs/') && typeof window !== 'undefined') {
-    return `${window.location.origin}${u}`
-  }
-  return u
-}
-
 function SeedanceBlock({
   blockId,
   inputs,
@@ -189,13 +184,11 @@ function SeedanceBlock({
     })
   }, [setPrompt])
 
-  const upstreamImageUrls = Array.from(new Set(toPublicUrls(inputs.image)))
-  // Video refs: use video-ref helper so we pick the tmpfiles URL (PiAPI-
-  // fetchable) over the /outputs path when both are available. For audio,
-  // legacy bare-string emitters get passed through asUrlList + rewritten
-  // to absolute origin so the local mp3 served by /outputs is reachable.
-  const upstreamVideoUrls = toPublicVideoUrls(inputs.video)
-  const upstreamAudioUrls = asUrlList(inputs.audio).map(toLocalOrigin)
+  const upstreamImageUrls = Array.from(new Set(toBackendResolvableImageUrls(inputs.image)))
+  // Keep backend-resolvable refs here. The backend uploads local /outputs
+  // media to a public URL before submitting to PiAPI.
+  const upstreamVideoUrls = toBackendResolvableVideoUrls(inputs.video)
+  const upstreamAudioUrls = asUrlList(inputs.audio)
   const upstreamPrompt = toText(inputs.text).trim()
   const promptSource = usePromptSourceSelector({
     blockId,
@@ -289,9 +282,9 @@ function SeedanceBlock({
         : prompt
       if (!finalPrompt.trim()) throw new Error('Prompt is empty.')
 
-      const upImages = Array.from(new Set(toPublicUrls(freshInputs.image)))
-      const upVideos = toPublicVideoUrls(freshInputs.video)
-      const upAudios = asUrlList(freshInputs.audio).map(toLocalOrigin)
+      const upImages = Array.from(new Set(toBackendResolvableImageUrls(freshInputs.image)))
+      const upVideos = toBackendResolvableVideoUrls(freshInputs.video)
+      const upAudios = asUrlList(freshInputs.audio)
       const imageUrls = Array.from(new Set([...upImages, ...localImageUrls]))
       const videoUrls = Array.from(new Set([...upVideos, ...localVideoUrls]))
       const audioUrls = Array.from(new Set([...upAudios, ...localAudioUrls]))

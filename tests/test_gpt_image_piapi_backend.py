@@ -94,6 +94,20 @@ def test_validate_run_body_switches_to_edit_mode_with_references() -> None:
     assert validated["references"] == ["https://example.com/a.png", "https://example.com/b.png"]
 
 
+def test_download_url_reads_local_outputs_reference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = load_block()
+    source = tmp_path / "gpt_image_piapi" / "frame.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"local-image")
+    monkeypatch.setattr(mod.config, "LOCAL_OUTPUT_DIR", tmp_path)
+
+    data, filename, content_type = mod._download_url("/outputs/gpt_image_piapi/frame.png")
+
+    assert data == b"local-image"
+    assert filename == "frame.png"
+    assert content_type == "image/png"
+
+
 def test_validate_run_body_rejects_unknown_settings() -> None:
     mod = load_block()
 

@@ -23,8 +23,8 @@ import { SourceModeControl } from '@/components/pipeline/source-mode-control'
 import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
-import { toDisplayUrls, toPublicUrls } from '@/lib/image-ref'
-import { toPublicUrls as toPublicVideoUrls } from '@/lib/video-ref'
+import { toBackendResolvableUrls as toBackendResolvableImageUrls } from '@/lib/image-ref'
+import { toBackendResolvableUrls as toBackendResolvableVideoUrls } from '@/lib/video-ref'
 import {
   PORT_IMAGE,
   PORT_TEXT,
@@ -104,13 +104,6 @@ function toText(value: unknown): string {
   return ''
 }
 
-function toLocalOrigin(u: string): string {
-  if (u.startsWith('/outputs/') && typeof window !== 'undefined') {
-    return `${window.location.origin}${u}`
-  }
-  return u
-}
-
 function MultimodalPromptWriterBlock({
   blockId,
   inputs,
@@ -150,11 +143,9 @@ function MultimodalPromptWriterBlock({
   const [generating, setGenerating] = useState(false)
   const [error, setError] = useState('')
 
-  const upstreamImageUrls = toDisplayUrls(inputs.image)
-  // OpenRouter needs a public URL (it fetches server-side) — pick the
-  // tmpfiles form when video-loader provided both.
-  const upstreamVideoUrls = toPublicVideoUrls(inputs.video)
-  const upstreamAudioUrls = asAudioUrls(inputs.audio).map(toLocalOrigin)
+  const upstreamImageUrls = toBackendResolvableImageUrls(inputs.image)
+  const upstreamVideoUrls = toBackendResolvableVideoUrls(inputs.video)
+  const upstreamAudioUrls = asAudioUrls(inputs.audio)
   const upstreamText = toText(inputs.text).trim()
 
   const allImageUrls = Array.from(new Set([...upstreamImageUrls, ...localImageUrls]))
@@ -294,9 +285,9 @@ function MultimodalPromptWriterBlock({
   // Pipeline execution
   useEffect(() => {
     registerExecute(async (freshInputs) => {
-      const refImages = toDisplayUrls(freshInputs.image)
-      const refVideos = toPublicVideoUrls(freshInputs.video)
-      const refAudios = asAudioUrls(freshInputs.audio).map(toLocalOrigin)
+      const refImages = toBackendResolvableImageUrls(freshInputs.image)
+      const refVideos = toBackendResolvableVideoUrls(freshInputs.video)
+      const refAudios = asAudioUrls(freshInputs.audio)
       const ctxText = toText(freshInputs.text).trim()
       const mergedImages = Array.from(new Set([...refImages, ...localImageUrls]))
       const mergedVideos = Array.from(new Set([...refVideos, ...localVideoUrls]))

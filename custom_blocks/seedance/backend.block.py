@@ -20,7 +20,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, settings_store
+from backend import config, settings_store, tmpfiles
 
 router = APIRouter()
 
@@ -167,9 +167,12 @@ def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str,
             raise ValueError(f"{key} must be a list")
         return [str(u).strip() for u in raw if isinstance(u, str) and u.strip()]
 
-    images = _clean_list("image_urls")
-    videos = _clean_list("video_urls")
-    audios = _clean_list("audio_urls")
+    try:
+        images = [tmpfiles.ensure_public_url(url) for url in _clean_list("image_urls")]
+        videos = [tmpfiles.ensure_public_url(url) for url in _clean_list("video_urls")]
+        audios = [tmpfiles.ensure_public_url(url) for url in _clean_list("audio_urls")]
+    except Exception as exc:
+        raise ValueError(str(exc)) from exc
 
     allowed_resolutions = TASK_TYPE_RESOLUTIONS[task_type]
     resolution = str(body.get("resolution") or sorted(allowed_resolutions)[0]).lower()

@@ -168,7 +168,7 @@ describe('Nano Banana 2 prompt presets', () => {
         quality: '1k',
         aspect_ratio: '1:1',
         reference_image_urls: [
-          'https://tmpfiles.test/a.png',
+          '/outputs/a.png',
           'https://tmpfiles.test/b.png',
           'https://tmpfiles.test/local.png',
         ],

@@ -66,6 +66,34 @@ def test_vip_without_video_keeps_duration(task_type):
     assert payload["duration"] == 10
 
 
+def test_seedance_converts_local_output_image_refs_to_public_urls(monkeypatch):
+    from backend import tmpfiles
+
+    monkeypatch.setattr(
+        tmpfiles,
+        "ensure_public_url",
+        lambda url: f"https://tmpfiles.test/dl/{Path(url).name}" if url.startswith("/outputs/") else url,
+    )
+
+    payload = mod._validate_and_build_input(
+        {
+            "prompt": "make it move",
+            "mode": "omni_reference",
+            "duration": 5,
+            "resolution": "480p",
+            "aspect_ratio": "3:4",
+            "image_urls": ["/outputs/gpt_image_piapi/frame.png"],
+            "video_urls": ["/outputs/video_viewer/clip.mp4"],
+            "audio_urls": ["/outputs/tts/voice.mp3"],
+        },
+        "seedance-2-fast",
+    )
+
+    assert payload["image_urls"] == ["https://tmpfiles.test/dl/frame.png"]
+    assert payload["video_urls"] == ["https://tmpfiles.test/dl/clip.mp4"]
+    assert payload["audio_urls"] == ["https://tmpfiles.test/dl/voice.mp3"]
+
+
 @pytest.mark.parametrize("task_type", VIP_TYPES)
 def test_vip_with_video_rejects_invalid_duration(task_type):
     """Avoid sending invalid auto sentinels that PiAPI turns into 5s outputs."""

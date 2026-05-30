@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, settings_store
+from backend import config, settings_store, tmpfiles
 
 
 def _get_runpod_api_key() -> str:
@@ -545,6 +545,12 @@ async def run(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "reference_image_urls required (at least 1)"}, status_code=400)
     if len(references) > MAX_REFERENCE_IMAGES:
         return JSONResponse({"ok": False, "error": f"max {MAX_REFERENCE_IMAGES} reference images"}, status_code=400)
+    try:
+        references = [tmpfiles.ensure_public_url(str(ref).strip()) for ref in references if str(ref).strip()]
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    if not references:
+        return JSONResponse({"ok": False, "error": "reference_image_urls required (at least 1)"}, status_code=400)
     if not api_key:
         return JSONResponse({"ok": False, "error": "RunPod API key required (not in .env and not provided)"}, status_code=400)
     if not pack_ids and not custom_prompts:

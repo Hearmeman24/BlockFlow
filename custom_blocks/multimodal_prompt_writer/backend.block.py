@@ -226,6 +226,13 @@ def _resolve_image_urls_for_payload(image_urls: list[str]) -> list[str]:
     return [url for url in resolved if url]
 
 
+def _resolve_fetchable_media_url(raw: str) -> str:
+    """Resolve local video/audio refs to public URLs for OpenRouter fetch."""
+    if not raw or not tmpfiles.is_local_path(raw):
+        return raw
+    return tmpfiles.ensure_public_url(raw)
+
+
 @router.post("/generate")
 async def generate(request: Request) -> JSONResponse:
     payload = await request.json()
@@ -255,7 +262,9 @@ async def generate(request: Request) -> JSONResponse:
     # Resolve any local /outputs image paths into budgeted data URIs.
     try:
         resolved_images = _resolve_image_urls_for_payload(image_urls)
-    except ValueError as exc:
+        video_url = _resolve_fetchable_media_url(video_url)
+        audio_url = _resolve_fetchable_media_url(audio_url)
+    except (RuntimeError, ValueError) as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     effective_system_prompt = system_prompt

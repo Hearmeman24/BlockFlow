@@ -21,7 +21,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
-import { toPublicUrls } from '@/lib/image-ref'
+import { toBackendResolvableUrls } from '@/lib/image-ref'
 import {
   Select,
   SelectContent,
@@ -176,7 +176,7 @@ function ImageUpscaleBlock({
   const [faceCreativity, setFaceCreativity] = useSessionState(`block_${blockId}_face_creativity`, '0.0')
   const [status, setStatus] = useSessionState(`block_${blockId}_status`, 'Ready')
 
-  const imageUrls = toPublicUrls(inputs.image)
+  const imageUrls = toBackendResolvableUrls(inputs.image)
   const imageInputs = imageUrls.length > 0 ? imageUrls : undefined
   const latestProgressRef = useRef<PollingProgressEntry<Job>[]>([])
 
@@ -285,8 +285,8 @@ function ImageUpscaleBlock({
 
   useEffect(() => {
     registerExecute(async (freshInputs) => {
-      const sourceImages = toPublicUrls(freshInputs.image)
-      if (!sourceImages.length) throw new Error('No image input (Topaz needs a publicly fetchable URL)')
+      const sourceImages = toBackendResolvableUrls(freshInputs.image)
+      if (!sourceImages.length) throw new Error('No image input')
 
       const key = apiKey.trim()
       if (!hasConfiguredApiKey && !key) throw new Error('Topaz API key is required')

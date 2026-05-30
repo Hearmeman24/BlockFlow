@@ -20,7 +20,8 @@ import {
   type BlockDef,
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
-import { toPublicUrls } from '@/lib/image-ref'
+import { toBackendResolvableUrls as toBackendResolvableImageUrls } from '@/lib/image-ref'
+import { toBackendResolvableUrls as toBackendResolvableVideoUrls } from '@/lib/video-ref'
 
 const TOKEN_KEY = 'civitai_api_key'
 const SHARE_ENDPOINT = '/api/blocks/civitai_share/share'
@@ -87,8 +88,7 @@ export function toMediaUrls(value: unknown): string[] {
   // Accept any non-empty string (http URL or /outputs/ local path). The
   // backend's _resolve_local_file handles both shapes and uploads bytes to
   // CivitAI's presigned URL itself, so the frontend doesn't need to gate
-  // on http-only. ImageRef objects (Upload Image) fall through to
-  // toPublicUrls which prefers their public mirror.
+  // on http-only.
   if (typeof value === 'string') {
     const s = value.trim()
     return s ? [s] : []
@@ -96,7 +96,18 @@ export function toMediaUrls(value: unknown): string[] {
   if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
     return (value as string[]).map((s) => s.trim()).filter(Boolean)
   }
-  return toPublicUrls(value)
+  return toBackendResolvableImageUrls(value)
+}
+
+function toVideoMediaUrls(value: unknown): string[] {
+  if (typeof value === 'string') {
+    const s = value.trim()
+    return s ? [s] : []
+  }
+  if (Array.isArray(value) && value.every((v) => typeof v === 'string')) {
+    return (value as string[]).map((s) => s.trim()).filter(Boolean)
+  }
+  return toBackendResolvableVideoUrls(value)
 }
 
 function CivitAIShareBlock({
@@ -146,7 +157,7 @@ function CivitAIShareBlock({
   const [approval, setApproval] = useState<PendingApproval | null>(null)
   const [gateNsfw, setGateNsfw] = useState(true)
 
-  const videoUrls = toMediaUrls(inputs.video)
+  const videoUrls = toVideoMediaUrls(inputs.video)
   const imageUrls = toMediaUrls(inputs.image)
   const upstreamUrls = videoUrls.length > 0 ? videoUrls : imageUrls
   const localUrls = localFiles.filter((f) => f.outputUrl).map((f) => f.outputUrl!)
@@ -256,7 +267,7 @@ function CivitAIShareBlock({
   const handleDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); dragCounterRef.current = 0; setIsDragging(false); addFiles(Array.from(e.dataTransfer.files)) }, [addFiles])
 
   const collectMedia = (freshInputs: Record<string, unknown>) => {
-    const freshVideoUrls = toMediaUrls(freshInputs.video)
+    const freshVideoUrls = toVideoMediaUrls(freshInputs.video)
     const freshImageUrls = toMediaUrls(freshInputs.image)
     const upstreamMedia = freshVideoUrls.length > 0 ? freshVideoUrls : freshImageUrls
     const localMediaUrls = localFiles.filter((f) => f.outputUrl).map((f) => f.outputUrl!)

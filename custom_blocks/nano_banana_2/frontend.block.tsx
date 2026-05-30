@@ -13,7 +13,7 @@ import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { usePromptLibrary } from '@/lib/use-prompt-library'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
-import { toPublicUrls } from '@/lib/image-ref'
+import { toBackendResolvableUrls } from '@/lib/image-ref'
 import {
   PORT_IMAGE,
   PORT_TEXT,
@@ -65,7 +65,7 @@ function NanoBanana2Block({
   const { userPrompts, addPrompt, deletePrompt } = usePromptLibrary()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
 
-  const upstreamRefs = Array.from(new Set(toPublicUrls(inputs.image)))
+  const upstreamRefs = Array.from(new Set(toBackendResolvableUrls(inputs.image)))
   const refUrls = Array.from(new Set([...upstreamRefs, ...localRefs]))
   const upstreamPrompt = toText(inputs.text).trim()
   const promptSource = usePromptSourceSelector({
@@ -151,7 +151,7 @@ function NanoBanana2Block({
 
   useEffect(() => {
     registerExecute(async (freshInputs, signal) => {
-      const upstream = Array.from(new Set(toPublicUrls(freshInputs.image)))
+      const upstream = Array.from(new Set(toBackendResolvableUrls(freshInputs.image)))
       const refs = Array.from(new Set([...upstream, ...localRefs]))
       if (refs.length === 0) {
         throw new Error('Nano Banana 2 needs at least one reference image — drop files into the block or wire an Upload Image upstream.')

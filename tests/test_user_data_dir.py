@@ -89,6 +89,18 @@ def test_resolve_user_data_dir_windows_default_no_localappdata(monkeypatch):
     assert out == Path.home() / "AppData" / "Local" / "BlockFlow"
 
 
+def test_ensure_directory_replaces_dangling_symlink(tmp_path):
+    """Dangling output-dir symlinks must not crash config import/startup."""
+    missing_target = tmp_path / "unmounted" / "output"
+    output_link = tmp_path / "output"
+    output_link.symlink_to(missing_target)
+
+    _config_module.ensure_directory(output_link)
+
+    assert output_link.is_dir()
+    assert not output_link.is_symlink()
+
+
 # === migrate_legacy_user_data ================================================
 
 @pytest.fixture

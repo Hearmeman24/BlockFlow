@@ -49,6 +49,25 @@ def resolve_user_data_dir() -> Path:
     return Path.home() / ".blockflow"
 
 
+def ensure_directory(path: Path) -> Path:
+    """Create path, replacing a dangling symlink with a real directory.
+
+    Users can move output storage to external volumes. If that volume is
+    later unmounted, the configured output directory may be a dangling
+    symlink; Path.mkdir(exist_ok=True) raises FileExistsError in that case.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        if path.is_symlink() and not path.exists():
+            print(f"[config] {path} is a dangling symlink; replacing with a local directory")
+            path.unlink()
+            path.mkdir(parents=True, exist_ok=True)
+        else:
+            raise
+    return path
+
+
 # Files that lived under ROOT_DIR before sgs-ui-5ni and must follow the user
 # across worktrees / checkouts. List comprehension keeps the migration loop
 # below in lockstep with the path constants below.
@@ -121,14 +140,14 @@ def migrate_legacy_user_data(*, legacy_root: Path, user_data_dir: Path) -> None:
 
 
 USER_DATA_DIR = resolve_user_data_dir()
-USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+ensure_directory(USER_DATA_DIR)
 # Migration is NOT run at import time on purpose: pytest collection imports
 # backend.config and would otherwise trigger the side-effecting move against
 # the user's real ~/Library/Application Support/blockflow on first test run.
 # main.py calls migrate_legacy_user_data(...) once at process startup.
 
 LOCAL_OUTPUT_DIR = USER_DATA_DIR / "output"
-LOCAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+ensure_directory(LOCAL_OUTPUT_DIR)
 
 
 def resolve_local_output_dir(*, default: Path, store) -> Path:
@@ -159,7 +178,7 @@ def resolve_local_output_dir(*, default: Path, store) -> Path:
 
 
 FLOWS_DIR = USER_DATA_DIR / "flows"
-FLOWS_DIR.mkdir(parents=True, exist_ok=True)
+ensure_directory(FLOWS_DIR)
 JOB_HISTORY_PATH = USER_DATA_DIR / "job_history.json"
 PROMPT_WRITER_SETTINGS_PATH = USER_DATA_DIR / "prompt_writer_settings.json"
 PROMPT_LIBRARY_PATH = USER_DATA_DIR / "prompt_library.json"

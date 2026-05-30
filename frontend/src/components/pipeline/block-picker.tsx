@@ -1,9 +1,14 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { orderedAddableTypes } from './add-block-button'
+import {
+  getBlockPickerGroups,
+  type BlockPickerGroup,
+  type BlockPickerItem,
+} from './block-picker-groups'
 import type { NodeTypeDef } from '@/lib/pipeline/registry'
+import type { BlockSuggestionContext } from '@/lib/pipeline/block-suggestions'
 
 interface Props {
   open: boolean
@@ -11,6 +16,35 @@ interface Props {
   validTypes: NodeTypeDef[]
   upstreamType?: string
   onSelect: (type: string) => void
+}
+
+interface FlatRow {
+  group: BlockPickerGroup
+  groupStart: boolean
+  item: BlockPickerItem
+}
+
+function flatten(groups: BlockPickerGroup[]): FlatRow[] {
+  const out: FlatRow[] = []
+  for (const g of groups) {
+    g.items.forEach((item, idx) => {
+      out.push({ group: g, groupStart: idx === 0, item })
+    })
+  }
+  return out
+}
+
+function applyQuery(groups: BlockPickerGroup[], query: string): BlockPickerGroup[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return groups
+  return groups
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((it) =>
+        `${it.def.label} ${it.def.description}`.toLowerCase().includes(q),
+      ),
+    }))
+    .filter((g) => g.items.length > 0)
 }
 
 export function BlockPicker({
@@ -22,23 +56,16 @@ export function BlockPicker({
 }: Props) {
   const [query, setQuery] = useState('')
   const [highlightIndex, setHighlightIndex] = useState(0)
-  const listRef = useRef<HTMLUListElement | null>(null)
   const itemRefs = useRef<Array<HTMLLIElement | null>>([])
 
-  const ordered = useMemo(
-    () => orderedAddableTypes(validTypes, upstreamType),
-    [validTypes, upstreamType],
-  )
+  const baseGroups = useMemo<BlockPickerGroup[]>(() => {
+    const context: BlockSuggestionContext = { kind: 'upstream', upstreamType }
+    return getBlockPickerGroups(validTypes, context)
+  }, [validTypes, upstreamType])
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return ordered
-    return ordered.filter(({ def }) =>
-      `${def.label} ${def.description}`.toLowerCase().includes(q),
-    )
-  }, [ordered, query])
+  const groups = useMemo(() => applyQuery(baseGroups, query), [baseGroups, query])
+  const rows = useMemo(() => flatten(groups), [groups])
 
-  // Reset state every time the dialog opens.
   useEffect(() => {
     if (open) {
       setQuery('')
@@ -46,30 +73,28 @@ export function BlockPicker({
     }
   }, [open])
 
-  // Clamp highlight when the filtered set shrinks.
   useEffect(() => {
-    if (highlightIndex >= filtered.length) {
-      setHighlightIndex(Math.max(0, filtered.length - 1))
+    if (highlightIndex >= rows.length) {
+      setHighlightIndex(Math.max(0, rows.length - 1))
     }
-  }, [filtered.length, highlightIndex])
+  }, [rows.length, highlightIndex])
 
-  // Keep the highlighted item visible inside the scrollable list.
   useEffect(() => {
     const el = itemRefs.current[highlightIndex]
     el?.scrollIntoView?.({ block: 'nearest' })
   }, [highlightIndex])
 
   function commit(index: number) {
-    const target = filtered[index]
-    if (!target) return
-    onSelect(target.def.type)
+    const row = rows[index]
+    if (!row) return
+    onSelect(row.item.def.type)
     onOpenChange(false)
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key === 'ArrowDown') {
       event.preventDefault()
-      setHighlightIndex((i) => Math.min(filtered.length - 1, i + 1))
+      setHighlightIndex((i) => Math.min(rows.length - 1, i + 1))
     } else if (event.key === 'ArrowUp') {
       event.preventDefault()
       setHighlightIndex((i) => Math.max(0, i - 1))
@@ -82,7 +107,7 @@ export function BlockPicker({
   const emptyMsg =
     validTypes.length === 0
       ? 'No blocks can be inserted here'
-      : filtered.length === 0
+      : rows.length === 0
         ? 'No matches'
         : null
 
@@ -108,38 +133,44 @@ export function BlockPicker({
             {emptyMsg}
           </div>
         ) : (
-          <ul
-            ref={listRef}
-            role="listbox"
-            className="max-h-80 overflow-y-auto py-1"
-          >
-            {filtered.map(({ def, suggested }, i) => (
-              <li
-                key={def.type}
-                ref={(el) => {
-                  itemRefs.current[i] = el
-                }}
-                role="option"
-                aria-selected={i === highlightIndex}
-                data-testid={`block-picker-item-${def.type}`}
-                onClick={() => commit(i)}
-                onMouseEnter={() => setHighlightIndex(i)}
-                className={`px-4 py-2 cursor-pointer ${
-                  i === highlightIndex ? 'bg-accent' : ''
-                }`}
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="font-medium text-sm">{def.label}</span>
-                  {suggested && (
-                    <span className="rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] px-1 py-0 leading-tight font-medium uppercase tracking-wider">
-                      Suggested
-                    </span>
-                  )}
-                </div>
-                <span className="block text-xs text-muted-foreground">
-                  {def.description}
-                </span>
-              </li>
+          <ul role="listbox" className="max-h-80 overflow-y-auto py-1">
+            {rows.map((row, i) => (
+              <Fragment key={`${row.group.key}-${row.item.def.type}`}>
+                {row.groupStart && (
+                  <li
+                    role="presentation"
+                    className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold"
+                    data-testid={`block-picker-group-${row.group.key}`}
+                  >
+                    {row.group.label}
+                  </li>
+                )}
+                <li
+                  ref={(el) => {
+                    itemRefs.current[i] = el
+                  }}
+                  role="option"
+                  aria-selected={i === highlightIndex}
+                  data-testid={`block-picker-item-${row.item.def.type}`}
+                  onClick={() => commit(i)}
+                  onMouseEnter={() => setHighlightIndex(i)}
+                  className={`px-4 py-2 cursor-pointer ${
+                    i === highlightIndex ? 'bg-accent' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium text-sm">{row.item.def.label}</span>
+                    {row.item.suggested && (
+                      <span className="rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] px-1 py-0 leading-tight font-medium uppercase tracking-wider">
+                        Suggested
+                      </span>
+                    )}
+                  </div>
+                  <span className="block text-xs text-muted-foreground">
+                    {row.item.def.description}
+                  </span>
+                </li>
+              </Fragment>
             ))}
           </ul>
         )}

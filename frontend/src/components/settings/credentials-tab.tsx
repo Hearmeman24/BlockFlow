@@ -50,6 +50,22 @@ export function CredentialsTab() {
       <Section title="Upscaling" description="Used by image_upscale and upscale blocks.">
         <CredentialInput name="topaz_api_key" label="Topaz API Key" />
       </Section>
+
+      <Section title="Speech" description="Used by the ElevenLabs TTS block.">
+        <CredentialInput
+          name="elevenlabs_api_key"
+          label="ElevenLabs API Key"
+          hint="Found in ElevenLabs → Profile → API Key. Used by the elevenlabs_tts block."
+        />
+      </Section>
+
+      <Section title="Video Generation" description="Used by the Seedance block.">
+        <CredentialInput
+          name="piapi_api_key"
+          label="PiAPI Key"
+          hint="Found in PiAPI workspace → API Keys. Used by the seedance block for Dreamina Seedance 2 / Seedance 2 Fast."
+        />
+      </Section>
     </div>
   )
 }

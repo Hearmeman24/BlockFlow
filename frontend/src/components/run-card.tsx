@@ -10,6 +10,9 @@ import { usePipelineTabs } from '@/lib/pipeline/tabs-context'
 import { deleteRun, toggleRunFavorite } from '@/lib/api'
 import type { RunEntry, BlockResult } from '@/lib/types'
 import { extractComfyGenPresetLabels } from '@/lib/runs/preset-labels'
+import { isAdvancedMode, onAdvancedModeChange } from '@/lib/pipeline/registry'
+import { SubmitToCivitaiModal } from '@/components/civitai/submit-modal'
+import { extractShareableArtifact } from '@/components/civitai/extract-shareable'
 
 const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov', '.m4v', '.mkv', '.avi']
 const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.aac', '.m4a', '.ogg', '.flac']
@@ -556,6 +559,22 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
   const [deleting, setDeleting] = useState(false)
   const [fav, setFav] = useState(run.favorited ?? false)
   const [galleryIndex, setGalleryIndex] = useState(0)
+  const [civitaiOpen, setCivitaiOpen] = useState(false)
+
+  // Subscribe to advanced-mode flips so the button toggles live without a
+  // reload (consistent with how advanced-only blocks behave).
+  const [advanced, setAdvanced] = useState(false)
+  useEffect(() => {
+    setAdvanced(isAdvancedMode())
+    return onAdvancedModeChange(() => setAdvanced(isAdvancedMode()))
+  }, [])
+
+  // Only show the CivitAI submit button when:
+  //   1. Advanced mode is on (it's a power-user feature).
+  //   2. The run actually has shareable image/video output. Otherwise the
+  //      modal would just render "nothing to share" — surface that earlier.
+  const shareable = extractShareableArtifact(run)
+  const canSubmitToCivitai = advanced && shareable !== null
 
   const primary = findPrimaryArtifact(run.block_results)
 
@@ -708,6 +727,17 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
           <Button variant="outline" size="sm" className="h-7 text-xs flex-1" onClick={handleRestore}>
             Restore
           </Button>
+          {canSubmitToCivitai && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => setCivitaiOpen(true)}
+              title="Submit this artifact to CivitAI"
+            >
+              Submit to CivitAI
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -739,6 +769,9 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
           </Button>
         </div>
       </CardContent>
+      {canSubmitToCivitai && (
+        <SubmitToCivitaiModal run={run} open={civitaiOpen} onOpenChange={setCivitaiOpen} />
+      )}
     </Card>
   )
 }

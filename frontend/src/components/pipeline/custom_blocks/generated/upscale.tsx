@@ -10,6 +10,7 @@ import {
   clearPendingServerlessRun,
   type PendingServerlessRun,
 } from '@/lib/pipeline/serverless-pending'
+import { toDisplayUrls as toDisplayVideoUrls } from '@/lib/video-ref'
 import {
   setPersistedBlockStatus,
   startNewPollingRun,
@@ -277,8 +278,8 @@ function UpscaleBlock({
   const [compression, setCompression] = useSessionState(`block_${blockId}_compression`, 'Mid')
   const [status, setStatus] = useSessionState(`block_${blockId}_status`, 'Ready')
 
-  const rawVideoInputs = inputs.video
-  const videoInputs = Array.isArray(rawVideoInputs) ? rawVideoInputs : rawVideoInputs != null ? [rawVideoInputs] : undefined
+  const videoUrls = toDisplayVideoUrls(inputs.video)
+  const videoInputs = videoUrls.length > 0 ? videoUrls : undefined
   const latestProgressRef = useRef<PollingProgressEntry<Job>[]>([])
   const [activeJobs, setActiveJobs] = useState<TopazJobExtra[]>([])
 
@@ -387,12 +388,7 @@ function UpscaleBlock({
 
   useEffect(() => {
     registerExecute(async (freshInputs) => {
-      const rawVideo = freshInputs.video
-      const videoArr = Array.isArray(rawVideo) ? rawVideo : rawVideo != null ? [rawVideo] : []
-      const sourceVideos = videoArr
-        .filter((value): value is string => typeof value === 'string')
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0)
+      const sourceVideos = toDisplayVideoUrls(freshInputs.video)
       if (!sourceVideos.length) throw new Error('No video input URLs')
 
       const key = hasEnvApiKey ? '' : apiKey.trim()
@@ -616,5 +612,4 @@ export const blockDef: BlockDef = {
   configKeys: ['model', 'interpolation_model', 'output_fps', 'resolution', 'encoder', 'compression'],
   component: UpscaleBlock,
 }
-
 

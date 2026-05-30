@@ -22,7 +22,11 @@ function EmptyPipelineState({ onAdd }: { onAdd: (type: string) => void }) {
       </div>
       <div className="relative">
         <div className="absolute -inset-3 rounded-full bg-blue-500/10 animate-pulse pointer-events-none" />
-        <AddBlockButton validTypes={starters} onAdd={onAdd} />
+        <AddBlockButton
+          validTypes={starters}
+          suggestionContext={{ kind: 'starter' }}
+          onAdd={onAdd}
+        />
       </div>
     </div>
   )

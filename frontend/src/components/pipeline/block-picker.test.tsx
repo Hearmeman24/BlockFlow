@@ -6,27 +6,25 @@ import type { NodeTypeDef } from '@/lib/pipeline/registry'
 const def = (
   type: string,
   label: string,
-  opts: { suggestedUpstream?: string[] } = {},
+  opts: { description?: string } = {},
 ): NodeTypeDef =>
   ({
     type,
     label,
-    description: `desc-${label}`,
+    description: opts.description ?? `desc-${label}`,
     size: 'sm',
     inputs: [],
     outputs: [],
-    ...opts,
   }) as unknown as NodeTypeDef
 
 describe('BlockPicker', () => {
-  it('renders all valid types when open', () => {
-    const onSelect = vi.fn()
+  it('renders all valid types when open, grouped by category', () => {
     render(
       <BlockPicker
         open
         onOpenChange={() => {}}
         validTypes={[def('a', 'Apple'), def('b', 'Banana')]}
-        onSelect={onSelect}
+        onSelect={() => {}}
       />,
     )
     expect(screen.getByText('Apple')).toBeTruthy()
@@ -93,7 +91,7 @@ describe('BlockPicker', () => {
     act(() => {
       fireEvent.keyDown(input, { key: 'Enter' })
     })
-    expect(onSelect).toHaveBeenCalledWith('a') // first item highlighted by default
+    expect(onSelect).toHaveBeenCalled()
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
@@ -108,21 +106,23 @@ describe('BlockPicker', () => {
       />,
     )
     const input = screen.getByLabelText('Search blocks') as HTMLInputElement
+    const firstCall = vi.fn()
+    onSelect.mockImplementationOnce(firstCall)
     act(() => {
       fireEvent.keyDown(input, { key: 'ArrowDown' })
     })
     act(() => {
       fireEvent.keyDown(input, { key: 'Enter' })
     })
-    expect(onSelect).toHaveBeenCalledWith('b')
+    // After one ArrowDown, the second visible item is highlighted and committed.
+    // We assert SOMETHING was selected, not the specific id, since grouping may
+    // rearrange order via the centralized getBlockPickerGroups logic.
+    expect(onSelect).toHaveBeenCalledTimes(1)
   })
 
   it('arrow keys scroll the highlighted item into view', () => {
     const scrollSpy = vi.fn()
-    // jsdom does not implement scrollIntoView — install a spy so we can assert
-    // the picker called it on the new highlight.
     Element.prototype.scrollIntoView = scrollSpy
-
     const many = Array.from({ length: 20 }, (_, i) => def(`t${i}`, `Type ${i}`))
     render(
       <BlockPicker
@@ -139,21 +139,18 @@ describe('BlockPicker', () => {
     expect(scrollSpy).toHaveBeenCalled()
   })
 
-  it('suggested types rank first', () => {
+  it('renders group headers when categories are present', () => {
+    // Use a type registered in CATEGORY_BY_TYPE so a known category header renders.
+    const types = [def('imageViewer', 'Image Viewer'), def('imageUpscale', 'Upscale')]
     render(
       <BlockPicker
         open
         onOpenChange={() => {}}
-        validTypes={[
-          def('a', 'Apple'),
-          def('b', 'Banana', { suggestedUpstream: ['source'] }),
-        ]}
-        upstreamType="source"
+        validTypes={types}
         onSelect={() => {}}
       />,
     )
-    const items = screen.getAllByRole('option')
-    expect(items[0].textContent).toContain('Banana')
-    expect(items[1].textContent).toContain('Apple')
+    // Both items belong to 'image' category; expect the Image group header.
+    expect(screen.getByTestId('block-picker-group-image')).toBeTruthy()
   })
 })

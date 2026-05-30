@@ -54,6 +54,17 @@ def test_raw_integer_with_whitespace_is_stripped() -> None:
     assert ref.version_id == 67890
 
 
+def test_civitai_red_alias_accepted() -> None:
+    """civitai.red is the project's NSFW-tolerant mirror — same backend, same
+    model IDs, same API. The user routinely shares .red URLs (e.g. the WAN
+    SVI workflow), so the parser must accept them."""
+    ref = parse_civitai_ref(
+        "https://civitai.red/models/2653749/wan-22-svi-4-passes-25-second-videos"
+    )
+    assert ref.model_id == 2653749
+    assert ref.needs_latest_lookup is True
+
+
 def test_http_scheme_also_accepted() -> None:
     """Don't be a stickler about https vs http — just route to canonical."""
     ref = parse_civitai_ref("http://civitai.com/models/12345?modelVersionId=67890")

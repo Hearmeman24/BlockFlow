@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config
+from backend import config, image_payload
 
 router = APIRouter()
 
@@ -63,6 +63,15 @@ async def upload(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
 
     try:
+        prepared = image_payload.prepare_image_for_upload(
+            body,
+            filename=filename,
+            content_type=content_type,
+        )
+        body = prepared.data
+        filename = prepared.name
+        content_type = prepared.content_type
+
         # Build multipart/form-data manually
         boundary = "----TmpFilesBoundary9876543210"
         parts = []

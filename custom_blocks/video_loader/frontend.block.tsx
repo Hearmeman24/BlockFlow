@@ -11,15 +11,13 @@ import {
   type BlockDef,
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
+import type { VideoRef } from '@/lib/video-ref'
 
 const UPLOAD_ENDPOINT = '/api/blocks/video_loader/upload'
 const SAVE_LOCAL_ENDPOINT = '/api/blocks/video_loader/save-local'
 const FILE_META_ENDPOINT = '/api/file-metadata'
 
-type UploadMode = 'local' | 'tmpfiles'
-
-async function uploadVideoFile(file: File, mode: UploadMode) {
-  const endpoint = mode === 'local' ? SAVE_LOCAL_ENDPOINT : UPLOAD_ENDPOINT
+async function postFile(endpoint: string, file: File) {
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: {
@@ -48,70 +46,155 @@ function VideoLoaderBlock({
   registerExecute,
   setStatusMessage,
 }: BlockComponentProps) {
-  const [uploadMode, setUploadMode] = useSessionState<UploadMode>(`block_${blockId}_upload_mode`, 'local')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [selectedFileFingerprint, setSelectedFileFingerprint] = useState('')
-  const [uploadedVideoUrl, setUploadedVideoUrl] = useSessionState(`block_${blockId}_uploaded_video_url`, '')
-  const [uploadedVideoFingerprint, setUploadedVideoFingerprint] = useSessionState(`block_${blockId}_uploaded_video_fingerprint`, '')
-  const [uploadedMode, setUploadedMode] = useSessionState<UploadMode | ''>(`block_${blockId}_uploaded_mode`, '')
+  const [selectedFingerprint, setSelectedFingerprint] = useState('')
+
+  // Dual emit: local path (FastAPI /outputs) AND public tmpfiles URL. Mirrors
+  // upload_image_to_tmpfiles — downstream consumers pick whichever form they
+  // need via toPublicUrls / toDisplayUrls from `@/lib/video-ref`.
+  const [localUrl, setLocalUrl] = useSessionState(`block_${blockId}_local_url`, '')
+  const [remoteUrl, setRemoteUrl] = useSessionState(`block_${blockId}_remote_url`, '')
+  const [uploadedFingerprint, setUploadedFingerprint] = useSessionState(`block_${blockId}_uploaded_fingerprint`, '')
+
   const [previewUrl, setPreviewUrl] = useState('')
   const [hasMeta, setHasMeta] = useState(false)
-  const materializeVideoUrl = async (): Promise<string> => {
-    if (!selectedFile && uploadedVideoUrl && uploadedMode === uploadMode) {
-      return uploadedVideoUrl
+  const [uploadingLocal, setUploadingLocal] = useState(false)
+  const [uploadingRemote, setUploadingRemote] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+
+  // Edit-time emit: surface the VideoRef downstream as soon as either URL is
+  // available. Remote URL may lag local; consumers tolerate `url` undefined.
+  useEffect(() => {
+    if (!localUrl && !remoteUrl) {
+      setOutput('video', undefined)
+      return
     }
-
-    if (!selectedFile) {
-      if (uploadedVideoUrl) return uploadedVideoUrl
-      throw new Error('Select a video file before running this block')
+    const ref: VideoRef = {
+      kind: 'video-ref',
+      local: localUrl,
+      url: remoteUrl || undefined,
     }
+    setOutput('video', [ref])
+  }, [localUrl, remoteUrl, setOutput])
 
-    const payloadFingerprint = selectedFileFingerprint || await fingerprintFile(selectedFile)
-    if (uploadedVideoUrl && uploadedVideoFingerprint === payloadFingerprint && uploadedMode === uploadMode) {
-      return uploadedVideoUrl
-    }
+  // Pipeline execute: ensure both uploads are done (or attempted), then
+  // RE-EMIT the VideoRef. The run reset clears every block's outputs to {}
+  // before execute, and the edit-time useEffect above does NOT re-fire
+  // (localUrl/remoteUrl are unchanged), so without this the upstream video
+  // is lost mid-run and downstream consumers resolve inputs.video to
+  // undefined. Mirrors upload_image_to_tmpfiles. Use the values returned by
+  // ensure* — the useSessionState writes are async and haven't landed by the
+  // time the runner resolves the next block's inputs.
+  useEffect(() => {
+    registerExecute(async () => {
+      if (!selectedFile && !localUrl && !remoteUrl) {
+        throw new Error('Select a video file before running this block')
+      }
+      let local = localUrl
+      let remote = remoteUrl
+      if (selectedFile) {
+        // Remote (tmpfiles) failure is non-fatal — local-only consumers can
+        // still proceed — so don't let it abort the local emit.
+        const [l, r] = await Promise.allSettled([
+          ensureLocal(selectedFile),
+          ensureRemote(selectedFile),
+        ])
+        if (l.status === 'fulfilled') local = l.value
+        if (r.status === 'fulfilled') remote = r.value
+        if (l.status === 'rejected' && !local) {
+          throw l.reason instanceof Error ? l.reason : new Error(String(l.reason))
+        }
+      }
+      if (!local && !remote) {
+        throw new Error('Video upload failed — no local or remote URL available')
+      }
+      const ref: VideoRef = { kind: 'video-ref', local, url: remote || undefined }
+      setOutput('video', [ref])
+      setStatusMessage('Video ready')
+    })
+  })
 
-    const res = await uploadVideoFile(selectedFile, uploadMode)
-    if (!res?.ok) throw new Error(res?.error ?? 'Video upload failed')
-    const videoUrl = String(res.video_url || '').trim()
-    if (!videoUrl) throw new Error('Upload succeeded but no video_url was returned')
-
-    setUploadedVideoUrl(videoUrl)
-    setUploadedVideoFingerprint(payloadFingerprint)
-    setUploadedMode(uploadMode)
-    return videoUrl
-  }
-
+  // Preview URL
   useEffect(() => {
     if (selectedFile) {
-      const objectUrl = URL.createObjectURL(selectedFile)
-      setPreviewUrl(objectUrl)
-      return () => URL.revokeObjectURL(objectUrl)
+      const u = URL.createObjectURL(selectedFile)
+      setPreviewUrl(u)
+      return () => URL.revokeObjectURL(u)
     }
-    setPreviewUrl('')
-  }, [selectedFile])
+    setPreviewUrl(localUrl || remoteUrl || '')
+    return
+  }, [selectedFile, localUrl, remoteUrl])
 
-  // Check embedded metadata for /outputs/ URLs
+  // Has-meta probe for the local file (existing /api/file-metadata behavior).
   useEffect(() => {
     setHasMeta(false)
-    const url = uploadedVideoUrl
-    if (!url || !url.startsWith('/outputs/')) return
-    const filename = url.split('/outputs/')[1]?.split('?')[0]
+    if (!localUrl || !localUrl.startsWith('/outputs/')) return
+    const filename = localUrl.split('/outputs/')[1]?.split('?')[0]
     if (!filename) return
     fetch(`${FILE_META_ENDPOINT}/${encodeURIComponent(filename)}`)
       .then((r) => r.json())
       .then((d) => { if (d.has_meta) setHasMeta(true) })
       .catch(() => {})
-  }, [uploadedVideoUrl])
+  }, [localUrl])
 
-  useEffect(() => {
-    registerExecute(async () => {
-      setStatusMessage('Preparing video...')
-      const url = await materializeVideoUrl()
-      setOutput('video', [url])
-      setStatusMessage('Video ready')
-    })
-  })
+  const ensureLocal = async (file: File): Promise<string> => {
+    if (localUrl) return localUrl
+    setUploadingLocal(true)
+    try {
+      const res = await postFile(SAVE_LOCAL_ENDPOINT, file)
+      if (!res?.ok) throw new Error(res?.error ?? 'Local save failed')
+      const url = String(res.video_url || '').trim()
+      if (!url) throw new Error('save-local returned no video_url')
+      setLocalUrl(url)
+      return url
+    } finally {
+      setUploadingLocal(false)
+    }
+  }
+
+  const ensureRemote = async (file: File): Promise<string> => {
+    if (remoteUrl) return remoteUrl
+    setUploadingRemote(true)
+    try {
+      const res = await postFile(UPLOAD_ENDPOINT, file)
+      if (!res?.ok) throw new Error(res?.error ?? 'Tmpfiles upload failed')
+      const url = String(res.video_url || '').trim()
+      if (!url) throw new Error('upload returned no video_url')
+      setRemoteUrl(url)
+      return url
+    } catch (e) {
+      // Remote failure is non-fatal — downstream consumers that only need
+      // local can still proceed. Show a warning rather than swallowing.
+      const msg = e instanceof Error ? e.message : String(e)
+      setUploadError(`Tmpfiles upload failed: ${msg}`)
+      throw e
+    } finally {
+      setUploadingRemote(false)
+    }
+  }
+
+  const onFileChanged = async (file: File | null) => {
+    setUploadError('')
+    setSelectedFile(file)
+    if (!file) {
+      setSelectedFingerprint('')
+      return
+    }
+    const fp = await fingerprintFile(file)
+    setSelectedFingerprint(fp)
+
+    // New file → invalidate any cached uploads keyed to a prior fingerprint.
+    if (uploadedFingerprint !== fp) {
+      setLocalUrl('')
+      setRemoteUrl('')
+      setUploadedFingerprint(fp)
+    }
+
+    // Kick off both uploads in parallel; do not block UI. Errors surface via
+    // uploadError. Caller awaits via ensureLocal/Remote on pipeline run.
+    void ensureLocal(file).catch(() => {})
+    void ensureRemote(file).catch(() => {})
+  }
 
   const openFilePicker = async () => {
     const files = await pickFiles({ slug: 'video_loader', accept: 'video/*', description: 'Videos' })
@@ -125,68 +208,31 @@ function VideoLoaderBlock({
 
   const clearSelection = () => {
     setSelectedFile(null)
-    setSelectedFileFingerprint('')
-    setUploadedVideoUrl('')
-    setUploadedVideoFingerprint('')
-    setUploadedMode('')
+    setSelectedFingerprint('')
+    setLocalUrl('')
+    setRemoteUrl('')
+    setUploadedFingerprint('')
+    setUploadError('')
   }
 
-  const onFileChanged = async (file: File | null) => {
-    setSelectedFile(file)
-    if (!file) {
-      setPreviewUrl('')
-      setSelectedFileFingerprint('')
-      return
+  const statusLine = (() => {
+    if (uploadingLocal || uploadingRemote) {
+      const parts: string[] = []
+      if (uploadingLocal) parts.push('saving locally')
+      if (uploadingRemote) parts.push('uploading to tmpfiles')
+      return parts.join(' · ') + '…'
     }
-    const nextFingerprint = await fingerprintFile(file)
-    setSelectedFileFingerprint(nextFingerprint)
-    if (!uploadedVideoFingerprint || uploadedVideoFingerprint !== nextFingerprint) {
-      setUploadedVideoUrl('')
-      setUploadedVideoFingerprint('')
-      setUploadedMode('')
-    }
-  }
-
-  const handleModeChange = (mode: UploadMode) => {
-    setUploadMode(mode)
-    if (uploadedVideoUrl && uploadedMode !== mode) {
-      setUploadedVideoUrl('')
-      setUploadedVideoFingerprint('')
-      setUploadedMode('')
-    }
-  }
+    const parts: string[] = []
+    if (localUrl) parts.push('local')
+    if (remoteUrl) parts.push('tmpfiles')
+    if (parts.length === 0) return 'No file loaded'
+    return `Saved · ${parts.join(' + ')}`
+  })()
 
   return (
     <div className="space-y-3">
-      {/* Upload mode toggle */}
-      <div className="flex items-center gap-1 rounded-md border border-border/60 p-0.5">
-        <button
-          type="button"
-          className={`flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-            uploadMode === 'local'
-              ? 'bg-primary text-primary-foreground'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
-          onClick={() => handleModeChange('local')}
-        >
-          Local
-        </button>
-        <button
-          type="button"
-          className={`flex-1 rounded px-2 py-1 text-[11px] font-medium transition-colors ${
-            uploadMode === 'tmpfiles'
-              ? 'bg-primary text-primary-foreground'
-              : 'text-muted-foreground hover:text-foreground'
-          }`}
-          onClick={() => handleModeChange('tmpfiles')}
-        >
-          Tmpfiles
-        </button>
-      </div>
-      <p className="text-[10px] text-muted-foreground -mt-1">
-        {uploadMode === 'local'
-          ? 'Saves to /outputs — use for CivitAI Share or local playback.'
-          : 'Uploads to tmpfiles.org — use for remote RunPod endpoints.'}
+      <p className="text-[10px] text-muted-foreground">
+        Auto: saves to <span className="font-mono">/outputs</span> and uploads to tmpfiles.org in parallel — downstream blocks pick whichever URL they need.
       </p>
 
       {!previewUrl ? (
@@ -194,9 +240,7 @@ function VideoLoaderBlock({
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-medium">Select video file</p>
-              <p className="text-[10px] text-muted-foreground">
-                {uploadMode === 'local' ? 'Saves to local /outputs directory.' : 'Uploads to tmpfiles.org for remote access.'}
-              </p>
+              <p className="text-[10px] text-muted-foreground">mp4 / mov / webm</p>
             </div>
             <Button type="button" size="sm" className="h-8 px-4 text-xs" onClick={openFilePicker}>
               Browse
@@ -226,10 +270,49 @@ function VideoLoaderBlock({
         </div>
       )}
 
-      {uploadedVideoUrl && (
+      <p className="text-[10px] text-muted-foreground">{statusLine}</p>
+
+      {(localUrl || remoteUrl) && (
         <div className="space-y-1">
-          <Label className="text-xs">Video URL</Label>
-          <Input value={uploadedVideoUrl} readOnly className="h-8 text-xs" />
+          {localUrl && (
+            <div>
+              <Label className="text-[10px]">Local</Label>
+              <Input value={localUrl} readOnly className="h-7 text-[10px] font-mono" />
+            </div>
+          )}
+          {remoteUrl && (
+            <div>
+              <Label className="text-[10px]">Tmpfiles</Label>
+              <Input value={remoteUrl} readOnly className="h-7 text-[10px] font-mono" />
+            </div>
+          )}
+        </div>
+      )}
+
+      {uploadError && (
+        <div className="space-y-1">
+          <p className="text-[10px] text-yellow-500">{uploadError}</p>
+          {selectedFile && !remoteUrl && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 text-[11px]"
+              disabled={uploadingRemote}
+              onClick={() => {
+                setUploadError('')
+                void ensureRemote(selectedFile).catch(() => {})
+              }}
+            >
+              {uploadingRemote ? 'retrying…' : 'Retry tmpfiles upload'}
+            </Button>
+          )}
+          {!remoteUrl && (
+            <p className="text-[10px] text-muted-foreground">
+              Without the tmpfiles URL, downstream blocks that fetch from a remote server (PiAPI, OpenRouter)
+              can't reach this video — they need an externally-fetchable URL.
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -239,16 +322,11 @@ function VideoLoaderBlock({
 export const blockDef: BlockDef = {
   type: 'videoLoader',
   label: 'Video Loader',
-  description: 'Load a video file and pass it downstream',
+  description: 'Load a video file and pass it downstream. Auto-saves locally and uploads to tmpfiles.org in parallel.',
   size: 'md',
   canStart: true,
   inputs: [],
   outputs: [{ name: 'video', kind: PORT_VIDEO }],
-  configKeys: [
-    'upload_mode',
-    'uploaded_video_url',
-    'uploaded_video_fingerprint',
-    'uploaded_mode',
-  ],
+  configKeys: ['local_url', 'remote_url', 'uploaded_fingerprint'],
   component: VideoLoaderBlock,
 }

@@ -138,8 +138,16 @@ def _upload_media_file(local_file: Path, token: str) -> tuple[str, str]:
     return upload_id, media_type
 
 
-def _build_civitai_meta(meta: dict[str, Any]) -> dict[str, Any]:
-    """Build CivitAI metadata dict from generation metadata."""
+def _build_civitai_meta(
+    meta: dict[str, Any],
+    manual_resources: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build CivitAI metadata dict from generation metadata.
+
+    manual_resources: user-supplied modelVersionId references appended to the
+    resources list as additive credit. Entries without modelVersionId are
+    dropped. Not added to hashes_map (no AutoV2 available locally).
+    """
     civitai_meta: dict[str, Any] = {}
 
     prompt = meta.get("prompt", "")
@@ -213,6 +221,16 @@ def _build_civitai_meta(meta: dict[str, Any]) -> dict[str, Any]:
                 "hash": autov2,
             })
 
+    for entry in (manual_resources or []):
+        mvid = entry.get("modelVersionId")
+        if mvid is None:
+            continue
+        resources_list.append({
+            "type": entry.get("type", "model"),
+            "name": entry.get("name", ""),
+            "modelVersionId": int(mvid),
+        })
+
     if hashes_map:
         civitai_meta["hashes"] = hashes_map
     if resources_list:
@@ -254,6 +272,7 @@ async def share(request: Request) -> JSONResponse:
     nsfw = body.get("nsfw", False)
     publish = body.get("publish", True)
     meta = body.get("meta", {})
+    manual_resources = body.get("manual_resources", []) or []
 
     # Resolve all media files to local paths
     local_files: list[Path] = []
@@ -283,7 +302,7 @@ async def share(request: Request) -> JSONResponse:
             return JSONResponse({"ok": False, "error": f"Failed to create post: {create_resp}"})
 
         # Step 3: Add each image/video to the post
-        civitai_meta = _build_civitai_meta(meta)
+        civitai_meta = _build_civitai_meta(meta, manual_resources=manual_resources)
 
         for idx, (upload_id, media_type, local_file) in enumerate(uploads):
             probed = _probe_dimensions(local_file)
@@ -645,134 +664,96 @@ async def auto_tags(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
-@router.post("/post-info")
-async def post_info(request: Request) -> JSONResponse:
-    """Fetch post info from CivitAI to validate it's a showcase post."""
+@router.post("/resolve-hashes")
+async def resolve_hashes(request: Request) -> JSONResponse:
+    """Batch-resolve detected SHA256 hashes to CivitAI model versions.
+
+    Powers the HITL approval gate: the user sees real model names instead
+    of raw AutoV2 hex before clicking Approve. Rows whose hash 404s come
+    back with resolved=false so the gate renders 'Unknown — not on CivitAI'
+    and the share endpoint excludes them from meta.resources.
+    """
+    from backend import civitai_client
+
     body = await request.json()
-    token = body.get("token") or _get_token()
-    post_id = body.get("post_id")
-    if not token:
-        return JSONResponse({"ok": False, "error": "No CivitAI API key"}, status_code=400)
-    if not post_id:
-        return JSONResponse({"ok": False, "error": "post_id required"}, status_code=400)
-
-    try:
-        input_data = json.dumps({"json": {"id": int(post_id)}})
-        encoded = urllib.parse.quote(input_data)
-        resp = _civitai_request(
-            f"{CIVITAI_TRPC_BASE}/post.getEdit?input={encoded}",
-            None,
-            _trpc_headers(token),
-            method="GET",
-        )
-        post = resp.get("result", {}).get("data", {}).get("json", {})
-        if not post or not post.get("id"):
-            return JSONResponse({"ok": False, "error": "Post not found"})
-
-        images = post.get("images", [])
-        return JSONResponse({
-            "ok": True,
-            "post": {
-                "id": post.get("id"),
-                "title": post.get("title"),
-                "modelVersionId": post.get("modelVersionId"),
-                "nsfwLevel": post.get("nsfwLevel"),
-                "publishedAt": post.get("publishedAt"),
-                "image_count": len(images),
-                "is_showcase": post.get("modelVersionId") is not None,
-            },
-        })
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
-@router.post("/add-to-post")
-async def add_to_post(request: Request) -> JSONResponse:
-    """Add images to an existing CivitAI post."""
-    body = await request.json()
-    token = body.get("token") or _get_token()
-    post_id = body.get("post_id")
-    media_urls: list[str] = body.get("media_urls", [])
-    meta = body.get("meta", {})
-
-    if not token:
-        return JSONResponse({"ok": False, "error": "No CivitAI API key"}, status_code=400)
-    if not post_id:
-        return JSONResponse({"ok": False, "error": "post_id required"}, status_code=400)
-    if not media_urls:
-        return JSONResponse({"ok": False, "error": "media_urls required"}, status_code=400)
-
-    # Resolve all media files
-    local_files: list[Path] = []
-    for url in media_urls:
-        local_file = _resolve_local_file(url)
-        if not local_file or not local_file.exists():
-            return JSONResponse({"ok": False, "error": f"File not found: {url}"}, status_code=400)
-        local_files.append(local_file)
-
-    try:
-        # Get current image count for correct indices
-        input_data = json.dumps({"json": {"id": int(post_id)}})
-        encoded = urllib.parse.quote(input_data)
-        resp = _civitai_request(
-            f"{CIVITAI_TRPC_BASE}/post.getEdit?input={encoded}",
-            None,
-            _trpc_headers(token),
-            method="GET",
-        )
-        existing_images = resp.get("result", {}).get("data", {}).get("json", {}).get("images", [])
-        start_index = len(existing_images)
-
-        # Upload all files
-        uploads: list[tuple[str, str, Path]] = []
-        for local_file in local_files:
-            upload_id, media_type = _upload_media_file(local_file, token)
-            uploads.append((upload_id, media_type, local_file))
-
-        # Build metadata
-        civitai_meta = _build_civitai_meta(meta) if meta else {}
-
-        # Add each to the post
-        for idx, (upload_id, media_type, local_file) in enumerate(uploads):
-            probed = _probe_dimensions(local_file)
-            real_w = probed[0] if probed else meta.get("width", 1024)
-            real_h = probed[1] if probed else meta.get("height", 1024)
-
-            add_image_input: dict[str, Any] = {
-                "json": {
-                    "postId": int(post_id),
-                    "url": upload_id,
-                    "type": media_type,
-                    "width": real_w,
-                    "height": real_h,
-                    "name": local_file.name,
-                    "index": start_index + idx,
+    hashes_in = body.get("hashes", []) or []
+    seen: dict[str, dict[str, Any] | None] = {}
+    out: list[dict[str, Any]] = []
+    for entry in hashes_in:
+        sha = (entry.get("sha256") or "").lower()
+        filename = entry.get("filename", "")
+        if not sha:
+            out.append({"filename": filename, "sha256": sha, "resolved": False})
+            continue
+        if sha not in seen:
+            try:
+                meta = civitai_client.fetch_version_by_hash(sha)
+            except Exception:
+                meta = None
+            # Prefer the model title (model.name) over the version label
+            # (name) as the primary display string — "WAN 2.2 SVI 4 Passes"
+            # is what the user recognises, "v1.0" is not. Fall back to the
+            # version label if the model block is absent.
+            seen[sha] = (
+                {
+                    "modelVersionId": meta.version_id,
+                    "modelId": meta.model_id,
+                    "name": meta.model_name or meta.name or "",
+                    "versionName": meta.name or "",
+                    "type": meta.model_type or "",
                 }
-            }
-            if civitai_meta:
-                add_image_input["json"]["meta"] = civitai_meta
-
-            _civitai_request(
-                f"{CIVITAI_TRPC_BASE}/post.addImage",
-                json.dumps(add_image_input).encode(),
-                _trpc_headers(token),
+                if meta is not None
+                else None
             )
+        resolved = seen[sha]
+        if resolved is None:
+            out.append({"filename": filename, "sha256": sha, "resolved": False})
+        else:
+            out.append({
+                "filename": filename,
+                "sha256": sha,
+                "resolved": True,
+                **resolved,
+            })
+    return JSONResponse({"ok": True, "resolved": out})
 
-        post_url = f"https://civitai.com/posts/{post_id}"
-        return JSONResponse({
-            "ok": True,
-            "post_id": post_id,
-            "post_url": post_url,
-            "added_count": len(uploads),
-            "total_count": start_index + len(uploads),
-        })
 
-    except urllib.error.HTTPError as e:
-        body_text = ""
-        try:
-            body_text = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            pass
-        return JSONResponse({"ok": False, "error": f"HTTP Error {e.code}: {e.reason}", "detail": body_text}, status_code=500)
+@router.post("/resolve-resource")
+async def resolve_resource(request: Request) -> JSONResponse:
+    """Resolve a user-supplied CivitAI URL or ID to a model version.
+
+    Used by the 'Linked resources' UI section so the user can credit
+    workflows (which have no detectable hash locally) by pasting their
+    civitai.com URL.
+    """
+    from backend import civitai_client
+
+    body = await request.json()
+    raw = (body.get("input") or "").strip()
+    if not raw:
+        return JSONResponse({"ok": False, "error": "input required"})
+
+    try:
+        ref = civitai_client.parse_civitai_ref(raw)
+    except civitai_client.CivitAIRefError as e:
+        return JSONResponse({"ok": False, "error": str(e)})
+
+    try:
+        if ref.version_id is not None:
+            meta = civitai_client.fetch_version_metadata(ref.version_id)
+        else:
+            assert ref.model_id is not None  # parse_civitai_ref invariant
+            meta = civitai_client.fetch_latest_version_for_model(ref.model_id)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": str(e)})
+
+    return JSONResponse({
+        "ok": True,
+        "resource": {
+            "modelVersionId": meta.version_id,
+            "modelId": meta.model_id,
+            "name": meta.model_name or meta.name or "",
+            "versionName": meta.name or "",
+            "type": meta.model_type or "",
+        },
+    })

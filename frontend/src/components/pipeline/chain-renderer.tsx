@@ -40,6 +40,7 @@ export function ChainRenderer({
     return (
       <AddBlockButton
         validTypes={validTypes}
+        upstreamType={ancestors[ancestors.length - 1]?.type}
         onAdd={(type) => {
           if (isTrunk) addBlock(type, insertAt)
         }}

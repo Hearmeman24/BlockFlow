@@ -41,10 +41,18 @@ function mockFetch(options: {
   failEndpoints?: string[]
   malformedSuccessEndpoints?: string[]
   jobEndpoints?: Record<string, string[]>
+  endpointBodies?: Record<string, unknown[]>
 } = {}) {
   const jobEndpointCounts = new Map<string, number>()
+  const endpointBodyCounts = new Map<string, number>()
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input)
+    const bodies = options.endpointBodies?.[url]
+    if (bodies?.length) {
+      const idx = endpointBodyCounts.get(url) ?? 0
+      endpointBodyCounts.set(url, idx + 1)
+      return jsonResponse(bodies[Math.min(idx, bodies.length - 1)])
+    }
     if (options.failEndpoints?.includes(url)) {
       return jsonResponse({ ok: false, error: 'contract stop' })
     }
@@ -210,6 +218,7 @@ const POLLING_MEDIA_BLOCKS = [
     blockId: 'malformed-seedance',
     submitEndpoint: '/api/blocks/seedance/run',
     healthEndpoint: '/api/blocks/seedance/health',
+    statusEndpoint: (jobId: string) => `/api/blocks/seedance/status/${jobId}`,
     cancelEndpoint: '/api/blocks/seedance/cancel/job-seedance',
     setup: (blockId: string) => {
       setSession(blockId, 'prompt', 'seedance prompt')
@@ -221,6 +230,7 @@ const POLLING_MEDIA_BLOCKS = [
     blockId: 'malformed-gptImagePiapi',
     submitEndpoint: '/api/blocks/gpt_image_piapi/run',
     healthEndpoint: '/api/blocks/gpt_image_piapi/health',
+    statusEndpoint: (jobId: string) => `/api/blocks/gpt_image_piapi/status/${jobId}`,
     cancelEndpoint: '/api/blocks/gpt_image_piapi/cancel/job-gptImagePiapi',
     setup: (blockId: string) => setSession(blockId, 'prompt', 'gpt prompt'),
   },
@@ -229,6 +239,7 @@ const POLLING_MEDIA_BLOCKS = [
     blockId: 'malformed-nanoBanana2',
     submitEndpoint: '/api/blocks/nano_banana_2/run',
     healthEndpoint: '/api/blocks/nano_banana_2/health',
+    statusEndpoint: (jobId: string) => `/api/blocks/nano_banana_2/status/${jobId}`,
     cancelEndpoint: '/api/blocks/nano_banana_2/cancel/job-nanoBanana2',
     setup: (blockId: string) => setSession(blockId, 'prompt', 'nano prompt'),
   },
@@ -450,6 +461,79 @@ describe('custom block contracts', () => {
       await vi.advanceTimersByTimeAsync(5500)
 
       expect(fetchMock).toHaveBeenCalledWith(cancelEndpoint, expect.objectContaining({ method: 'POST' }))
+      await runExpectation
+      vi.useRealTimers()
+    },
+  )
+
+  it.each(POLLING_MEDIA_BLOCKS)(
+    '$type rejects malformed ok status snapshots with a clear job error',
+    async ({ type, blockId, submitEndpoint, healthEndpoint, statusEndpoint, cancelEndpoint, setup }) => {
+      setup(blockId)
+      const jobId = cancelEndpoint.split('/').pop()!
+      const fetchMock = mockFetch({
+        jobEndpoints: { [submitEndpoint]: [jobId] },
+        endpointBodies: { [statusEndpoint(jobId)]: [{ ok: true }] },
+      })
+      const { execute } = await renderAndCaptureExecute(type, {
+        blockId,
+        waitForFetchUrl: healthEndpoint,
+      })
+
+      vi.useFakeTimers()
+      const run = execute(contractInputs(), new AbortController().signal)
+      const runExpectation = expect(run).rejects.toThrow(/job/i)
+      await vi.advanceTimersByTimeAsync(5500)
+
+      await runExpectation
+      expect(fetchMock).toHaveBeenCalledWith(statusEndpoint(jobId))
+      vi.useRealTimers()
+    },
+  )
+
+  it.each(POLLING_MEDIA_BLOCKS)(
+    '$type rejects completed status snapshots missing their output artifact',
+    async ({ type, blockId, submitEndpoint, healthEndpoint, statusEndpoint, cancelEndpoint, setup }) => {
+      setup(blockId)
+      const jobId = cancelEndpoint.split('/').pop()!
+      mockFetch({
+        jobEndpoints: { [submitEndpoint]: [jobId] },
+        endpointBodies: { [statusEndpoint(jobId)]: [{ ok: true, job: { status: 'COMPLETED' } }] },
+      })
+      const { execute } = await renderAndCaptureExecute(type, {
+        blockId,
+        waitForFetchUrl: healthEndpoint,
+      })
+
+      vi.useFakeTimers()
+      const run = execute(contractInputs(), new AbortController().signal)
+      const runExpectation = expect(run).rejects.toThrow(/completed without/i)
+      await vi.advanceTimersByTimeAsync(5500)
+
+      await runExpectation
+      vi.useRealTimers()
+    },
+  )
+
+  it.each(POLLING_MEDIA_BLOCKS)(
+    '$type propagates failed status snapshot errors',
+    async ({ type, blockId, submitEndpoint, healthEndpoint, statusEndpoint, cancelEndpoint, setup }) => {
+      setup(blockId)
+      const jobId = cancelEndpoint.split('/').pop()!
+      mockFetch({
+        jobEndpoints: { [submitEndpoint]: [jobId] },
+        endpointBodies: { [statusEndpoint(jobId)]: [{ ok: true, job: { status: 'FAILED', error: 'provider failed' } }] },
+      })
+      const { execute } = await renderAndCaptureExecute(type, {
+        blockId,
+        waitForFetchUrl: healthEndpoint,
+      })
+
+      vi.useFakeTimers()
+      const run = execute(contractInputs(), new AbortController().signal)
+      const runExpectation = expect(run).rejects.toThrow(/provider failed/i)
+      await vi.advanceTimersByTimeAsync(5500)
+
       await runExpectation
       vi.useRealTimers()
     },

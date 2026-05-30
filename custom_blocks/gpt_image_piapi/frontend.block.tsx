@@ -227,7 +227,10 @@ function GptImagePiapiBlock({
           const snapRes = await fetch(STATUS_ENDPOINT(jobId))
           const snapData = await snapRes.json()
           if (!snapData.ok) throw new Error(snapData.error || 'status fetch failed')
-          const snap = snapData.job as JobSnap
+          const snap = snapData.job as JobSnap | undefined
+          if (!snap || typeof snap.status !== 'string') {
+            throw new Error('status response missing job')
+          }
           setProgress(snap)
           setStatusMessage(`${snap.status.toLowerCase()}${snap.remote_status ? ` - ${snap.remote_status}` : ''}`)
           if (snap.status === 'COMPLETED') {

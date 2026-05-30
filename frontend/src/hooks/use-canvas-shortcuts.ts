@@ -135,28 +135,23 @@ export function useCanvasShortcuts() {
         case 'clear-selection':
           s.setSelectedBlockId(null)
           return
-        case 'nav-right': {
-          if (!s.selectedBlockId) return
-          const next = getNextBlock(s.blocks, s.selectedBlockId)
-          if (next) s.setSelectedBlockId(next)
-          return
-        }
-        case 'nav-left': {
-          if (!s.selectedBlockId) return
-          const prev = getPrevBlock(s.blocks, s.selectedBlockId)
-          if (prev) s.setSelectedBlockId(prev)
-          return
-        }
-        case 'nav-up': {
-          if (!s.selectedBlockId) return
-          const up = getBlockAbove(s.blocks, s.selectedBlockId)
-          if (up) s.setSelectedBlockId(up)
-          return
-        }
+        case 'nav-right':
+        case 'nav-left':
+        case 'nav-up':
         case 'nav-down': {
-          if (!s.selectedBlockId) return
-          const dn = getBlockBelow(s.blocks, s.selectedBlockId)
-          if (dn) s.setSelectedBlockId(dn)
+          // Frictionless entry: with no selection, any arrow key lands on the
+          // first trunk block so the user can start navigating immediately.
+          if (!s.selectedBlockId) {
+            const first = s.blocks[0]?.id
+            if (first) s.setSelectedBlockId(first)
+            return
+          }
+          const next =
+            id === 'nav-right' ? getNextBlock(s.blocks, s.selectedBlockId)
+            : id === 'nav-left' ? getPrevBlock(s.blocks, s.selectedBlockId)
+            : id === 'nav-up' ? getBlockAbove(s.blocks, s.selectedBlockId)
+            : getBlockBelow(s.blocks, s.selectedBlockId)
+          if (next) s.setSelectedBlockId(next)
           return
         }
         case 'insert-downstream':

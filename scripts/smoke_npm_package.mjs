@@ -32,6 +32,7 @@ function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: root,
     encoding: 'utf8',
+    shell: process.platform === 'win32',
     ...spawnOptions,
   })
   if (result.stdout && !quietStdout) process.stdout.write(result.stdout)
@@ -146,6 +147,7 @@ async function main() {
     cwd: tmp,
     env,
     detached: process.platform !== 'win32',
+    shell: process.platform === 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   child.stdout.on('data', remember)

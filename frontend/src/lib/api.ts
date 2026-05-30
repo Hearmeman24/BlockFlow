@@ -28,11 +28,13 @@ export async function fetchRuns(
   favorited = false,
   mediaKind: MediaKindFilter | null = null,
   promptQuery: string = '',
+  hidePartial = true,
 ) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
   if (favorited) params.set('favorited', 'true')
   if (mediaKind) params.set('media_kind', mediaKind)
   if (promptQuery) params.set('q', promptQuery)
+  params.set('hide_partial', hidePartial ? 'true' : 'false')
   const res = await fetch(`${BASE}/api/runs?${params}`)
   return res.json()
 }

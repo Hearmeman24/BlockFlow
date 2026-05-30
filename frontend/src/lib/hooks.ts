@@ -10,10 +10,11 @@ export function useRuns(
   favorited = false,
   mediaKind: MediaKindFilter | null = null,
   promptQuery: string = '',
+  hidePartial = true,
 ) {
   const { data, error, isLoading, mutate } = useSWR(
-    ['runs', limit, offset, favorited, mediaKind, promptQuery],
-    () => fetchRuns(limit, offset, favorited, mediaKind, promptQuery),
+    ['runs', limit, offset, favorited, mediaKind, promptQuery, hidePartial],
+    () => fetchRuns(limit, offset, favorited, mediaKind, promptQuery, hidePartial),
     { revalidateOnFocus: true, keepPreviousData: true }
   )
 

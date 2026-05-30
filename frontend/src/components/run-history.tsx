@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter, useSearchParams, usePathname } from 'next/navigation'
-import { ChevronLeft, ChevronRight, Search, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, EyeOff, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useRuns } from '@/lib/hooks'
@@ -62,6 +62,7 @@ export function RunHistory() {
   const searchParams = useSearchParams()
 
   const favoritesOnly = searchParams.get('fav') === '1'
+  const hidePartial = searchParams.get('hide_partial') !== '0'
   const mediaKind: MediaKindFilter | null = isMediaKind(searchParams.get('kind')) ? (searchParams.get('kind') as MediaKindFilter) : null
   const urlQuery = searchParams.get('q') ?? ''
   const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
@@ -92,14 +93,14 @@ export function RunHistory() {
   }, [debouncedQuery]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const offset = (page - 1) * PAGE_SIZE
-  const { runs, total, isLoading, mutate } = useRuns(PAGE_SIZE, offset, favoritesOnly, mediaKind, debouncedQuery)
+  const { runs, total, isLoading, mutate } = useRuns(PAGE_SIZE, offset, favoritesOnly, mediaKind, debouncedQuery, hidePartial)
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / PAGE_SIZE)), [total])
   const startIndex = total === 0 ? 0 : offset + 1
   const endIndex = total === 0 ? 0 : offset + runs.length
   const canGoPrev = page > 1
   const canGoNext = page < totalPages
-  const hasFilters = favoritesOnly || mediaKind != null || debouncedQuery !== ''
+  const hasFilters = favoritesOnly || mediaKind != null || debouncedQuery !== '' || !hidePartial
 
   useEffect(() => {
     if (!isLoading && page > 1 && runs.length === 0) {
@@ -110,9 +111,10 @@ export function RunHistory() {
   const setPage = (p: number) => updateParams({ page: p === 1 ? null : String(p) })
   const setMediaKind = (v: MediaKindFilter | 'all') => updateParams({ kind: v === 'all' ? null : v, page: null })
   const toggleFavorites = () => updateParams({ fav: favoritesOnly ? null : '1', page: null })
+  const toggleHidePartial = () => updateParams({ hide_partial: hidePartial ? '0' : null, page: null })
   const clearAll = () => {
     setPromptDraft('')
-    updateParams({ fav: null, kind: null, q: null, page: null })
+    updateParams({ fav: null, kind: null, q: null, hide_partial: null, page: null })
   }
 
   const prevNextButtons = (
@@ -176,6 +178,16 @@ export function RunHistory() {
           <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
         </svg>
         Favorites
+      </Button>
+
+      <Button
+        variant={hidePartial ? 'default' : 'outline'}
+        size="sm"
+        className={`h-8 px-3 text-xs gap-1.5 ${hidePartial ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25' : ''}`}
+        onClick={toggleHidePartial}
+      >
+        <EyeOff className="size-3.5" />
+        Hide partial
       </Button>
 
       {hasFilters && (

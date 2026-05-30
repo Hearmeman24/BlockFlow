@@ -29,6 +29,7 @@ def temp_db(tmp_path, monkeypatch):
 def _make_run(
     *,
     name: str = "test",
+    status: str = "completed",
     outputs: dict[str, dict] | None = None,
     favorited: bool = False,
     created_at: str = "2026-01-01T00:00:00Z",
@@ -49,7 +50,7 @@ def _make_run(
     return {
         "id": str(uuid.uuid4()),
         "name": name,
-        "status": "completed",
+        "status": status,
         "duration_ms": 1000,
         "flow_snapshot": {"blocks": []},
         "block_results": blocks,
@@ -285,3 +286,39 @@ class TestListAndCountFilters:
             ))
         rows = temp_db.list_runs(limit=2, offset=0)
         assert [r["name"] for r in rows] == ["run-2", "run-1"]
+
+    def test_hide_partial_excludes_partial_and_failed_from_count_and_rows(self, temp_db):
+        temp_db.save_run(_make_run(
+            name="completed-run",
+            status="completed",
+            created_at="2026-01-03T00:00:00Z",
+        ))
+        temp_db.save_run(_make_run(
+            name="partial-run",
+            status="partial",
+            created_at="2026-01-02T00:00:00Z",
+        ))
+        temp_db.save_run(_make_run(
+            name="failed-run",
+            status="failed",
+            created_at="2026-01-01T00:00:00Z",
+        ))
+
+        rows = temp_db.list_runs(limit=10, offset=0, hide_partial=True)
+
+        assert [r["name"] for r in rows] == ["completed-run"]
+        assert temp_db.count_runs(hide_partial=True) == 1
+
+    def test_hide_partial_pagination_applies_after_status_filter(self, temp_db):
+        temp_db.save_run(_make_run(name="done-1", status="completed", created_at="2026-01-01T00:00:00Z"))
+        temp_db.save_run(_make_run(name="partial", status="partial", created_at="2026-01-02T00:00:00Z"))
+        temp_db.save_run(_make_run(name="done-2", status="completed", created_at="2026-01-03T00:00:00Z"))
+        temp_db.save_run(_make_run(name="failed", status="failed", created_at="2026-01-04T00:00:00Z"))
+        temp_db.save_run(_make_run(name="done-3", status="completed", created_at="2026-01-05T00:00:00Z"))
+
+        page1 = temp_db.list_runs(limit=2, offset=0, hide_partial=True)
+        page2 = temp_db.list_runs(limit=2, offset=2, hide_partial=True)
+
+        assert [r["name"] for r in page1] == ["done-3", "done-2"]
+        assert [r["name"] for r in page2] == ["done-1"]
+        assert temp_db.count_runs(hide_partial=True) == 3

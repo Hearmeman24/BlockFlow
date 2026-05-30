@@ -1,0 +1,42 @@
+{
+  "name": "@hearmeman24/blockflow",
+  "version": "0.1.0",
+  "description": "Local visual pipeline UI for AI image/video generation via RunPod serverless",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "blockflow": "bin/blockflow.mjs"
+  },
+  "files": [
+    "app.py",
+    "backend/",
+    "bin/",
+    "custom_blocks/",
+    "frontend/.next/standalone/",
+    "frontend/package.json",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE",
+    "!**/__pycache__/",
+    "!**/*.pyc",
+    "!**/*.pyo"
+  ],
+  "scripts": {
+    "build": "npm --prefix frontend run build",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hearmeman24/BlockFlow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Hearmeman24/BlockFlow/issues"
+  },
+  "homepage": "https://github.com/Hearmeman24/BlockFlow#readme"
+}

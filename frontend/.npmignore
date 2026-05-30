@@ -1,0 +1,7 @@
+node_modules/
+.next/cache/
+.next/trace
+.next/turbopack/
+coverage/
+.env*
+*.tsbuildinfo

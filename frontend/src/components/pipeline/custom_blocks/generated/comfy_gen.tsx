@@ -535,18 +535,25 @@ function ComfyGenBlock({
     return localStorage.getItem(ENDPOINT_KEY) || ''
   })
   const [settingsEndpointId, setSettingsEndpointId] = useState<string | null>(null)
+  const [settingsEndpointLoaded, setSettingsEndpointLoaded] = useState(false)
 
   useEffect(() => {
     getEndpoint('comfygen')
       .then((ep) => setSettingsEndpointId(ep?.endpoint_id ?? null))
       .catch(() => setSettingsEndpointId(null))
+      .finally(() => setSettingsEndpointLoaded(true))
   }, [])
 
   const endpointId = endpointIdOverride.trim() || settingsEndpointId || ''
+  const endpointMissing = settingsEndpointLoaded && !endpointId
 
   const persistEndpoint = useCallback((v: string) => {
     setEndpointIdOverride(v)
     localStorage.setItem(ENDPOINT_KEY, v)
+  }, [])
+
+  const openComfyGenSetup = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('blockflow:open-comfygen-wizard'))
   }, [])
 
   // sgs-ui-chf: Advanced mode (workspace-wide via localStorage). When OFF
@@ -1922,11 +1929,6 @@ function ComfyGenBlock({
           {cliMissing}
         </div>
       )}
-      {cliHealth && (
-        <p className="text-[10px] text-muted-foreground" title={cliHealth.path || undefined}>
-          CLI: {cliHealth.mode}
-        </p>
-      )}
       {/* Progress */}
       {progress && (
         <div className="space-y-1.5">
@@ -1957,6 +1959,33 @@ function ComfyGenBlock({
             globalRecs={presetRecommendations.global}
             workflowRecs={presetRecommendations.workflow}
           />
+        </div>
+      )}
+
+      {endpointMissing && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 space-y-2">
+          <div>
+            <p className="text-xs font-medium text-amber-200">ComfyGen endpoint is not set up</p>
+            <p className="text-[11px] text-muted-foreground">
+              This block runs ComfyUI workflows through a ComfyGen RunPod endpoint.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={openComfyGenSetup}
+            >
+              Set up ComfyGen
+            </Button>
+            <a
+              href="/settings?tab=endpoints"
+              className="inline-flex h-7 items-center rounded border border-border px-2 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Settings
+            </a>
+          </div>
         </div>
       )}
 
@@ -2058,16 +2087,34 @@ function ComfyGenBlock({
             )}
           </div>
         ) : (
-          <p className="text-[11px] text-muted-foreground">
-            No presets installed yet.{' '}
+          <div className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-2">
+            <p className="text-[11px] text-muted-foreground">
+              No presets installed yet.{' '}
             <a
               href="/presets"
               className="underline hover:text-foreground"
             >
               Install one
             </a>{' '}
-            to load a workflow + models in one click.
-          </p>
+              to load a workflow + models in one click.
+            </p>
+            {!advancedMode && (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] text-muted-foreground">
+                  Or enable advanced mode to load your own workflow JSON or PNG.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 text-xs"
+                  onClick={toggleAdvancedMode}
+                >
+                  Enable Advanced
+                </Button>
+              </div>
+            )}
+          </div>
         )}
         {presetApplyError && (
           <p className="text-[10px] text-red-400">{presetApplyError}</p>

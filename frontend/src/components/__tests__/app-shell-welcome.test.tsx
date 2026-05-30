@@ -128,4 +128,13 @@ describe('AppShell welcome onboarding', () => {
     expect(pushMock).toHaveBeenCalledWith('/settings?tab=credentials')
     expect(localStorage.getItem(WELCOME_STORAGE_KEY)).toBe('1')
   })
+
+  test('opens the ComfyGen wizard when a block dispatches the setup event', async () => {
+    localStorage.setItem(WELCOME_STORAGE_KEY, '1')
+    render(<AppShell><div>child page</div></AppShell>)
+
+    window.dispatchEvent(new CustomEvent('blockflow:open-comfygen-wizard'))
+
+    expect(await screen.findByRole('dialog', { name: /set up comfygen endpoint/i })).toBeInTheDocument()
+  })
 })

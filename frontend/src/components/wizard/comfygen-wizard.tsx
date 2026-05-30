@@ -5,8 +5,10 @@ import { useRouter } from 'next/navigation'
 
 import {
   cancelInstall,
+  getCredential,
   getInstallProgress,
   installPreset,
+  setCredential,
   validateService,
   wizardAttach,
   wizardHealth,
@@ -47,6 +49,14 @@ const REQUIRED_SERVICES: { service: string; label: string }[] = [
   { service: 'runpod', label: 'RunPod API key' },
   { service: 'r2', label: 'R2 / S3 storage' },
 ]
+
+const WIZARD_CREDENTIAL_FIELDS = [
+  { name: 'runpod_api_key', label: 'RunPod API Key', secret: true },
+  { name: 'r2_endpoint_url', label: 'R2 Endpoint URL', secret: false },
+  { name: 'r2_access_key_id', label: 'R2 Access Key ID', secret: true },
+  { name: 'r2_secret_access_key', label: 'R2 Secret Access Key', secret: true },
+  { name: 'r2_bucket', label: 'R2 Bucket', secret: false },
+] as const
 
 export function ComfyGenWizard({ onClose, onSuccess }: Props) {
   const router = useRouter()
@@ -99,6 +109,15 @@ export function ComfyGenWizard({ onClose, onSuccess }: Props) {
       await refreshPreflight()
       setRevalidating(null)
     }
+  }
+
+  const handleSaveCredentials = async (values: Record<string, string>) => {
+    for (const field of WIZARD_CREDENTIAL_FIELDS) {
+      await setCredential(field.name, values[field.name] ?? '')
+    }
+    await validateService('runpod')
+    await validateService('r2')
+    await refreshPreflight()
   }
 
   // Poll health on the health step
@@ -187,6 +206,7 @@ export function ComfyGenWizard({ onClose, onSuccess }: Props) {
               preflight={preflight}
               revalidating={revalidating}
               onRevalidate={handleRevalidate}
+              onSaveCredentials={handleSaveCredentials}
               onContinue={() => setStep('mode')}
             />
           )}
@@ -308,13 +328,33 @@ function PreflightView({
   preflight,
   revalidating,
   onRevalidate,
+  onSaveCredentials,
   onContinue,
 }: {
   preflight: WizardPreflight | null
   revalidating: string | null
   onRevalidate: (service: string) => void
+  onSaveCredentials: (values: Record<string, string>) => Promise<void>
   onContinue: () => void
 }) {
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all(
+      WIZARD_CREDENTIAL_FIELDS.map(async (field) => [field.name, (await getCredential(field.name))?.value ?? ''] as const),
+    )
+      .then((entries) => {
+        if (!cancelled) setDrafts(Object.fromEntries(entries))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   if (!preflight) {
     return <div className="text-sm text-muted-foreground">Checking configuration…</div>
   }
@@ -329,6 +369,51 @@ function PreflightView({
         BlockFlow checks your credentials before provisioning so a typo doesn&apos;t
         waste minutes on a failing RunPod call.
       </p>
+
+      {!preflight.ready && (
+        <div className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-3">
+          <div>
+            <div className="text-sm font-medium">Add setup credentials</div>
+            <p className="text-xs text-muted-foreground">
+              These are saved to Settings and validated here; you do not need to leave the wizard.
+            </p>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {WIZARD_CREDENTIAL_FIELDS.map((field) => (
+              <label key={field.name} className="space-y-1 text-xs">
+                <span className="font-medium">{field.label}</span>
+                <input
+                  type={field.secret ? 'password' : 'text'}
+                  value={drafts[field.name] ?? ''}
+                  onChange={(e) => setDrafts((prev) => ({ ...prev, [field.name]: e.target.value }))}
+                  className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs font-mono"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+            ))}
+          </div>
+          {saveError && <p className="text-xs text-destructive">{saveError}</p>}
+          <button
+            type="button"
+            onClick={async () => {
+              setSaving(true)
+              setSaveError(null)
+              try {
+                await onSaveCredentials(drafts)
+              } catch (err) {
+                setSaveError(err instanceof Error ? err.message : String(err))
+              } finally {
+                setSaving(false)
+              }
+            }}
+            disabled={saving}
+            className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? 'Saving and validating…' : 'Save and validate credentials'}
+          </button>
+        </div>
+      )}
 
       <ul className="space-y-2">
         {REQUIRED_SERVICES.map(({ service, label }) => (

@@ -133,7 +133,7 @@ beforeEach(() => {
 })
 
 describe('ComfyGen preset refresh state', () => {
-  test('shows the resolved comfy-gen CLI mode from health', async () => {
+  test('hides the resolved comfy-gen CLI mode when health is ok', async () => {
     vi.mocked(fetch).mockImplementation(async (input: string | URL | Request) => {
       const url = fetchUrl(input)
       if (url.includes('/health')) {
@@ -145,7 +145,40 @@ describe('ComfyGen preset refresh state', () => {
 
     renderBlock()
 
-    expect(await screen.findByText(/CLI: sidecar/i)).toBeInTheDocument()
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalled()
+    })
+    expect(screen.queryByText(/CLI: sidecar/i)).not.toBeInTheDocument()
+  })
+
+  test('missing endpoint guides users to the ComfyGen setup wizard', async () => {
+    const openWizard = vi.fn()
+    window.addEventListener('blockflow:open-comfygen-wizard', openWizard)
+
+    const user = userEvent.setup()
+    renderBlock()
+
+    expect(await screen.findByText(/ComfyGen endpoint is not set up/i)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /set up comfygen/i }))
+
+    expect(openWizard).toHaveBeenCalledTimes(1)
+    window.removeEventListener('blockflow:open-comfygen-wizard', openWizard)
+  })
+
+  test('empty presets explain advanced workflow loading and reveal loaders', async () => {
+    settingsMocks.listInstalledPresets.mockResolvedValue([])
+
+    const user = userEvent.setup()
+    renderBlock()
+
+    expect(await screen.findByText(/No presets installed yet/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /enable advanced/i })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /enable advanced/i }))
+
+    expect(await screen.findByRole('button', { name: /load json/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /from png/i })).toBeInTheDocument()
   })
 
   test('shows reload control when installed preset metadata is newer and reapplies current preset', async () => {

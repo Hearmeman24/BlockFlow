@@ -12,6 +12,8 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/settings/client', () => ({
+  getCredential: vi.fn(),
+  setCredential: vi.fn(),
   wizardPreflight: vi.fn(),
   wizardTiers: vi.fn(),
   wizardProvision: vi.fn(),
@@ -46,6 +48,12 @@ beforeEach(() => {
   vi.mocked(client.wizardProvision).mockReset()
   vi.mocked(client.wizardAttach).mockReset()
   vi.mocked(client.wizardHealth).mockReset()
+  vi.mocked(client.getCredential).mockReset()
+  vi.mocked(client.setCredential).mockReset()
+  vi.mocked(client.getCredential).mockResolvedValue(null)
+  vi.mocked(client.setCredential).mockResolvedValue(undefined)
+  vi.mocked(client.validateService).mockReset()
+  vi.mocked(client.validateService).mockResolvedValue({ ok: true, error: null, info: null })
 })
 
 afterEach(() => {
@@ -72,6 +80,47 @@ describe('Preflight step', () => {
     expect(screen.getByText(/r2_bucket/)).toBeInTheDocument()
     // Should not advance past preflight
     expect(screen.queryByRole('button', { name: /create new/i })).not.toBeInTheDocument()
+  })
+
+  test('saves RunPod and R2 credentials inside the wizard, validates, and continues', async () => {
+    vi.mocked(client.wizardPreflight)
+      .mockResolvedValueOnce({
+        ready: false,
+        missing: ['runpod_api_key', 'r2_endpoint_url', 'r2_access_key_id', 'r2_secret_access_key', 'r2_bucket'],
+        services: {
+          runpod: { status: 'credentials_missing', validated_at: null, error: null, required: true },
+          r2: { status: 'credentials_missing', validated_at: null, error: null, required: true },
+        },
+      })
+      .mockResolvedValueOnce({
+        ready: true,
+        missing: [],
+        services: {
+          runpod: { status: 'valid', validated_at: '2026-05-30T00:00:00Z', error: null, required: true },
+          r2: { status: 'valid', validated_at: '2026-05-30T00:00:00Z', error: null, required: true },
+        },
+      })
+
+    const user = userEvent.setup()
+    render(<ComfyGenWizard onClose={() => {}} />)
+
+    await user.type(await screen.findByLabelText(/runpod api key/i), 'rpa_test')
+    await user.type(screen.getByLabelText(/r2 endpoint url/i), 'https://acct.r2.cloudflarestorage.com')
+    await user.type(screen.getByLabelText(/r2 access key id/i), 'r2_key')
+    await user.type(screen.getByLabelText(/r2 secret access key/i), 'r2_secret')
+    await user.type(screen.getByLabelText(/r2 bucket/i), 'blockflow-bucket')
+    await user.click(screen.getByRole('button', { name: /save and validate credentials/i }))
+
+    await waitFor(() => {
+      expect(client.setCredential).toHaveBeenCalledWith('runpod_api_key', 'rpa_test')
+      expect(client.setCredential).toHaveBeenCalledWith('r2_endpoint_url', 'https://acct.r2.cloudflarestorage.com')
+      expect(client.setCredential).toHaveBeenCalledWith('r2_access_key_id', 'r2_key')
+      expect(client.setCredential).toHaveBeenCalledWith('r2_secret_access_key', 'r2_secret')
+      expect(client.setCredential).toHaveBeenCalledWith('r2_bucket', 'blockflow-bucket')
+    })
+    expect(client.validateService).toHaveBeenCalledWith('runpod')
+    expect(client.validateService).toHaveBeenCalledWith('r2')
+    expect(await screen.findByRole('button', { name: /create new/i })).toBeInTheDocument()
   })
 
   test('advances to mode step when preflight ready', async () => {

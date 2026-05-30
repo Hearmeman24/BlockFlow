@@ -48,6 +48,17 @@ export function AppShell({ children }: { children: ReactNode }) {
     setWelcomeOpen(!hasSeenBlockFlowWelcome())
   }, [mounted, isGenerateRoute])
 
+  useEffect(() => {
+    const openComfyGenWizard = () => {
+      setWelcomeOpen(false)
+      setComfyGenWizardOpen(true)
+    }
+    window.addEventListener('blockflow:open-comfygen-wizard', openComfyGenWizard)
+    return () => {
+      window.removeEventListener('blockflow:open-comfygen-wizard', openComfyGenWizard)
+    }
+  }, [])
+
   return (
     <ErrorBoundary>
       <TooltipProvider>

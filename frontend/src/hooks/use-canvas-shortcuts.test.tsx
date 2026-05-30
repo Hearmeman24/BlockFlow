@@ -32,13 +32,15 @@ beforeEach(() => {
 let tabCounter = 0
 function makeWrapper() {
   const tabId = `hook-test-${++tabCounter}-${Math.random().toString(36).slice(2, 6)}`
-  return ({ children }: { children: ReactNode }) => (
+  const Wrapper = ({ children }: { children: ReactNode }) => (
     <PipelineTabsProvider>
       <PipelineProvider tabId={tabId}>
         <ShortcutPrefsProvider>{children}</ShortcutPrefsProvider>
       </PipelineProvider>
     </PipelineTabsProvider>
   )
+  Wrapper.displayName = 'CanvasShortcutsTestWrapper'
+  return Wrapper
 }
 
 /** Mount the hook together with usePipeline so tests can drive selection state. */

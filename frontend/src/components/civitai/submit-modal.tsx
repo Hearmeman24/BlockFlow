@@ -119,6 +119,15 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
   const [step, setStep] = useState<ModalStep>({ kind: 'picker' })
   const [nsfw, setNsfw] = useState(true)
 
+  // Enriched metadata — saved per-image metadata merged with model_hashes /
+  // lora_hashes pulled from /job-metadata for any job_id referenced in the
+  // saved meta. The frontend comfy_gen block doesn't currently write hashes
+  // into the per-job metadata it emits, so the saved record only has
+  // job_ids/seed/inference_settings/etc. The hashes live on the backend job
+  // record and need a round-trip to surface. Live pipeline gate does the
+  // same trick (custom_blocks/civitai_share frontend.block.tsx).
+  const [enrichedMetadata, setEnrichedMetadata] = useState<PerImageMeta[]>([])
+
   // Reset on open. Without this the next opening of the modal would still
   // carry the prior submission's "done" state.
   useEffect(() => {
@@ -141,15 +150,6 @@ export function SubmitToCivitaiModal({ run, open, onOpenChange }: SubmitToCivita
       setEnrichedMetadata([])
     }
   }, [open, artifact])
-
-  // Enriched metadata — saved per-image metadata merged with model_hashes /
-  // lora_hashes pulled from /job-metadata for any job_id referenced in the
-  // saved meta. The frontend comfy_gen block doesn't currently write hashes
-  // into the per-job metadata it emits, so the saved record only has
-  // job_ids/seed/inference_settings/etc. The hashes live on the backend job
-  // record and need a round-trip to surface. Live pipeline gate does the
-  // same trick (custom_blocks/civitai_share frontend.block.tsx).
-  const [enrichedMetadata, setEnrichedMetadata] = useState<PerImageMeta[]>([])
 
   useEffect(() => {
     if (!open || !artifact) return

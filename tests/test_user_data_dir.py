@@ -29,15 +29,31 @@ def test_resolve_user_data_dir_honors_env_override(monkeypatch, tmp_path):
     assert out == tmp_path / "custom"
 
 
+def test_resolve_user_data_dir_honors_blockflow_home(monkeypatch, tmp_path):
+    monkeypatch.delenv("BLOCKFLOW_DATA_DIR", raising=False)
+    monkeypatch.setenv("BLOCKFLOW_HOME", str(tmp_path / "portable"))
+    out = _config_module.resolve_user_data_dir()
+    assert out == tmp_path / "portable"
+
+
+def test_resolve_user_data_dir_prefers_data_dir_over_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("BLOCKFLOW_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BLOCKFLOW_HOME", str(tmp_path / "home"))
+    out = _config_module.resolve_user_data_dir()
+    assert out == tmp_path / "data"
+
+
 def test_resolve_user_data_dir_darwin_default(monkeypatch):
     monkeypatch.delenv("BLOCKFLOW_DATA_DIR", raising=False)
+    monkeypatch.delenv("BLOCKFLOW_HOME", raising=False)
     monkeypatch.setattr(sys, "platform", "darwin")
     out = _config_module.resolve_user_data_dir()
-    assert out == Path.home() / "Library" / "Application Support" / "blockflow"
+    assert out == Path.home() / "Library" / "Application Support" / "BlockFlow"
 
 
 def test_resolve_user_data_dir_linux_default_uses_xdg(monkeypatch, tmp_path):
     monkeypatch.delenv("BLOCKFLOW_DATA_DIR", raising=False)
+    monkeypatch.delenv("BLOCKFLOW_HOME", raising=False)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     monkeypatch.setattr(sys, "platform", "linux")
     out = _config_module.resolve_user_data_dir()
@@ -46,6 +62,7 @@ def test_resolve_user_data_dir_linux_default_uses_xdg(monkeypatch, tmp_path):
 
 def test_resolve_user_data_dir_linux_default_no_xdg(monkeypatch):
     monkeypatch.delenv("BLOCKFLOW_DATA_DIR", raising=False)
+    monkeypatch.delenv("BLOCKFLOW_HOME", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.setattr(sys, "platform", "linux")
     out = _config_module.resolve_user_data_dir()
@@ -54,20 +71,22 @@ def test_resolve_user_data_dir_linux_default_no_xdg(monkeypatch):
 
 def test_resolve_user_data_dir_windows_default_uses_localappdata(monkeypatch, tmp_path):
     monkeypatch.delenv("BLOCKFLOW_DATA_DIR", raising=False)
+    monkeypatch.delenv("BLOCKFLOW_HOME", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
     monkeypatch.setattr(sys, "platform", "win32")
     out = _config_module.resolve_user_data_dir()
-    assert out == tmp_path / "AppData" / "Local" / "blockflow"
+    assert out == tmp_path / "AppData" / "Local" / "BlockFlow"
 
 
 def test_resolve_user_data_dir_windows_default_no_localappdata(monkeypatch):
     """When LOCALAPPDATA is somehow unset (broken environment, msys, etc.),
     fall through to the conventional ~/AppData/Local/blockflow."""
     monkeypatch.delenv("BLOCKFLOW_DATA_DIR", raising=False)
+    monkeypatch.delenv("BLOCKFLOW_HOME", raising=False)
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     monkeypatch.setattr(sys, "platform", "win32")
     out = _config_module.resolve_user_data_dir()
-    assert out == Path.home() / "AppData" / "Local" / "blockflow"
+    assert out == Path.home() / "AppData" / "Local" / "BlockFlow"
 
 
 # === migrate_legacy_user_data ================================================

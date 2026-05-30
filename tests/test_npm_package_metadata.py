@@ -44,6 +44,7 @@ def test_npm_package_smoke_script_exercises_clean_packaged_launch():
 
     assert "npm pack --json" in script
     assert "npm exec --yes --package" in script
+    assert "npm.cmd" in script
     assert "BLOCKFLOW_HOME" in script
     assert "BLOCKFLOW_NO_OPEN" in script
     assert "comfy-gen" in script

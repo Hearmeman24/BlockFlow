@@ -13,6 +13,10 @@ function log(message) {
   console.error(`[smoke-npm-package] ${message}`)
 }
 
+function npmCommand() {
+  return process.platform === 'win32' ? 'npm.cmd' : 'npm'
+}
+
 function remember(chunk) {
   const text = chunk.toString()
   process.stderr.write(text)
@@ -109,7 +113,8 @@ async function terminate(child) {
 
 async function main() {
   log('npm pack --json')
-  const packOutput = run('npm', ['pack', '--json'], { quietStdout: true })
+  const npm = npmCommand()
+  const packOutput = run(npm, ['pack', '--json'], { quietStdout: true })
   const packed = JSON.parse(packOutput)
   const tarball = path.resolve(root, packed[0].filename)
   log(`packed ${packed[0].filename} with ${packed[0].entryCount} entries`)
@@ -137,7 +142,7 @@ async function main() {
 
   const args = ['exec', '--yes', '--package', tarball, '--', 'blockflow']
   log(`npm exec --yes --package ${tarball} -- blockflow`)
-  const child = spawn('npm', args, {
+  const child = spawn(npm, args, {
     cwd: tmp,
     env,
     detached: process.platform !== 'win32',

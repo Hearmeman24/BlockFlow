@@ -281,7 +281,7 @@ def test_credentials_endpoints_prefs_are_isolated_namespaces(client):
 # invalid | valid, with the same 10-minute freshness TTL.
 
 def _stamp_r2_validation(ok: bool, *, age_seconds: int = 0, error=None):
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta, timezone
     ts = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).isoformat(timespec="seconds")
     settings_store.set_credential_validation("r2", {"ok": ok, "error": error, "validated_at": ts})
 

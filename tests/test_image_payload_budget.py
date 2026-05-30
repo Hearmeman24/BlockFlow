@@ -106,7 +106,16 @@ def test_multimodal_prompt_writer_resolves_local_images_under_payload_budget(tmp
     assert sum(_data_uri_payload_size(url) for url in resolved) <= 900_000
 
 
-def test_tmpfiles_upload_compresses_large_image_before_external_post(monkeypatch: pytest.MonkeyPatch):
+def test_tmpfiles_upload_compresses_large_image_before_external_post(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from backend import asset_uploads, settings_store
+
+    monkeypatch.setattr(settings_store, "DB_PATH", tmp_path / "settings.db")
+    settings_store.init_db()
+    settings_store.set_app_pref("asset_storage_mode", "tmpfiles")
+
     spec = importlib.util.spec_from_file_location(
         "upload_image_to_tmpfiles_budget",
         ROOT / "custom_blocks" / "upload_image_to_tmpfiles" / "backend.block.py",
@@ -132,7 +141,7 @@ def test_tmpfiles_upload_compresses_large_image_before_external_post(monkeypatch
         captured["headers"] = dict(req.header_items())
         return FakeResponse()
 
-    monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(asset_uploads.urllib.request, "urlopen", fake_urlopen)
 
     app = FastAPI()
     app.include_router(mod.router)
@@ -146,7 +155,12 @@ def test_tmpfiles_upload_compresses_large_image_before_external_post(monkeypatch
     )
 
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "image_url": "https://tmpfiles.org/dl/abc/ref.jpg"}
+    assert resp.json() == {
+        "ok": True,
+        "image_url": "https://tmpfiles.org/dl/abc/ref.jpg",
+        "provider": "tmpfiles",
+        "expires_at": None,
+    }
     multipart = captured["data"]
     assert isinstance(multipart, bytes)
     assert len(multipart) < len(raw)

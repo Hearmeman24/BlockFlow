@@ -2,9 +2,20 @@
 
 # BlockFlow
 
-A local-only, browser-based pipeline editor for AI video and image generation.
+[![npm](https://img.shields.io/npm/v/@hearmeman24/blockflow?color=CB3837&label=npm)](https://www.npmjs.com/package/@hearmeman24/blockflow)
+[![CI](https://github.com/Hearmeman24/BlockFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Hearmeman24/BlockFlow/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Hearmeman24/BlockFlow?display_name=tag)](https://github.com/Hearmeman24/BlockFlow/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Build visual workflows by chaining blocks together — prompt generation, ComfyUI workflows, video upscaling, and more — all running on RunPod serverless GPUs.
+Open-source visual pipelines for AI image and video generation.
+
+BlockFlow's main path runs ComfyUI workflows through ComfyGen on your own
+RunPod serverless endpoint. Provider-specific blocks let you mix in models from
+RunPod, PiAPI, OpenRouter, CivitAI, and more.
+
+```bash
+npx @hearmeman24/blockflow
+```
 
 ---
 
@@ -19,258 +30,154 @@ Build visual workflows by chaining blocks together — prompt generation, ComfyU
 
 </div>
 
+## Why BlockFlow
+
+ComfyUI is powerful, but production workflows often need more than one graph
+run. You may need prompt generation, reference images, a ComfyUI workflow,
+post-processing, review, publishing, and repeated runs across many inputs.
+
+BlockFlow turns that into a left-to-right pipeline. Blocks can branch, but you
+do not have to wire low-level graph nodes together for every production flow.
+
+The scale model is RunPod serverless: if your endpoint has 10 available workers,
+BlockFlow can submit work in parallel instead of waiting for one local GPU queue.
+You can also run multiple pipeline tabs at the same time, each with its own state,
+cancellation, outputs, and artifacts.
+
+## Generation Backends
+
+BlockFlow can orchestrate multiple generation backends in one pipeline.
+
+### ComfyUI via ComfyGen
+
+The primary backend path is ComfyUI through
+[ComfyGen](https://github.com/Hearmeman24/ComfyGen). BlockFlow provisions or
+attaches a RunPod serverless endpoint, sends ComfyUI workflows to it, monitors
+jobs, handles cancellation, and stores outputs locally.
+
+This is the path for:
+
+- arbitrary ComfyUI workflow JSONs
+- installed workflow/model presets
+- LoRA-aware ComfyUI generation
+- model downloads to the endpoint's network volume
+- serverless worker scaling
+
+### Direct Provider Blocks
+
+Some blocks call hosted models directly instead of going through ComfyUI:
+
+- **Nano Banana 2** on RunPod
+- **Seedance 2** through PiAPI
+- **GPT Image** through PiAPI
+- **Prompt and multimodal prompt writing** through OpenRouter
+- **CivitAI sharing** for publishing generated media
+
+You can mix these in one pipeline: generate a prompt, create or edit an image
+with one provider, animate it with another, upscale it, review it, and publish
+the result.
+
+## Presets
+
+BlockFlow can install ComfyGen presets: packaged workflow + model bundles that
+land on your own ComfyUI RunPod endpoint.
+
+The public preset registry lives here:
+
+[github.com/Hearmeman24/blockflow-presets](https://github.com/Hearmeman24/blockflow-presets)
+
+Current examples include:
+
+- `gbrx-mop-pro`
+- `hidream-o1`
+- `ltx-2-3`
+- `qwen-image-lighting`
+- `wan-animate`
+- `wan22-svi-4pass`
+
+Presets are useful when a workflow needs a specific model set, hidden internal
+nodes, exposed user controls, or repeatable setup across machines.
+
+## What You Can Build
+
+- ComfyUI generation pipelines backed by RunPod serverless workers
+- prompt -> image -> video -> upscale flows
+- image and video reference workflows
+- dataset creation and captioning flows
+- LoRA training and upload-to-ComfyGen flows
+- batch and sweep-style runs across prompts, LoRAs, settings, or references
+- human review gates before downstream steps
+- artifacts that can be restored, inspected, or submitted to CivitAI
+
 ## Quick Start
 
+Run the published package:
+
 ```bash
-# 1. Clone the repo
-git clone <repo-url> && cd blockflow
+npx @hearmeman24/blockflow
+```
 
-# 2. Create your .env file
-cp .env.example .env
-# Edit .env with your API keys (see Configuration below)
+BlockFlow starts a local FastAPI backend and a prebuilt Next.js frontend, then
+opens the browser UI.
 
-# 3. Run
+On first use:
+
+1. Open **Settings** and add the credentials for the services you want to use.
+2. Set up or attach a **ComfyGen** RunPod endpoint.
+3. Install a preset, paste a ComfyUI workflow, or add direct provider blocks.
+4. Build a pipeline and click **Run Pipeline**.
+
+BlockFlow runs locally and uses your own API keys, RunPod account, and storage.
+Generation costs are paid directly to the services you connect.
+
+## Common Workflows
+
+### ComfyUI at Serverless Scale
+
+Install a preset or paste a workflow, configure the exposed controls, then run it
+through a ComfyGen endpoint. Increase the endpoint worker count when you need
+more parallel generation.
+
+### Content Pipelines
+
+Use prompt blocks, image/video generation blocks, viewers, upscalers, and
+publishing blocks as one repeatable workflow instead of a folder of disconnected
+scripts.
+
+### LoRA and Dataset Workflows
+
+Create datasets, caption images, submit LoRA training jobs, and upload trained
+LoRAs back to the ComfyGen endpoint so downstream generation can use them.
+
+## Local Development
+
+For repository development:
+
+```bash
+git clone https://github.com/Hearmeman24/BlockFlow.git
+cd BlockFlow
 uv run app.py
 ```
 
-The app starts a FastAPI backend on `:8000` and a Next.js frontend on `:3000` (configurable via `BACKEND_PORT` / `FRONTEND_PORT` env vars), then opens your browser automatically.
+The dev entrypoint starts FastAPI on `:8000` and Next.js on `:3000`.
 
-## Prerequisites
-
-| Requirement | Purpose | Install |
-|-------------|---------|---------|
-| **Python 3.12+** | Backend | [python.org](https://www.python.org/) |
-| **uv** | Python package runner | `curl -LsSf https://astral.sh/uv/install.sh \| sh` (macOS/Linux) or `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` (Windows) |
-| **Node.js 18+** | Frontend | [nodejs.org](https://nodejs.org/) |
-| **ffprobe** | Video metadata extraction | `brew install ffmpeg` (macOS) / `apt install ffmpeg` (Linux) / `winget install ffmpeg` (Windows) |
-| **comfy-gen** *(optional)* | ComfyUI workflow execution | `pip install comfy-gen` |
-
-### External Services
-
-You'll need accounts for the services your workflow uses:
-
-| Service | Required? | What For |
-|---------|-----------|----------|
-| [RunPod](https://runpod.io) | Yes | GPU serverless endpoints for generation |
-| [OpenRouter](https://openrouter.ai) | Yes | LLM-powered prompt generation |
-| [Topaz Labs](https://www.topazlabs.com/topaz-video-ai) | Optional | Video & image AI upscaling |
-| [CivitAI](https://civitai.com) | Optional | Share generated media (advanced mode) |
-
-## Configuration
-
-Create a `.env` file in the project root. The app reads it automatically on startup.
-
-### Required
-
-```env
-RUNPOD_API_KEY=rpa_...              # RunPod API key
-OPENROUTER_API_KEY=sk-or-v1-...     # OpenRouter API key for prompt generation
-```
-
-### Optional Services
-
-```env
-TOPAZ_API_KEY=                      # Topaz Labs API key (for upscaling blocks)
-CIVITAI_API_KEY=                    # CivitAI API key (for sharing, advanced mode)
-RUNPOD_ENDPOINT_ID=                 # Override comfy-gen's configured endpoint ID
-```
-
-### Optional Customization
-
-```env
-# Generation defaults
-DEFAULT_WIDTH=832                   # Default video width
-DEFAULT_HEIGHT=480                  # Default video height
-DEFAULT_FRAMES=81                   # Default frame count (must be 4n+1: 81, 121, 161...)
-DEFAULT_FPS=16                      # Default frames per second
-
-# Prompt writer
-DEFAULT_WRITER_MODEL=               # OpenRouter model ID (leave empty for model picker)
-DEFAULT_WRITER_TEMPERATURE=0.6      # LLM temperature
-DEFAULT_WRITER_MAX_TOKENS=100000    # Max token limit
-
-# Performance
-APP_MAX_PARALLEL_WORKERS=6          # Max concurrent generation jobs
-RUNPOD_POLL_INTERVAL_SEC=4          # Status polling interval (seconds)
-RUNPOD_POLL_TIMEOUT_SEC=2400        # Max wait time per job (seconds)
-
-# Preset installer-pod sweeper (sgs-ui-c7n) — belt-and-suspenders cleanup
-# for the CPU pods spawned by `comfy-gen install-preset`. Periodically
-# DELETEs orphaned / stuck / completed installer pods so a missed cleanup
-# can't bill $0.06/hr forever.
-INSTALLER_SWEEP_INTERVAL_SEC=60     # How often the sweeper runs
-INSTALLER_SWEEP_ORPHAN_MIN=5        # Untracked pods older than this → DELETE
-INSTALLER_SWEEP_STUCK_MIN=60        # In-flight installs older than this → DELETE
-INSTALLER_POD_NAME_PREFIX=comfygen-installer  # Only sweep pods with this prefix
-```
-
-### ComfyUI Setup
-
-The **ComfyUI Gen** block requires the `comfy-gen` CLI tool:
+Useful commands:
 
 ```bash
-pip install comfy-gen
-comfy-gen config --set runpod_api_key=rpa_...
-comfy-gen config --set endpoint_id=<your-comfyui-endpoint>
-comfy-gen config --set aws_access_key_id=AKIA...
-comfy-gen config --set aws_secret_access_key=...
+uv run pytest
+npm --prefix frontend test
+npm --prefix frontend run build
 ```
 
-## How It Works
+## Documentation
 
-The app uses a **visual block-based pipeline** that flows left to right. Each block performs one task and passes its output to the next.
-
-```
-[Prompt Writer] → [ComfyUI Gen] → [Video Viewer] → [Video Upscale] → [Video Viewer]
-```
-
-1. **Add blocks** using the `+` button
-2. **Configure** each block's settings
-3. **Run Pipeline** executes all blocks in sequence
-4. **Continue** re-runs from where you left off (skips completed blocks)
-
-Blocks connect automatically based on compatible data types (text, image, video, etc.).
-
-## Available Blocks
-
-### Input & Prompting
-
-| Block | Description |
-|-------|-------------|
-| **Prompt Writer** | Generate prompts using an LLM. Supports video and image modes with custom system prompts. **Idea generator**: describe a concept and generate multiple prompt variations (4–48) that are batched as a sweep axis in downstream ComfyUI Gen blocks. |
-| **I2V Prompt Writer** | Generate a video prompt from an input image using a vision LLM. Specialized for image-to-video transitions. |
-| **Upload Image** | Upload a local image file or provide a URL. |
-| **Video Loader** | Load videos from URLs, local paths, or file upload. |
-
-### Generation
-
-| Block | Description |
-|-------|-------------|
-| **ComfyUI Gen** | Run any ComfyUI workflow on RunPod serverless. Load workflows from JSON or extract from PNG metadata. Supports resolution, seed, prompt, and frame count overrides. Auto-detects KSampler nodes (including modular `SamplerCustomAdvanced` workflows) and shows their display names. Auto-detects LoRA loaders with per-LoRA enable/disable toggle, name swap, and strength sliders. **Automation mode**: sweep multiple values (samplers, schedulers, LoRAs, strengths, CFG, steps, prompts) with cartesian product — runs all combinations in parallel with configurable concurrency (1–10). **Missing model detection**: auto-detects missing models and offers one-click download to the endpoint. |
-
-### Viewing
-
-| Block | Description |
-|-------|-------------|
-| **Video Viewer** | Display generated videos inline with multi-video navigation. Accumulates outputs across runs and auto-selects the newest item. |
-| **Image Viewer** | Display generated images in a grid with navigation. Accumulates outputs across runs and auto-selects the newest item. |
-
-### Post-Processing
-
-| Block | Description |
-|-------|-------------|
-| **Video Upscale** | Upscale videos using Topaz Video AI. Multiple enhancement models, frame interpolation, resolution presets (up to 4K), and encoder options. |
-| **Image Upscale** | Upscale images using Topaz AI. Enhancement and sharpening categories with face recovery options. |
-
-### Flow Control
-
-| Block | Description |
-|-------|-------------|
-| **Human-in-the-Loop** | Manual approval gate. Pauses the pipeline and shows the latest output for you to review before continuing or stopping. |
-
-## Pipeline Features
-
-- **Tabs** — Work on multiple pipelines simultaneously. Double-click to rename, right-click for context menu (rename, duplicate, close).
-- **Duplicate tabs** — Clone a tab with all its block configuration via the context menu.
-- **Workspaces** — Save all open tabs as a workspace and restore them later from the nav bar.
-- **Parallel execution** — Run pipelines in multiple tabs at the same time. Each tab has independent run state and cancellation.
-- **Loop mode** — Run a pipeline endlessly until stopped. Click "Loop" instead of "Run" to auto-repeat. Stops automatically on error. Pipelines with Human-in-the-Loop blocks are ineligible.
-- **Job manager** — When 2+ pipelines are running, a floating panel appears showing each running tab's name, current block, and a per-tab stop button.
-- **Branching** — Fork a pipeline into multiple parallel chains from any block.
-- **Iterator blocks** — Blocks like Upload Image and ComfyUI Gen can produce multiple outputs. The pipeline automatically loops downstream once per item, accumulating results across iterations.
-- **Continue mode** — After a run completes, add more blocks and click "Continue" to pick up where you left off.
-- **Save / Load** — Export pipelines as JSON files and reload them later via File menu. Rename or delete saved flows directly from the nav bar.
-- **Auto-fit** — Layout controls (auto-fit, expand all, reduce all) at the bottom of the canvas.
-- **Artifacts** — Browse run history with favorites, per-image metadata (synced with gallery navigation), and expandable sub-viewer outputs. Restore any past run as a new tab.
-- **Prompt library** — Save and reuse prompts with duplicate name detection (override or keep both).
-
-## Project Structure
-
-```
-sgs-ui/
-├── app.py                  # Single entrypoint — starts backend + frontend
-├── .env                    # Your API keys (git-ignored)
-├── frontend/               # Next.js + React + shadcn/ui
-├── backend/                # FastAPI + Topaz clients + RunPod services
-├── custom_blocks/          # Self-contained block definitions
-│   ├── <block>/frontend.block.tsx   # Block UI + logic
-│   └── <block>/backend.block.py     # Block API routes (optional)
-├── skills/                 # AI agent skills for extending BlockFlow
-├── flows/                  # Saved pipeline files
-└── output/                 # Downloaded generation outputs
-```
-
-Blocks are self-contained modules. Each block lives in `custom_blocks/<name>/` with a frontend component and an optional backend sidecar. Registration is automatic — just add a folder and restart.
-
-## Tech Stack
-
-- **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS, shadcn/ui
-- **Backend**: Python 3.12+, FastAPI, uvicorn
-- **Database**: SQLite (run history)
-- **External**: RunPod API, OpenRouter API, Topaz Labs API, comfy-gen CLI
-
-## Privacy Note
-
-Some pipeline blocks need to send local files (images, videos) to remote services like RunPod for processing. When this happens, files are temporarily uploaded to [tmpfiles.org](https://tmpfiles.org) to make them accessible to the remote GPU. Uploaded files are automatically deleted by tmpfiles.org after a short period. No files are uploaded unless you explicitly run a pipeline that requires remote processing.
-
-## Extensibility — Build Your Own Blocks
-
-BlockFlow is designed to be extended. Every block is a self-contained module — drop a folder into `custom_blocks/` and restart the app.
-
-```
-custom_blocks/my_block/
-├── frontend.block.tsx    # Required — UI component + execute logic
-└── backend.block.py      # Optional — server-side API routes
-```
-
-Your `frontend.block.tsx` exports a `blockDef` that declares the block's name, ports, size, and React component. The app discovers it automatically — no manual wiring needed.
-
-### Using AI Agents to Build Blocks
-
-The fastest way to create new blocks is with an AI coding agent. We provide a **BlockFlow Block Builder** skill that teaches agents the full block architecture — port types, execute functions, state persistence, backend sidecars, and UI conventions.
-
-**With [Claude Code](https://claude.com/claude-code):**
-
-Install the skill, then ask naturally:
-
-```
-"Add a block that takes a video URL and extracts frames as images"
-"Create a block that calls the Replicate API to run a model"
-"I need a block that watermarks videos before they go to the viewer"
-```
-
-Claude will generate the complete block files, following all BlockFlow conventions.
-
-The skill is included in this repo at [`skills/blockflow-block-builder/`](skills/blockflow-block-builder/).
-
-### Block Quick Reference
-
-| Concept | Details |
-|---------|---------|
-| **Port types** | `text`, `video`, `image`, `loras`, `metadata` (or any custom string) |
-| **Sizes** | `sm` (280x220), `md` (360x320), `lg` (440x460), `huge` (540x580) |
-| **State** | Use `useSessionState` for persistent config, `useState` for transient UI |
-| **Backend** | Export `router = APIRouter()`, auto-mounted at `/api/blocks/<slug>/` |
-| **Validation** | `npm run gen:custom-blocks` validates your block, `npm run build` checks types |
-
-## Troubleshooting
-
-**"comfy-gen CLI not found" warning in ComfyUI Gen block**
-Install the CLI: `pip install comfy-gen` and restart the app.
-
-**Pipeline blocks don't appear after startup**
-Make sure the backend is running (check terminal for `[app] Starting FastAPI on :8000`). The frontend fetches available blocks from the backend.
-
-**Video generation times out**
-Increase `RUNPOD_POLL_TIMEOUT_SEC` in your `.env`. Default is 2400 seconds (40 minutes).
-
-**Topaz upscaling stuck at "Processing"**
-The app has a 10-minute stall detector. If Topaz progress doesn't change for 10 minutes, the job fails with an error. Check your Topaz API key and account status.
-
-**"No video input URLs" error on Upscale block**
-Make sure the upstream block has completed and produced video output before continuing the pipeline.
+- [Architecture](docs/architecture.md)
+- [Testing](docs/testing.md)
+- [ComfyGen sidecar resolution](docs/comfygen-sidecar.md)
+- [npm release flow](docs/npm-release.md)
+- [Private blocks](docs/private-blocks.md)
+- [Contributing](docs/contributing.md)
 
 ## License
 
-[TBD]
-
+MIT. See [LICENSE](LICENSE).

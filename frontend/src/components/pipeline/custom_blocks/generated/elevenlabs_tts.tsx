@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { useSessionState } from '@/lib/use-session-state'
 import {
   PORT_TEXT,
@@ -271,7 +272,7 @@ function ElevenLabsTtsBlock({
 
       {/* Health */}
       {healthy === false && (
-        <p className="text-[10px] text-red-400">Set ElevenLabs API key in Settings → Credentials.</p>
+        <ProviderMissingCard provider="ElevenLabs" credentialLabel="ElevenLabs API key" />
       )}
 
       {/* Preview */}

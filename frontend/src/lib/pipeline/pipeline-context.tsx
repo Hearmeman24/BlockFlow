@@ -313,6 +313,10 @@ export function usePipeline() {
   return ctx
 }
 
+export function useOptionalPipeline() {
+  return useContext(PipelineCtx)
+}
+
 // ---- Provider ----
 
 interface PipelineProviderProps {

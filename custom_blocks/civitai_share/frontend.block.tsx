@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { useSessionState } from '@/lib/use-session-state'
 import { ApprovalGate } from '@/components/civitai/approval-gate'
 import { BLOCKFLOW_DESCRIPTION, directBackendUrl } from '@/components/civitai/constants'
@@ -502,7 +503,11 @@ function CivitAIShareBlock({
       ) : null}
 
       {!token && (
-        <span className="text-xs text-yellow-500">CIVITAI_API_KEY missing - configure it in your .env file or enter below</span>
+        <ProviderMissingCard
+          provider="CivitAI"
+          credentialLabel="CivitAI API key"
+          settingsHint="Settings -> Credentials or enter a key below"
+        />
       )}
       <div className="space-y-1">
         <Label className="text-xs">CivitAI API Key</Label>
@@ -654,9 +659,8 @@ function CivitAIShareBlock({
 
 export const blockDef: BlockDef = {
   type: 'civitaiShare',
-  label: 'CivitAI Share',
+  label: 'CivitAI Share (CivitAI)',
   description: 'Share generated media to CivitAI with HITL approval gate',
-  advanced: true,
   size: 'lg',
   canStart: true,
   inputs: [

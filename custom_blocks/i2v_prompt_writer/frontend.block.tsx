@@ -18,6 +18,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { usePromptLibrary } from '@/lib/use-prompt-library'
 import { PromptPickerDropdown, AddPromptDialog } from '@/components/prompt-library-dialog'
 import {
@@ -340,7 +341,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   return (
     <div className="space-y-3">
       {!hasApiKey && (
-        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing - configure it in your .env file</span>
+        <ProviderMissingCard provider="OpenRouter" credentialLabel="OpenRouter API key" />
       )}
 
       <div className="space-y-1.5">
@@ -495,4 +496,3 @@ export const blockDef: BlockDef = {
   configKeys: ['local_settings', 'user_prompt', 'num_prompts', 'target_image_idx', 'output'],
   component: I2VPromptWriterBlock,
 }
-

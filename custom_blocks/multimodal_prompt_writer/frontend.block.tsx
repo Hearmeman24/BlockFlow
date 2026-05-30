@@ -19,6 +19,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
 import { toDisplayUrls, toPublicUrls } from '@/lib/image-ref'
@@ -482,10 +483,10 @@ function MultimodalPromptWriterBlock({
         <Button type="button" size="sm" onClick={doGenerate} disabled={generating || !model}>
           {generating ? 'Generating…' : 'Generate'}
         </Button>
-        {hasApiKey === false && (
-          <span className="text-[10px] text-red-400">No OpenRouter key in Settings.</span>
-        )}
       </div>
+      {hasApiKey === false && (
+        <ProviderMissingCard provider="OpenRouter" credentialLabel="OpenRouter API key" />
+      )}
       {error && <p className="text-[10px] text-red-400">{error}</p>}
       {output && (
         <div className="rounded border border-border/60 p-2 text-[11px] whitespace-pre-wrap leading-relaxed max-h-[260px] overflow-y-auto">
@@ -593,7 +594,7 @@ function RefThumb({ url, kind, tag, index, onRemove }: { url: string; kind: 'ima
 
 export const blockDef: BlockDef = {
   type: 'multimodalPromptWriter',
-  label: 'Multimodal Prompt Writer',
+  label: 'Multimodal Prompt Writer (OpenRouter)',
   description: 'Synthesize a single generation prompt from images + video + audio + text using a vision-capable OpenRouter LLM.',
   size: 'huge',
   canStart: true,

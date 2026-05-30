@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -354,6 +355,38 @@ def test_validate_civitai_passes_real_token(client, store, mocker):
     )
     client.post("/api/settings/validate/civitai")
     assert spy.call_args.kwargs.get("api_key") == "civ_actual_token"
+
+
+def test_civitai_auth_check_uses_system_curl_not_curl_cffi(monkeypatch, mocker):
+    curl_run = mocker.Mock(
+        return_value=SimpleNamespace(
+            returncode=0,
+            stdout='{"username":"tester"}\n200',
+            stderr="",
+        )
+    )
+    monkeypatch.setattr(settings_validators.subprocess, "run", curl_run)
+    monkeypatch.setattr(
+        settings_validators._cffi_requests,
+        "get",
+        mocker.Mock(side_effect=AssertionError("curl_cffi should not be used for CivitAI validation")),
+    )
+
+    body = settings_validators._civitai_auth_check(api_key="civ_actual_token")
+
+    assert body == {"username": "tester"}
+    curl_run.assert_called_once()
+    cmd = curl_run.call_args.args[0]
+    assert cmd[0].endswith("curl")
+    assert "civ_actual_token" not in cmd
+    assert "Authorization: Bearer civ_actual_token" in curl_run.call_args.kwargs["input"]
+
+
+def test_civitai_auth_check_reports_missing_curl(monkeypatch):
+    monkeypatch.setattr(settings_validators.shutil, "which", lambda _: None)
+
+    with pytest.raises(settings_validators.ValidationFailed, match="curl executable not found"):
+        settings_validators._civitai_auth_check(api_key="civ_actual_token")
 
 
 # === sgs-ui-6px: HuggingFace token validator ================================

@@ -10,7 +10,6 @@ import { usePipelineTabs } from '@/lib/pipeline/tabs-context'
 import { deleteRun, toggleRunFavorite } from '@/lib/api'
 import type { RunEntry, BlockResult } from '@/lib/types'
 import { extractComfyGenPresetLabels } from '@/lib/runs/preset-labels'
-import { isAdvancedMode, onAdvancedModeChange } from '@/lib/pipeline/registry'
 import { SubmitToCivitaiModal } from '@/components/civitai/submit-modal'
 import { extractShareableArtifact } from '@/components/civitai/extract-shareable'
 
@@ -561,20 +560,11 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
   const [galleryIndex, setGalleryIndex] = useState(0)
   const [civitaiOpen, setCivitaiOpen] = useState(false)
 
-  // Subscribe to advanced-mode flips so the button toggles live without a
-  // reload (consistent with how advanced-only blocks behave).
-  const [advanced, setAdvanced] = useState(false)
-  useEffect(() => {
-    setAdvanced(isAdvancedMode())
-    return onAdvancedModeChange(() => setAdvanced(isAdvancedMode()))
-  }, [])
-
-  // Only show the CivitAI submit button when:
-  //   1. Advanced mode is on (it's a power-user feature).
-  //   2. The run actually has shareable image/video output. Otherwise the
-  //      modal would just render "nothing to share" — surface that earlier.
+  // Only show the CivitAI submit button when the run actually has shareable
+  // image/video output. Otherwise the modal would just render "nothing to
+  // share" — surface that earlier.
   const shareable = extractShareableArtifact(run)
-  const canSubmitToCivitai = advanced && shareable !== null
+  const canSubmitToCivitai = shareable !== null
 
   const primary = findPrimaryArtifact(run.block_results)
 

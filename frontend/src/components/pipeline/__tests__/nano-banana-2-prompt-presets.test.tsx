@@ -88,7 +88,7 @@ describe('Nano Banana 2 prompt presets', () => {
   })
 
   it('does not describe itself as a single-image block', () => {
-    expect(blockDef.label).toBe('Nano Banana 2')
+    expect(blockDef.label).toBe('Nano Banana 2 (RunPod)')
     expect(blockDef.description.toLowerCase()).not.toContain('single-image')
     expect(blockDef.description.toLowerCase()).toContain('multi-image')
   })

@@ -20,6 +20,7 @@ import {
 } from '@/lib/pipeline/serverless-poller'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import {
   Select,
   SelectContent,
@@ -451,7 +452,11 @@ function UpscaleBlock({
   return (
     <div className="space-y-3">
       {!hasEnvApiKey && !apiKey.trim() && (
-        <span className="text-xs text-yellow-500">TOPAZ_API_KEY missing - configure it in your .env file</span>
+        <ProviderMissingCard
+          provider="Topaz"
+          credentialLabel="Topaz API key"
+          settingsHint="Settings -> Credentials or paste a key below"
+        />
       )}
       <div className="space-y-1.5">
         <Label className="text-xs">Topaz API Key</Label>
@@ -603,7 +608,7 @@ function UpscaleBlock({
 
 export const blockDef: BlockDef = {
   type: 'upscale',
-  label: 'Video Upscale',
+  label: 'Video Upscale (Topaz)',
   description: 'Upscale videos with Topaz AI models',
   size: 'md',
   canStart: false,

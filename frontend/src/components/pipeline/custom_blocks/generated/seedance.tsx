@@ -7,6 +7,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Slider } from '@/components/ui/slider'
+import { PromptSourceControl } from '@/components/pipeline/prompt-source-control'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
+import { usePromptSourceSelector } from '@/lib/pipeline/prompt-source-selector'
+import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
 import { toPublicUrls } from '@/lib/image-ref'
@@ -192,6 +196,11 @@ function SeedanceBlock({
   const upstreamVideoUrls = toPublicVideoUrls(inputs.video)
   const upstreamAudioUrls = asUrlList(inputs.audio).map(toLocalOrigin)
   const upstreamPrompt = toText(inputs.text).trim()
+  const promptSource = usePromptSourceSelector({
+    blockId,
+    useUpstreamPrompt,
+    setUseUpstreamPrompt,
+  })
 
   const allImageUrls = Array.from(new Set([...upstreamImageUrls, ...localImageUrls]))
   const allVideoUrls = Array.from(new Set([...upstreamVideoUrls, ...localVideoUrls]))
@@ -460,34 +469,25 @@ function SeedanceBlock({
 
       {/* Prompt */}
       <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <Label className="text-[11px]">Prompt</Label>
-          <button
-            type="button"
-            onClick={() => setUseUpstreamPrompt((v) => !v)}
-            className={`text-[10px] px-2 py-0.5 rounded transition-colors ${useUpstreamPrompt ? 'bg-primary text-primary-foreground' : 'border border-border/60 text-muted-foreground hover:text-foreground'}`}
-          >
-            upstream: {useUpstreamPrompt ? 'ON' : 'OFF'}
-          </button>
-        </div>
-        <textarea
-          ref={promptRef}
-          aria-label="Prompt"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+        <PromptSourceControl
+          prompt={prompt}
+          onPromptChange={setPrompt}
+          promptRef={promptRef}
           placeholder={mode === 'omni_reference' ? 'Tag refs with @Image1 / @Video1 / @Audio1 and say what each contributes…' : 'A cinematic shot of…'}
-          className="w-full min-h-[70px] text-[11px] rounded border border-border/60 bg-background p-2"
-          disabled={useUpstreamPrompt && !!upstreamPrompt}
+          upstreamPrompt={upstreamPrompt}
+          sourceOptions={promptSource.sourceOptions}
+          selectedSourceValue={promptSource.selectedSourceValue}
+          selectedSourceLabel={promptSource.selectedSourceLabel}
+          isUsingUpstream={promptSource.isUsingUpstream}
+          onSourceChange={promptSource.setSelectedSourceValue}
+          textareaClassName="min-h-[70px]"
         />
-        {useUpstreamPrompt && upstreamPrompt && (
-          <p className="text-[10px] text-muted-foreground italic line-clamp-2">Upstream: {upstreamPrompt}</p>
-        )}
         {(isVip || mode === 'omni_reference') && (allImageUrls.length + allVideoUrls.length + allAudioUrls.length > 0) && (
           <TagBadges
             imageUrls={allImageUrls}
             videoUrls={allVideoUrls}
             audioUrls={allAudioUrls}
-            disabled={useUpstreamPrompt && !!upstreamPrompt}
+            disabled={promptSource.isUsingUpstream}
             onInsert={insertTag}
           />
         )}
@@ -534,7 +534,11 @@ function SeedanceBlock({
 
       {/* Health */}
       {healthy === false && (
-        <p className="text-[10px] text-red-400">Set PiAPI key in Settings → Credentials.</p>
+        <ProviderMissingCard
+          provider="PiAPI"
+          credentialLabel="PiAPI API key"
+          referralUrl={PROVIDER_REFERRALS.piapi}
+        />
       )}
 
       {/* PiAPI logs — surfaces content-restriction / retry / billing notes upstream emits */}

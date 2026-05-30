@@ -5,7 +5,11 @@ import { BookOpenIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { PromptSourceControl } from '@/components/pipeline/prompt-source-control'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { AddPromptDialog, PromptPickerDropdown } from '@/components/prompt-library-dialog'
+import { usePromptSourceSelector } from '@/lib/pipeline/prompt-source-selector'
+import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { usePromptLibrary } from '@/lib/use-prompt-library'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
@@ -64,6 +68,11 @@ function NanoBanana2Block({
   const upstreamRefs = Array.from(new Set(toPublicUrls(inputs.image)))
   const refUrls = Array.from(new Set([...upstreamRefs, ...localRefs]))
   const upstreamPrompt = toText(inputs.text).trim()
+  const promptSource = usePromptSourceSelector({
+    blockId,
+    useUpstreamPrompt,
+    setUseUpstreamPrompt,
+  })
 
   useEffect(() => {
     fetch(HEALTH_ENDPOINT)
@@ -231,10 +240,18 @@ function NanoBanana2Block({
       </div>
 
       {/* Prompt */}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <Label className="text-[11px]">Prompt</Label>
-          <div className="flex items-center gap-1">
+      <PromptSourceControl
+        prompt={prompt}
+        onPromptChange={setPrompt}
+        placeholder="A close-up portrait, soft window light, 35mm film..."
+        upstreamPrompt={upstreamPrompt}
+        sourceOptions={promptSource.sourceOptions}
+        selectedSourceValue={promptSource.selectedSourceValue}
+        selectedSourceLabel={promptSource.selectedSourceLabel}
+        isUsingUpstream={promptSource.isUsingUpstream}
+        onSourceChange={promptSource.setSelectedSourceValue}
+        actions={(
+          <>
             {prompt.trim() && (
               <button
                 type="button"
@@ -255,26 +272,10 @@ function NanoBanana2Block({
                 </Button>
               )}
             />
-            <button
-              type="button"
-              onClick={() => setUseUpstreamPrompt((v) => !v)}
-              className={`text-[10px] px-2 py-0.5 rounded transition-colors ${useUpstreamPrompt ? 'bg-primary text-primary-foreground' : 'border border-border/60 text-muted-foreground hover:text-foreground'}`}
-            >
-              upstream: {useUpstreamPrompt ? 'ON' : 'OFF'}
-            </button>
-          </div>
-        </div>
-        <textarea
-          aria-label="Prompt"
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="A close-up portrait, soft window light, 35mm film..."
-          className="w-full min-h-[60px] text-[11px] rounded border border-border/60 bg-background p-2"
-          disabled={useUpstreamPrompt && !!upstreamPrompt}
-        />
-        {useUpstreamPrompt && upstreamPrompt && (
-          <p className="text-[10px] text-muted-foreground italic line-clamp-2">Using upstream: {upstreamPrompt}</p>
+          </>
         )}
+      />
+      <div>
         <AddPromptDialog
           open={addDialogOpen}
           onOpenChange={setAddDialogOpen}
@@ -363,7 +364,11 @@ function NanoBanana2Block({
       </div>
 
       {healthy === false && (
-        <p className="text-[10px] text-red-400">Set RunPod API key in Settings → Credentials.</p>
+        <ProviderMissingCard
+          provider="RunPod"
+          credentialLabel="RunPod API key"
+          referralUrl={PROVIDER_REFERRALS.runpod}
+        />
       )}
 
       {progress?.image_url && (
@@ -377,7 +382,7 @@ function NanoBanana2Block({
 
 export const blockDef: BlockDef = {
   type: 'nanoBanana2',
-  label: 'Nano Banana 2',
+  label: 'Nano Banana 2 (RunPod)',
   description: 'Multi-image reference edit/generation via the Nano Banana 2 RunPod endpoint. Focused alternative to Dataset Create for one-off image compositions.',
   size: 'lg',
   canStart: true,

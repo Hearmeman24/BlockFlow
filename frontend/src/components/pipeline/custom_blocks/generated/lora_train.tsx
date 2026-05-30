@@ -7,6 +7,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
+import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { useSessionState } from '@/lib/use-session-state'
 import {
   PORT_DATASET,
@@ -480,7 +482,13 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
       </div>
 
       {/* Env health */}
-      {health && !health.runpod_key_present && <p className="text-[10px] text-red-400">RUNPOD_API_KEY missing in .env</p>}
+      {health && !health.runpod_key_present && (
+        <ProviderMissingCard
+          provider="RunPod"
+          credentialLabel="RunPod API key"
+          referralUrl={PROVIDER_REFERRALS.runpod}
+        />
+      )}
       {health && !health.aws_creds_present && <p className="text-[10px] text-red-400">AWS S3 creds missing: required for dataset upload</p>}
 
       {/* Live status */}
@@ -670,7 +678,7 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
 
 export const blockDef: BlockDef = {
   type: 'loraTrain',
-  label: 'LoRA Train (Wan 2.2 / Qwen / Z-Image)',
+  label: 'LoRA Train (RunPod)',
   description: 'Train a LoRA on a dataset via RunPod serverless. Long-running (15min–2h).',
   size: 'huge',
   canStart: true,

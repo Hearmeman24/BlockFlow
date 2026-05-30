@@ -16,6 +16,9 @@ filled in didn't work."
 """
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from typing import Any, Callable, TypedDict
 
 from curl_cffi import requests as _cffi_requests
@@ -259,25 +262,65 @@ CIVITAI_AUTH_URL = "https://civitai.com/api/v1/me"
 
 
 def _civitai_auth_check(*, api_key: str) -> dict[str, Any]:
-    """Boundary: GET CivitAI's /api/v1/me. Mocked in tests."""
+    """Boundary: GET CivitAI's /api/v1/me. Mocked in tests.
+
+    Use the system curl binary here instead of curl_cffi: CivitAI's Cloudflare
+    chain currently trips curl_cffi's bundled CA path with an
+    expired-certificate error, while system curl reaches the endpoint normally.
+    """
+    curl_bin = shutil.which("curl")
+    if not curl_bin:
+        raise ValidationFailed("network error: curl executable not found on PATH")
+
+    cmd = [
+        curl_bin,
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "10",
+        "--config",
+        "-",
+        "--write-out",
+        "\n%{http_code}",
+        CIVITAI_AUTH_URL,
+    ]
+    curl_config = (
+        f'header = "Authorization: Bearer {api_key}"\n'
+        'header = "User-Agent: blockflow-settings/0.1"\n'
+    )
     try:
-        resp = _cffi_requests.get(
-            CIVITAI_AUTH_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "User-Agent": "blockflow-settings/0.1",
-            },
-            timeout=10,
+        completed = subprocess.run(
+            cmd,
+            input=curl_config,
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except Exception as exc:
         raise ValidationFailed(f"network error: {exc}") from exc
 
-    if resp.status_code != 200:
-        raise ValidationFailed(f"HTTP {resp.status_code}")
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "").strip()
+        raise ValidationFailed(f"network error: {message or f'curl exited {completed.returncode}'}")
+
+    body_text, sep, status_text = completed.stdout.rpartition("\n")
+    if not sep:
+        raise ValidationFailed("non-HTTP response from curl")
     try:
-        return resp.json()
+        status_code = int(status_text.strip())
+    except Exception as exc:
+        raise ValidationFailed(f"invalid curl status: {status_text!r}") from exc
+
+    if status_code != 200:
+        raise ValidationFailed(f"HTTP {status_code}: {body_text[:200]}")
+    try:
+        parsed = json.loads(body_text)
     except Exception as exc:
         raise ValidationFailed(f"non-JSON response: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValidationFailed("non-object JSON response")
+    return parsed
 
 
 def validate_civitai() -> ValidationResult:

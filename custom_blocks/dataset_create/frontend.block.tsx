@@ -8,6 +8,8 @@ import { Badge } from '@/components/ui/badge'
 import { Slider } from '@/components/ui/slider'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
+import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { useSessionState } from '@/lib/use-session-state'
 import {
   PORT_DATASET,
@@ -507,8 +509,13 @@ function DatasetCreateBlock({
             {health?.runpod_key_present && (
               <button type="button" onClick={() => { setOverrideKey(false); setApiKeyOverride('') }} className="text-[10px] text-muted-foreground hover:text-foreground">Use .env key</button>
             )}
-            {!health?.runpod_key_present && (
-              <p className="text-[10px] text-yellow-500">Set RUNPOD_API_KEY in .env or paste a key above.</p>
+            {!health?.runpod_key_present && !apiKeyOverride.trim() && (
+              <ProviderMissingCard
+                provider="RunPod"
+                credentialLabel="RunPod API key"
+                settingsHint="Settings -> Credentials or paste a key above"
+                referralUrl={PROVIDER_REFERRALS.runpod}
+              />
             )}
           </div>
         )}
@@ -562,7 +569,7 @@ function DatasetCreateBlock({
 
 export const blockDef: BlockDef = {
   type: 'datasetCreate',
-  label: 'Dataset Create (Nano Banana 2)',
+  label: 'Dataset Create (RunPod)',
   description: 'Generate an image dataset on RunPod\'s Nano Banana 2 Edit endpoint, in parallel.',
   size: 'huge',
   canStart: true,

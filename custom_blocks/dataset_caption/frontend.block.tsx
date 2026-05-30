@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { useSessionState } from '@/lib/use-session-state'
 import {
   PORT_DATASET,
@@ -308,7 +309,7 @@ function DatasetCaptionBlock({ blockId, inputs, setOutput, registerExecute, setS
       </Collapsible>
 
       {health && !health.openrouter_key_present && (
-        <p className="text-[10px] text-red-400">OPENROUTER_API_KEY missing in .env</p>
+        <ProviderMissingCard provider="OpenRouter" credentialLabel="OpenRouter API key" />
       )}
 
       {progress && (
@@ -341,8 +342,8 @@ function DatasetCaptionBlock({ blockId, inputs, setOutput, registerExecute, setS
 
 export const blockDef: BlockDef = {
   type: 'datasetCaption',
-  label: 'Dataset Caption',
-  description: 'Auto-caption every image in a dataset via a vision LLM, ready for LoRA training.',
+  label: 'Dataset Caption (OpenRouter)',
+  description: 'Auto-caption every image in a dataset via an OpenRouter vision LLM, ready for LoRA training.',
   size: 'lg',
   canStart: true,
   inputs: [

@@ -5,7 +5,11 @@ import { BookOpenIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { PromptSourceControl } from '@/components/pipeline/prompt-source-control'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { AddPromptDialog, PromptPickerDropdown } from '@/components/prompt-library-dialog'
+import { usePromptSourceSelector } from '@/lib/pipeline/prompt-source-selector'
+import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { usePromptLibrary } from '@/lib/use-prompt-library'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
@@ -90,6 +94,11 @@ function GptImagePiapiBlock({
   const upstreamPrompt = toText(inputs.text).trim()
   const mode = refUrls.length > 0 ? 'Edit' : 'Generate'
   const selectedAspect = ASPECT_OPTIONS.find((option) => option.value === aspect) ?? ASPECT_OPTIONS[0]
+  const promptSource = usePromptSourceSelector({
+    blockId,
+    useUpstreamPrompt,
+    setUseUpstreamPrompt,
+  })
 
   useEffect(() => {
     fetch(HEALTH_ENDPOINT)
@@ -292,10 +301,18 @@ function GptImagePiapiBlock({
         {selectedAspect.size} - standard is the predictable-cost default.
       </p>
 
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <Label className="text-[11px]">Prompt</Label>
-          <div className="flex items-center gap-1">
+      <PromptSourceControl
+        prompt={prompt}
+        onPromptChange={setPrompt}
+        placeholder="Describe the image to generate or how to transform the references..."
+        upstreamPrompt={upstreamPrompt}
+        sourceOptions={promptSource.sourceOptions}
+        selectedSourceValue={promptSource.selectedSourceValue}
+        selectedSourceLabel={promptSource.selectedSourceLabel}
+        isUsingUpstream={promptSource.isUsingUpstream}
+        onSourceChange={promptSource.setSelectedSourceValue}
+        actions={(
+          <>
             {prompt.trim() && (
               <button
                 type="button"
@@ -316,26 +333,10 @@ function GptImagePiapiBlock({
                 </Button>
               )}
             />
-            <button
-              type="button"
-              onClick={() => setUseUpstreamPrompt((value) => !value)}
-              className={`text-[10px] px-2 py-0.5 rounded transition-colors ${useUpstreamPrompt ? 'bg-primary text-primary-foreground' : 'border border-border/60 text-muted-foreground hover:text-foreground'}`}
-            >
-              upstream: {useUpstreamPrompt ? 'ON' : 'OFF'}
-            </button>
-          </div>
-        </div>
-        <textarea
-          aria-label="Prompt"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder="Describe the image to generate or how to transform the references..."
-          className="w-full min-h-[64px] text-[11px] rounded border border-border/60 bg-background p-2"
-          disabled={useUpstreamPrompt && !!upstreamPrompt}
-        />
-        {useUpstreamPrompt && upstreamPrompt && (
-          <p className="text-[10px] text-muted-foreground italic line-clamp-2">Using upstream: {upstreamPrompt}</p>
+          </>
         )}
+      />
+      <div>
         <AddPromptDialog
           open={addDialogOpen}
           onOpenChange={setAddDialogOpen}
@@ -426,7 +427,11 @@ function GptImagePiapiBlock({
       </div>
 
       {healthy === false && (
-        <p className="text-[10px] text-red-400">Set PiAPI key in Settings - Credentials.</p>
+        <ProviderMissingCard
+          provider="PiAPI"
+          credentialLabel="PiAPI API key"
+          referralUrl={PROVIDER_REFERRALS.piapi}
+        />
       )}
 
       {progress?.usage != null && (

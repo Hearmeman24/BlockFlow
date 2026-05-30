@@ -2786,7 +2786,7 @@ function ComfyGenBlock({
 
 export const blockDef: BlockDef = {
   type: 'comfyGen',
-  label: 'ComfyUI Gen',
+  label: 'ComfyUI Gen (RunPod)',
   description: 'Run ComfyUI workflows on RunPod serverless',
   size: 'huge',
   canStart: true,

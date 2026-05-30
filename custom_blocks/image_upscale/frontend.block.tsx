@@ -18,6 +18,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { toPublicUrls } from '@/lib/image-ref'
 import {
   Select,
@@ -351,7 +352,11 @@ function ImageUpscaleBlock({
   return (
     <div className="space-y-3">
       {!hasEnvApiKey && !apiKey.trim() && (
-        <span className="text-xs text-yellow-500">TOPAZ_API_KEY missing - configure it in your .env file</span>
+        <ProviderMissingCard
+          provider="Topaz"
+          credentialLabel="Topaz API key"
+          settingsHint="Settings -> Credentials or paste a key below"
+        />
       )}
       <div className="space-y-1.5">
         <Label className="text-xs">Topaz API Key</Label>
@@ -478,7 +483,7 @@ function ImageUpscaleBlock({
 
 export const blockDef: BlockDef = {
   type: 'imageUpscale',
-  label: 'Image Upscale',
+  label: 'Image Upscale (Topaz)',
   description: 'Upscale images with Topaz AI models',
   size: 'md',
   canStart: false,

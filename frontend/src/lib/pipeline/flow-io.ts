@@ -1,4 +1,5 @@
 import type { Pipeline, PipelineBlock } from './types'
+import type { SourceMode } from './types'
 import { getBlockDef } from './registry'
 import { walkBlocks, buildGlobalIndex } from './tree-utils'
 
@@ -10,6 +11,10 @@ export interface SavedBlock {
   disabled?: boolean
   /** Source overrides with global block indices (not IDs). */
   sources?: Record<string, number>
+  /** Source fan-in mode per input port. Defaults to closest upstream. */
+  source_modes?: Record<string, SourceMode>
+  /** Custom multi-source selections with global block indices. */
+  source_selections?: Record<string, number[]>
   config?: Record<string, unknown>
   /** Branches forking from this block (recursive). */
   branches?: SavedBlock[][]
@@ -43,6 +48,21 @@ export function exportFlow(pipeline: Pipeline, name: string): SavedFlow {
         if (idx !== undefined) sources[port] = idx
       }
       if (Object.keys(sources).length > 0) saved.sources = sources
+    }
+
+    if (block.sourceModes) {
+      saved.source_modes = { ...block.sourceModes }
+    }
+
+    if (block.sourceSelections) {
+      const sourceSelections: Record<string, number[]> = {}
+      for (const [port, sourceIds] of Object.entries(block.sourceSelections)) {
+        const indices = sourceIds
+          .map((sourceId) => blockIndexById.get(sourceId))
+          .filter((idx): idx is number => idx !== undefined)
+        if (indices.length > 0) sourceSelections[port] = indices
+      }
+      if (Object.keys(sourceSelections).length > 0) saved.source_selections = sourceSelections
     }
 
     // Collect saveable config from sessionStorage
@@ -132,6 +152,21 @@ export function importFlow(json: string): Pipeline {
           }
         }
         if (Object.keys(sources).length > 0) block.sources = sources
+      }
+
+      if (saved.source_modes) {
+        block.sourceModes = { ...saved.source_modes }
+      }
+
+      if (saved.source_selections) {
+        const sourceSelections: Record<string, string[]> = {}
+        for (const [port, indices] of Object.entries(saved.source_selections)) {
+          const sourceIds = indices
+            .filter((idx) => idx >= 0 && idx < newIds.length)
+            .map((idx) => newIds[idx])
+          if (sourceIds.length > 0) sourceSelections[port] = sourceIds
+        }
+        if (Object.keys(sourceSelections).length > 0) block.sourceSelections = sourceSelections
       }
 
       // Write config values to sessionStorage

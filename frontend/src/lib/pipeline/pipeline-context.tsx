@@ -15,6 +15,7 @@ import {
   type BlockStatus,
   type BlockState,
   type IterationState,
+  type SourceMode,
 } from './types'
 import {
   type PortKind,
@@ -276,6 +277,10 @@ interface PipelineContextValue {
   runningBlockId: string | null
   /** Set which upstream block feeds a specific input port */
   setBlockSource: (blockId: string, portName: string, sourceBlockId: string) => void
+  /** Set whether an input reads the closest, all, or custom-selected upstream producers. */
+  setBlockSourceMode: (blockId: string, portName: string, mode: SourceMode) => void
+  /** Set custom upstream producer IDs for an input port. */
+  setBlockSourceSelection: (blockId: string, portName: string, sourceBlockIds: string[]) => void
   /** Clear explicit source override for an input port (falls back to nearest producer). */
   clearBlockSource: (blockId: string, portName: string) => void
   /** Reset runtime state for a block and all downstream blocks in its chain/branches. */
@@ -476,6 +481,26 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
     const canonicalKind = canonicalizePortKind(portKind as PortKind)
     const entries = acc.get(canonicalKind)
     const producers = producerMap.get(canonicalKind) ?? []
+    const sourceMode = block.sourceModes?.[portName] ?? 'closest'
+
+    if (sourceMode === 'all') {
+      if (!entries || entries.length === 0) return undefined
+      return entries.map((entry) => entry.value)
+    }
+
+    if (sourceMode === 'custom') {
+      const selectedIds = block.sourceSelections?.[portName] ?? []
+      if (selectedIds.length === 0) return undefined
+      if (!entries || entries.length === 0) return undefined
+
+      const values: unknown[] = []
+      for (const sourceId of selectedIds) {
+        const entry = entries.find((candidate) => candidate.blockId === sourceId)
+        if (!entry) return undefined
+        values.push(entry.value)
+      }
+      return values
+    }
 
     // Source resolution priority:
     // 1) Explicit source override chosen by user.
@@ -707,6 +732,51 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         const block = findBlockById(next.blocks, blockId)
         if (!block) return prev
         block.sources = { ...block.sources, [portName]: sourceBlockId }
+        return next
+      })
+    },
+    [updatePipeline],
+  )
+
+  const setBlockSourceMode = useCallback(
+    (blockId: string, portName: string, mode: SourceMode) => {
+      updatePipeline((prev) => {
+        const next = structuredClone(prev)
+        const block = findBlockById(next.blocks, blockId)
+        if (!block) return prev
+        if (mode === 'closest') {
+          if (!block.sourceModes?.[portName]) return prev
+          const sourceModes = { ...block.sourceModes }
+          delete sourceModes[portName]
+          if (Object.keys(sourceModes).length === 0) delete block.sourceModes
+          else block.sourceModes = sourceModes
+          return next
+        }
+        block.sourceModes = { ...block.sourceModes, [portName]: mode }
+        return next
+      })
+    },
+    [updatePipeline],
+  )
+
+  const setBlockSourceSelection = useCallback(
+    (blockId: string, portName: string, sourceBlockIds: string[]) => {
+      updatePipeline((prev) => {
+        const next = structuredClone(prev)
+        const block = findBlockById(next.blocks, blockId)
+        if (!block) return prev
+
+        const uniqueIds = Array.from(new Set(sourceBlockIds))
+        if (uniqueIds.length === 0) {
+          if (!block.sourceSelections?.[portName]) return prev
+          const sourceSelections = { ...block.sourceSelections }
+          delete sourceSelections[portName]
+          if (Object.keys(sourceSelections).length === 0) delete block.sourceSelections
+          else block.sourceSelections = sourceSelections
+          return next
+        }
+
+        block.sourceSelections = { ...block.sourceSelections, [portName]: uniqueIds }
         return next
       })
     },
@@ -1400,6 +1470,8 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         isRunning,
         runningBlockId,
         setBlockSource,
+        setBlockSourceMode,
+        setBlockSourceSelection,
         clearBlockSource,
         resetRuntimeFromBlock,
         getUpstreamProducers,

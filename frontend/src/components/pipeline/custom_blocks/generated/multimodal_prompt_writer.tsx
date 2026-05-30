@@ -21,6 +21,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
+import { SourceModeControl } from '@/components/pipeline/source-mode-control'
 import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
@@ -379,33 +380,42 @@ function MultimodalPromptWriterBlock({
       </div>
 
       {/* Image refs */}
-      <RefSection
-        label="Image references"
-        upstream={upstreamImageUrls}
-        local={localImageUrls}
-        onPick={() => pick('image')}
-        onRemove={(u) => removeUrl('image', u)}
-        uploading={uploading === 'image'}
-        kind="image"
-      />
-      <RefSection
-        label="Video reference (first one used)"
-        upstream={upstreamVideoUrls}
-        local={localVideoUrls}
-        onPick={() => pick('video')}
-        onRemove={(u) => removeUrl('video', u)}
-        uploading={uploading === 'video'}
-        kind="video"
-      />
-      <RefSection
-        label="Audio reference (first one used)"
-        upstream={upstreamAudioUrls}
-        local={localAudioUrls}
-        onPick={() => pick('audio')}
-        onRemove={(u) => removeUrl('audio', u)}
-        uploading={uploading === 'audio'}
-        kind="audio"
-      />
+      <div className="space-y-1.5">
+        <SourceModeControl blockId={blockId} inputName="image" inputKind={PORT_IMAGE} label="Images" />
+        <RefSection
+          label="Image references"
+          upstream={upstreamImageUrls}
+          local={localImageUrls}
+          onPick={() => pick('image')}
+          onRemove={(u) => removeUrl('image', u)}
+          uploading={uploading === 'image'}
+          kind="image"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <SourceModeControl blockId={blockId} inputName="video" inputKind={PORT_VIDEO} label="Videos" />
+        <RefSection
+          label="Video reference (first one used)"
+          upstream={upstreamVideoUrls}
+          local={localVideoUrls}
+          onPick={() => pick('video')}
+          onRemove={(u) => removeUrl('video', u)}
+          uploading={uploading === 'video'}
+          kind="video"
+        />
+      </div>
+      <div className="space-y-1.5">
+        <SourceModeControl blockId={blockId} inputName="audio" inputKind={PORT_AUDIO} label="Audio" />
+        <RefSection
+          label="Audio reference (first one used)"
+          upstream={upstreamAudioUrls}
+          local={localAudioUrls}
+          onPick={() => pick('audio')}
+          onRemove={(u) => removeUrl('audio', u)}
+          uploading={uploading === 'audio'}
+          kind="audio"
+        />
+      </div>
       {uploadError && <p className="text-[10px] text-red-400">{uploadError}</p>}
 
       {/* User direction */}

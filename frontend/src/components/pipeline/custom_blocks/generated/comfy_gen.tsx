@@ -35,6 +35,7 @@ import {
   type WorkflowSetting,
 } from '@/lib/settings/client'
 import { PresetRecommendationsTooltip } from '@/components/pipeline/preset-recommendations-tooltip'
+import { SourceModeControl } from '@/components/pipeline/source-mode-control'
 import {
   Select,
   SelectContent,
@@ -681,6 +682,8 @@ function ComfyGenBlock({
       && selectedInstalledPreset
       && isPresetSummaryNewer(selectedInstalledPreset.updated_at, appliedPresetUpdatedAt),
   )
+  const hasImageInputMappings = nodeMappings.some((m) => m.portKind === 'image')
+  const hasVideoInputMappings = nodeMappings.some((m) => m.portKind === 'video')
 
   const automationAxes = useMemo(() => {
     if (!automateEnabled) return []
@@ -2192,6 +2195,22 @@ function ComfyGenBlock({
           (Upload Image / Video Loader) are auto-spawned via
           addUpstreamBlocks() on workflow load; loadNodes still drives that
           logic + nodeMappings, so it stays in state — just not rendered. */}
+      {(hasImageInputMappings || hasVideoInputMappings) && (
+        <div className="space-y-1.5 rounded border border-border/60 bg-muted/10 p-2">
+          <div className="space-y-0.5">
+            <Label className="text-[11px]">Upstream media sources</Label>
+            <p className="text-[10px] text-muted-foreground">
+              Source mode chooses which upstream media reaches ComfyGen. Workflow mappings still decide which ComfyUI load nodes receive it.
+            </p>
+          </div>
+          {hasImageInputMappings && (
+            <SourceModeControl blockId={blockId} inputName="image" inputKind={PORT_IMAGE} label="Images" />
+          )}
+          {hasVideoInputMappings && (
+            <SourceModeControl blockId={blockId} inputName="video" inputKind={PORT_VIDEO} label="Videos" />
+          )}
+        </div>
+      )}
 
       {/* Resolution nodes */}
       {resolutionNodes.length > 0 && (

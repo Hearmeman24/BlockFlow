@@ -120,13 +120,14 @@ function AudioViewerBlock({ blockId, inputs }: BlockComponentProps) {
 export const blockDef: BlockDef = {
   type: 'audioViewer',
   label: 'Audio Viewer',
-  description: 'Terminal sink for audio outputs (e.g. ElevenLabs TTS). Accumulates clips across pipeline runs.',
+  description: 'View audio outputs inline and pass them downstream.',
   size: 'md',
   canStart: false,
   inputs: [
     { name: 'audio', kind: PORT_AUDIO, required: true },
   ],
-  outputs: [],
+  outputs: [{ name: 'audio', kind: PORT_AUDIO }],
+  forwards: [{ fromInput: 'audio', toOutput: 'audio', when: 'if_present' }],
   suggestedUpstream: ['elevenLabsTts'],
   suggestedDownstream: [],
   configKeys: [],

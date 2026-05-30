@@ -10,6 +10,10 @@ const settingsMocks = vi.hoisted(() => ({
 
 const pipelineMocks = vi.hoisted(() => ({
   resetRuntimeFromBlock: vi.fn(),
+  getUpstreamProducers: vi.fn(),
+  setBlockSourceMode: vi.fn(),
+  setBlockSourceSelection: vi.fn(),
+  pipeline: { blocks: [] as Array<{ id: string; type: string; sourceModes?: Record<string, string>; sourceSelections?: Record<string, string[]> }> },
 }))
 
 vi.mock('@/lib/settings/client', async (importOriginal) => {
@@ -24,9 +28,12 @@ vi.mock('@/lib/settings/client', async (importOriginal) => {
 
 vi.mock('@/lib/pipeline/pipeline-context', () => ({
   usePipeline: () => ({
-    pipeline: { blocks: [] },
+    pipeline: pipelineMocks.pipeline,
     addBlock: vi.fn(),
     resetRuntimeFromBlock: pipelineMocks.resetRuntimeFromBlock,
+    getUpstreamProducers: pipelineMocks.getUpstreamProducers,
+    setBlockSourceMode: pipelineMocks.setBlockSourceMode,
+    setBlockSourceSelection: pipelineMocks.setBlockSourceSelection,
   }),
 }))
 
@@ -83,6 +90,8 @@ beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
   vi.clearAllMocks()
+  pipelineMocks.pipeline.blocks = []
+  pipelineMocks.getUpstreamProducers.mockReturnValue([])
   settingsMocks.getEndpoint.mockResolvedValue(null)
   settingsMocks.listInstalledPresets.mockResolvedValue([
     {
@@ -149,6 +158,48 @@ describe('ComfyGen preset refresh state', () => {
       expect(fetch).toHaveBeenCalled()
     })
     expect(screen.queryByText(/CLI: sidecar/i)).not.toBeInTheDocument()
+  })
+
+  test('shows upstream media source controls from workflow mappings before runtime media exists', async () => {
+    settingsMocks.getEndpoint.mockResolvedValue({ endpoint_id: 'test-endpoint' })
+    pipelineMocks.pipeline.blocks = [
+      { id: 'image-1', type: 'imageSource' },
+      { id: 'image-2', type: 'imageSource' },
+      { id: 'video-1', type: 'videoSource' },
+      { id: 'b1', type: 'comfyGen' },
+    ]
+    pipelineMocks.getUpstreamProducers.mockImplementation((_blockId: string, kind: string) => {
+      if (kind === 'image') {
+        return [
+          { blockId: 'image-1', blockIndex: 0, blockLabel: 'Image Source' },
+          { blockId: 'image-2', blockIndex: 1, blockLabel: 'Image Source' },
+        ]
+      }
+      if (kind === 'video') {
+        return [{ blockId: 'video-1', blockIndex: 2, blockLabel: 'Video Source' }]
+      }
+      return []
+    })
+    sessionStorage.setItem(
+      'block_b1_mappings',
+      JSON.stringify([
+        { node_id: '10', field: 'image', portKind: 'image' },
+        { node_id: '11', field: 'video', portKind: 'video' },
+      ]),
+    )
+    sessionStorage.setItem('block_b1_workflow', JSON.stringify('{"1":{"class_type":"SaveImage"}}'))
+
+    renderBlock()
+
+    expect(await screen.findByText('2 upstream image producers available')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /images source mode/i })).toHaveTextContent(
+      'Images: closest upstream',
+    )
+    expect(screen.getByText('1 upstream video producer available')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /videos source mode/i })).toHaveTextContent(
+      'Videos: closest upstream',
+    )
+    expect(screen.getByText(/workflow mappings still decide/i)).toBeInTheDocument()
   })
 
   test('missing endpoint guides users to the ComfyGen setup wizard', async () => {

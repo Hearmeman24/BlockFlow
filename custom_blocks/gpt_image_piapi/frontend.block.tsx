@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { PromptSourceControl } from '@/components/pipeline/prompt-source-control'
+import { SourceModeControl } from '@/components/pipeline/source-mode-control'
 import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { AddPromptDialog, PromptPickerDropdown } from '@/components/prompt-library-dialog'
 import { usePromptSourceSelector } from '@/lib/pipeline/prompt-source-selector'
@@ -349,6 +350,12 @@ function GptImagePiapiBlock({
       </div>
 
       <div className="space-y-1">
+        <SourceModeControl
+          blockId={blockId}
+          inputName="image"
+          inputKind={PORT_IMAGE}
+          label="Images"
+        />
         <div className="flex items-center justify-between">
           <Label className="text-[11px]">Reference images</Label>
           <span className="text-[10px] text-muted-foreground">

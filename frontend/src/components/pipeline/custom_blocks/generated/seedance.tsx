@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Slider } from '@/components/ui/slider'
 import { PromptSourceControl } from '@/components/pipeline/prompt-source-control'
+import { SourceModeControl } from '@/components/pipeline/source-mode-control'
 import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { usePromptSourceSelector } from '@/lib/pipeline/prompt-source-selector'
 import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
@@ -495,40 +496,64 @@ function SeedanceBlock({
 
       {/* Image refs */}
       {showImageRefs && (
-        <RefSection
-          label={mode === 'first_last_frames' ? 'Image frames (1–2)' : 'Image references'}
-          upstream={upstreamImageUrls}
-          local={localImageUrls}
-          onPick={() => pick('image')}
-          onRemove={(u) => removeUrl('image', u)}
-          uploading={uploading === 'image'}
-          kind="image"
-          max={mode === 'first_last_frames' ? 2 : 9}
-        />
+        <div className="space-y-1.5">
+          <SourceModeControl
+            blockId={blockId}
+            inputName="image"
+            inputKind={PORT_IMAGE}
+            label={mode === 'first_last_frames' ? 'Image frames' : 'Images'}
+          />
+          <RefSection
+            label={mode === 'first_last_frames' ? 'Image frames (1–2)' : 'Image references'}
+            upstream={upstreamImageUrls}
+            local={localImageUrls}
+            onPick={() => pick('image')}
+            onRemove={(u) => removeUrl('image', u)}
+            uploading={uploading === 'image'}
+            kind="image"
+            max={mode === 'first_last_frames' ? 2 : 9}
+          />
+        </div>
       )}
       {showVideoRefs && (
-        <RefSection
-          label="Video references (max 3)"
-          upstream={upstreamVideoUrls}
-          local={localVideoUrls}
-          onPick={() => pick('video')}
-          onRemove={(u) => removeUrl('video', u)}
-          uploading={uploading === 'video'}
-          kind="video"
-          max={3}
-        />
+        <div className="space-y-1.5">
+          <SourceModeControl
+            blockId={blockId}
+            inputName="video"
+            inputKind={PORT_VIDEO}
+            label="Videos"
+          />
+          <RefSection
+            label="Video references (max 3)"
+            upstream={upstreamVideoUrls}
+            local={localVideoUrls}
+            onPick={() => pick('video')}
+            onRemove={(u) => removeUrl('video', u)}
+            uploading={uploading === 'video'}
+            kind="video"
+            max={3}
+          />
+        </div>
       )}
       {showAudioRefs && (
-        <RefSection
-          label="Audio references (mp3/wav, ≤15s each, max 3)"
-          upstream={upstreamAudioUrls}
-          local={localAudioUrls}
-          onPick={() => pick('audio')}
-          onRemove={(u) => removeUrl('audio', u)}
-          uploading={uploading === 'audio'}
-          kind="audio"
-          max={3}
-        />
+        <div className="space-y-1.5">
+          <SourceModeControl
+            blockId={blockId}
+            inputName="audio"
+            inputKind={PORT_AUDIO}
+            label="Audio"
+          />
+          <RefSection
+            label="Audio references (mp3/wav, ≤15s each, max 3)"
+            upstream={upstreamAudioUrls}
+            local={localAudioUrls}
+            onPick={() => pick('audio')}
+            onRemove={(u) => removeUrl('audio', u)}
+            uploading={uploading === 'audio'}
+            kind="audio"
+            max={3}
+          />
+        </div>
       )}
       {uploadError && <p className="text-[10px] text-red-400">{uploadError}</p>}
 

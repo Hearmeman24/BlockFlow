@@ -190,6 +190,10 @@ export function getBlockDef(type: string): BlockDef | undefined {
   return BLOCK_DEFS[type]
 }
 
+export function listBlockDefs(): BlockDef[] {
+  return Object.values(BLOCK_DEFS)
+}
+
 export function getBlockComponent(type: string): ComponentType<BlockComponentProps> | undefined {
   return COMPONENT_MAP[type]
 }

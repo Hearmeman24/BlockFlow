@@ -41,4 +41,70 @@ describe('asset ref public URL extraction', () => {
       url: 'https://tmpfiles.example/source.mp4',
     })).toEqual(['/outputs/source.mp4'])
   })
+
+  test.each([
+    {
+      label: 'bare local image',
+      input: '/outputs/a.png',
+      publicUrls: [],
+      backendUrls: ['/outputs/a.png'],
+    },
+    {
+      label: 'bare public image',
+      input: 'https://cdn.test/a.png',
+      publicUrls: ['https://cdn.test/a.png'],
+      backendUrls: ['https://cdn.test/a.png'],
+    },
+    {
+      label: 'local + public ImageRef',
+      input: { kind: 'image-ref', local: '/outputs/a.png', url: 'https://cdn.test/a.png' },
+      publicUrls: ['https://cdn.test/a.png'],
+      backendUrls: ['/outputs/a.png'],
+    },
+    {
+      label: 'nested mixed image refs',
+      input: [
+        { kind: 'image-ref', local: '/outputs/a.png', url: 'https://cdn.test/a.png' },
+        ['/outputs/b.png', 'https://cdn.test/c.png'],
+      ],
+      publicUrls: ['https://cdn.test/a.png', 'https://cdn.test/c.png'],
+      backendUrls: ['/outputs/a.png', '/outputs/b.png', 'https://cdn.test/c.png'],
+    },
+  ])('image ref matrix: $label', ({ input, publicUrls, backendUrls }) => {
+    expect(imagePublicUrls(input)).toEqual(publicUrls)
+    expect(imageBackendResolvableUrls(input)).toEqual(backendUrls)
+  })
+
+  test.each([
+    {
+      label: 'bare local video',
+      input: '/outputs/a.mp4',
+      publicUrls: [],
+      backendUrls: ['/outputs/a.mp4'],
+    },
+    {
+      label: 'bare public video',
+      input: 'https://cdn.test/a.mp4',
+      publicUrls: ['https://cdn.test/a.mp4'],
+      backendUrls: ['https://cdn.test/a.mp4'],
+    },
+    {
+      label: 'local + public VideoRef',
+      input: { kind: 'video-ref', local: '/outputs/a.mp4', url: 'https://cdn.test/a.mp4' },
+      publicUrls: ['https://cdn.test/a.mp4'],
+      backendUrls: ['/outputs/a.mp4'],
+    },
+    {
+      label: 'nested mixed video refs',
+      input: [
+        { kind: 'video-ref', local: '/outputs/a.mp4', url: 'https://cdn.test/a.mp4' },
+        ['/outputs/b.mp4', 'https://cdn.test/c.mp4'],
+      ],
+      publicUrls: ['https://cdn.test/a.mp4', 'https://cdn.test/c.mp4'],
+      backendUrls: ['/outputs/a.mp4', '/outputs/b.mp4', 'https://cdn.test/c.mp4'],
+    },
+  ])('video ref matrix: $label', ({ input, publicUrls, backendUrls }) => {
+    expect(videoPublicUrls(input)).toEqual(publicUrls)
+    expect(videoBackendResolvableUrls(input)).toEqual(backendUrls)
+  })
 })

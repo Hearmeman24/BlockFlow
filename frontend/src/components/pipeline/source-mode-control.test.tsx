@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
 import { render, screen, act, fireEvent } from '@testing-library/react'
+import { useEffect } from 'react'
 import { PipelineProvider, usePipeline } from '@/lib/pipeline/pipeline-context'
 import { PipelineTabsProvider } from '@/lib/pipeline/tabs-context'
 import { registerBlockDef } from '@/lib/pipeline/registry'
@@ -32,7 +33,10 @@ beforeAll(() => {
 let currentApi: ReturnType<typeof usePipeline> | null = null
 
 function Probe() {
-  currentApi = usePipeline()
+  const api = usePipeline()
+  useEffect(() => {
+    currentApi = api
+  }, [api])
   return null
 }
 

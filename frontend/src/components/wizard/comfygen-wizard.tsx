@@ -60,6 +60,8 @@ const WIZARD_CREDENTIAL_FIELDS = [
   { name: 'r2_bucket', label: 'R2 Bucket', secret: false },
 ] as const
 
+const HEALTH_ZERO_WORKER_TIMEOUT_SECONDS = 5 * 60
+
 export function ComfyGenWizard({ onClose, onSuccess }: Props) {
   const router = useRouter()
   const [step, setStep] = useState<Step>('preflight')
@@ -1059,6 +1061,10 @@ function HealthView({
   onContinue: () => void
 }) {
   const ready = workers && (workers.ready > 0 || workers.idle > 0)
+  const totalWorkers = workers ? workerTotal(workers) : 0
+  const showManualRecycleWarning = Boolean(
+    workers && elapsed >= HEALTH_ZERO_WORKER_TIMEOUT_SECONDS && totalWorkers === 0,
+  )
   return (
     <div className="space-y-3">
       <p className="text-sm">
@@ -1079,6 +1085,15 @@ function HealthView({
         <div className="text-xs text-muted-foreground">Polling…</div>
       )}
       {error && <p className="text-xs text-destructive">Polling error: {error}</p>}
+      {showManualRecycleWarning && (
+        <div className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-100">
+          <div className="font-medium">Manual recycle may be needed</div>
+          <p className="mt-1 text-muted-foreground">
+            The endpoint provisioned successfully, but RunPod is reporting 0 workers after 5 minutes.
+            Open the endpoint on RunPod, edit endpoint, deselect and reselect the GPU type, then save.
+          </p>
+        </div>
+      )}
       <div className="flex gap-2">
         <button
           type="button"
@@ -1098,6 +1113,15 @@ function HealthView({
       </div>
     </div>
   )
+}
+
+function workerTotal(workers: WorkerCounts): number {
+  return workers.ready
+    + workers.idle
+    + workers.running
+    + workers.throttled
+    + workers.initializing
+    + (workers.unhealthy ?? 0)
 }
 
 function AttachView({
@@ -1122,6 +1146,12 @@ function AttachView({
       <p className="text-sm text-muted-foreground">
         Paste an existing RunPod endpoint ID. The wizard will validate reachability via its /health endpoint.
       </p>
+      <div className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+        <div className="font-medium text-amber-100">Only existing ComfyGen RunPod endpoints are accepted</div>
+        <p className="mt-1 text-muted-foreground">
+          Other endpoint types will fail validation or fail when the ComfyGen block uses them.
+        </p>
+      </div>
 
       <div className="flex flex-col gap-1">
         <label htmlFor="attach-ep" className="text-sm">Endpoint ID</label>

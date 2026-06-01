@@ -8,7 +8,7 @@
  * Mock the client boundary; assert step transitions + API calls + state.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/settings/client', () => ({
@@ -192,6 +192,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -516,6 +517,38 @@ describe('Config + Provision steps', () => {
     })
   })
 
+  test('zero-worker health wait shows manual recycle warning only after five minutes', async () => {
+    vi.mocked(client.wizardProvision).mockResolvedValue({
+      endpoint_id: 'ep_zero', template_id: 't', template_name: 'tn', volume_id: 'v',
+      name: 'blockflow-comfygen-zero', tier: 'minimum_viable', status: 'provisioning',
+    })
+    vi.mocked(client.wizardHealth).mockResolvedValue({
+      workers: { ready: 0, idle: 0, running: 0, throttled: 0, initializing: 0 },
+    })
+
+    const user = userEvent.setup()
+    render(<ComfyGenWizard onClose={() => {}} />)
+    await user.click(await screen.findByRole('button', { name: /create new/i }))
+    await user.click(await screen.findByLabelText(/minimum viable/i))
+    await user.click(await screen.findByLabelText(/use rtx 5090 in eur-is-1/i))
+    await user.click(screen.getByRole('button', { name: /customize deploy settings/i }))
+
+    const provisionButton = screen.getByRole('button', { name: /provision/i })
+    vi.useFakeTimers({ now: 0 })
+    fireEvent.click(provisionButton)
+    await act(async () => {})
+
+    expect(screen.getByRole('button', { name: /waiting for worker/i })).toBeDisabled()
+    expect(screen.queryByText(/manual recycle/i)).not.toBeInTheDocument()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300_000)
+    })
+
+    expect(screen.getByText(/manual recycle/i)).toBeInTheDocument()
+    expect(screen.getByText(/deselect and reselect the GPU type/i)).toBeInTheDocument()
+  })
+
   test('Provisioning error surfaces an error message + Retry button', async () => {
     vi.mocked(client.wizardProvision).mockRejectedValue(new Error('RunPod quota exceeded'))
 
@@ -590,6 +623,16 @@ describe('Config + Provision steps', () => {
 describe('Attach flow', () => {
   beforeEach(() => {
     vi.mocked(client.wizardPreflight).mockResolvedValue({ ready: true, missing: [] })
+  })
+
+  test('shows a ComfyGen-only endpoint warning before attaching', async () => {
+    const user = userEvent.setup()
+    render(<ComfyGenWizard onClose={() => {}} />)
+
+    await user.click(await screen.findByRole('button', { name: /attach existing/i }))
+
+    expect(await screen.findByText(/only existing ComfyGen RunPod endpoints/i)).toBeInTheDocument()
+    expect(screen.getByText(/other endpoint types will fail/i)).toBeInTheDocument()
   })
 
   test('submitting endpoint ID calls wizardAttach', async () => {

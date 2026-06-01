@@ -418,6 +418,57 @@ describe('custom block contracts', () => {
     },
   )
 
+  it('comfyGen rejects a mapped video load node before submitting when source resolution has no video value', async () => {
+    const blockId = 'execute-comfyGen-missing-video'
+    setSession(blockId, 'workflow', JSON.stringify({
+      '311': { class_type: 'LoadImage', inputs: { image: 'image.png' } },
+      '417': { class_type: 'VHS_LoadVideo', inputs: { video: 'stale.mp4' } },
+      '550': { class_type: 'VHS_VideoCombine', inputs: { images: ['417', 0] } },
+    }))
+    setSession(blockId, 'mappings', [
+      { node_id: '311', field: 'image', portKind: 'image' },
+      { node_id: '417', field: 'video', portKind: 'video' },
+    ])
+    const fetchMock = mockFetch({ failEndpoints: ['/api/blocks/comfy_gen/run'] })
+    const { execute } = await renderAndCaptureExecute('comfyGen', {
+      blockId,
+      inputs: { image: contractInputs().image },
+      waitForFetchUrl: '/api/blocks/comfy_gen/health',
+    })
+
+    await expect(execute({ image: contractInputs().image }, new AbortController().signal))
+      .rejects.toThrow(/missing upstream video/i)
+
+    expect(fetchMock.mock.calls.some(([input]) => String(input) === '/api/blocks/comfy_gen/run')).toBe(false)
+  })
+
+  it('comfyGen maps image and video refs into file_inputs before submit', async () => {
+    const blockId = 'execute-comfyGen-media-refs'
+    setSession(blockId, 'workflow', JSON.stringify({
+      '311': { class_type: 'LoadImage', inputs: { image: 'image.png' } },
+      '417': { class_type: 'VHS_LoadVideo', inputs: { video: 'stale.mp4' } },
+      '550': { class_type: 'VHS_VideoCombine', inputs: { images: ['417', 0] } },
+    }))
+    setSession(blockId, 'mappings', [
+      { node_id: '311', field: 'image', portKind: 'image' },
+      { node_id: '417', field: 'video', portKind: 'video' },
+    ])
+    const fetchMock = mockFetch({ failEndpoints: ['/api/blocks/comfy_gen/run'] })
+    const { execute } = await renderAndCaptureExecute('comfyGen', {
+      blockId,
+      waitForFetchUrl: '/api/blocks/comfy_gen/health',
+    })
+
+    await expect(execute(contractInputs(), new AbortController().signal)).rejects.toThrow('contract stop')
+
+    expect(postedJson(fetchMock, '/api/blocks/comfy_gen/run')).toMatchObject({
+      file_inputs: {
+        '311': { field: 'image', media_url: '/outputs/contract/image.png' },
+        '417': { field: 'video', media_url: '/outputs/contract/video.mp4' },
+      },
+    })
+  })
+
   it.each(POLLING_MEDIA_BLOCKS)(
     '$type rejects malformed submit success before polling an undefined job id',
     async ({ type, blockId, submitEndpoint, healthEndpoint, setup }) => {

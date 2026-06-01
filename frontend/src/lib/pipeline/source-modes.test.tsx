@@ -20,11 +20,36 @@ beforeAll(() => {
   } as unknown as Parameters<typeof registerBlockDef>[0])
 
   registerBlockDef({
+    type: 'src_o1q_video',
+    label: 'Video Producer',
+    description: 'test video producer',
+    size: 'sm',
+    inputs: [],
+    outputs: [{ name: 'video', kind: 'video' }],
+    canStart: true,
+    component: () => null,
+  } as unknown as Parameters<typeof registerBlockDef>[0])
+
+  registerBlockDef({
     type: 'sink_o1q_image',
     label: 'Image Sink',
     description: 'test image sink',
     size: 'sm',
     inputs: [{ name: 'image', kind: 'image', required: false }],
+    outputs: [],
+    canStart: false,
+    component: () => null,
+  } as unknown as Parameters<typeof registerBlockDef>[0])
+
+  registerBlockDef({
+    type: 'sink_o1q_media',
+    label: 'Media Sink',
+    description: 'test mixed media sink',
+    size: 'sm',
+    inputs: [
+      { name: 'image', kind: 'image', required: false },
+      { name: 'video', kind: 'video', required: false },
+    ],
     outputs: [],
     canStart: false,
     component: () => null,
@@ -54,6 +79,26 @@ function seedThreeBlockPipeline() {
   })
 
   return { result, first, second, sink }
+}
+
+function seedMixedMediaPipeline() {
+  const { result } = renderHook(() => usePipeline(), { wrapper })
+  let firstImage = ''
+  let video = ''
+  let secondImage = ''
+  let sink = ''
+
+  act(() => {
+    firstImage = result.current.addBlock('src_o1q_image')
+    video = result.current.addBlock('src_o1q_video')
+    secondImage = result.current.addBlock('src_o1q_image')
+    sink = result.current.addBlock('sink_o1q_media')
+    result.current.setBlockOutput(firstImage, 'image', 'first.png')
+    result.current.setBlockOutput(video, 'video', 'clip.mp4')
+    result.current.setBlockOutput(secondImage, 'image', 'second.png')
+  })
+
+  return { result, firstImage, video, secondImage, sink }
 }
 
 beforeEach(() => {
@@ -99,6 +144,20 @@ describe('pipeline source modes', () => {
     })
 
     expect(result.current.getInputsForBlock(sink).image).toBeUndefined()
+  })
+
+  it('keeps closest video input when image input uses a custom producer selection', () => {
+    const { result, firstImage, sink } = seedMixedMediaPipeline()
+
+    act(() => {
+      result.current.setBlockSourceMode(sink, 'image', 'custom')
+      result.current.setBlockSourceSelection(sink, 'image', [firstImage])
+    })
+
+    expect(result.current.getInputsForBlock(sink)).toMatchObject({
+      image: ['first.png'],
+      video: 'clip.mp4',
+    })
   })
 
   it('round-trips source modes and source selections through flow IO', () => {

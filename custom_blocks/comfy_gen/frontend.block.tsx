@@ -471,9 +471,10 @@ function snap4n1(v: number): number {
   return Math.max(1, Math.round((v - 1) / 4) * 4 + 1)
 }
 
-import { toDisplayUrl, toDisplayUrls } from '@/lib/image-ref'
+import { toDisplayUrl as toImageDisplayUrl, toDisplayUrls } from '@/lib/image-ref'
+import { toDisplayUrl as toVideoDisplayUrl } from '@/lib/video-ref'
 
-function toMediaUrl(value: unknown): string {
+function toMediaUrl(value: unknown, kind: 'image' | 'video'): string {
   // ComfyGen backend resolves /outputs/... → local disk path and uploads
   // bytes to ComfyUI on RunPod. Prefer the local form. Plain strings are
   // also accepted (video URLs / legacy producers).
@@ -482,7 +483,7 @@ function toMediaUrl(value: unknown): string {
     const first = (value as string[]).find((v) => v.trim() !== '')
     return first?.trim() || ''
   }
-  return toDisplayUrl(value) || ''
+  return (kind === 'video' ? toVideoDisplayUrl(value) : toImageDisplayUrl(value)) || ''
 }
 
 function makePendingOutput(kind: 'image' | 'video') {
@@ -1462,8 +1463,10 @@ function ComfyGenBlock({
   const buildBaseOverrides = useCallback((freshInputs: Record<string, unknown>) => {
     const fileInputs: Record<string, { field: string; media_url: string }> = {}
     for (const mapping of nodeMappings) {
-      const mediaUrl = toMediaUrl(mapping.portKind === 'video' ? freshInputs.video : freshInputs.image)
+      const kind = mapping.portKind === 'video' ? 'video' : 'image'
+      const mediaUrl = toMediaUrl(kind === 'video' ? freshInputs.video : freshInputs.image, kind)
       if (mediaUrl) fileInputs[mapping.node_id] = { field: mapping.field, media_url: mediaUrl }
+      else throw new Error(`Missing upstream ${mapping.portKind} for ComfyUI load node ${mapping.node_id}`)
     }
     const upstreamPromptText = typeof freshInputs.prompt === 'string' ? freshInputs.prompt.trim()
       : Array.isArray(freshInputs.prompt) ? ((freshInputs.prompt as string[]).filter(Boolean)[0] || '').trim() : ''

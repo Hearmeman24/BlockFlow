@@ -68,6 +68,23 @@ describe('video_loader run-time re-emit', () => {
     expect(toPublicUrls(emitted)).toEqual(['https://tmpfiles.org/dl/abc/clip.mp4'])
   })
 
+  it('migrates legacy saved video URL state and re-emits it during execute', async () => {
+    const id = 'legacy-vl'
+    sessionStorage.setItem(`block_${id}_uploaded_video_url`, JSON.stringify('/outputs/legacy-clip.mp4'))
+    sessionStorage.setItem(`block_${id}_uploaded_video_fingerprint`, JSON.stringify('123:abc'))
+
+    const { getExecute, setOutput } = renderBlock(id)
+    const execute = getExecute()
+    expect(execute).toBeTypeOf('function')
+
+    setOutput.mockClear()
+    await execute!({}, new AbortController().signal)
+
+    expect(setOutput).toHaveBeenCalledWith('video', [
+      { kind: 'video-ref', local: '/outputs/legacy-clip.mp4', url: undefined },
+    ])
+  })
+
   it('throws from execute when nothing is loaded', async () => {
     const { getExecute } = renderBlock('vl2')
     await expect(getExecute()!({}, new AbortController().signal)).rejects.toThrow(/select a video/i)

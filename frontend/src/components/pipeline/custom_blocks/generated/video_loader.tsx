@@ -43,6 +43,17 @@ async function fingerprintFile(file: File): Promise<string> {
   return `${bytes.length}:${(hash >>> 0).toString(16)}`
 }
 
+function readLegacySavedVideoUrl(blockId: string): string {
+  if (typeof window === 'undefined') return ''
+  try {
+    const raw = sessionStorage.getItem(`block_${blockId}_uploaded_video_url`)
+    const value = raw ? JSON.parse(raw) : ''
+    return typeof value === 'string' ? value.trim() : ''
+  } catch {
+    return ''
+  }
+}
+
 function VideoLoaderBlock({
   blockId,
   setOutput,
@@ -51,12 +62,14 @@ function VideoLoaderBlock({
 }: BlockComponentProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [selectedFingerprint, setSelectedFingerprint] = useState('')
+  const legacyVideoUrl = readLegacySavedVideoUrl(blockId)
+  const legacyIsRemote = /^https?:\/\//i.test(legacyVideoUrl)
 
   // Dual emit: local path (FastAPI /outputs) AND public tmpfiles URL. Mirrors
   // upload_image_to_tmpfiles — downstream consumers pick whichever form they
   // need via toPublicUrls / toDisplayUrls from `@/lib/video-ref`.
-  const [localUrl, setLocalUrl] = useSessionState(`block_${blockId}_local_url`, '')
-  const [remoteUrl, setRemoteUrl] = useSessionState(`block_${blockId}_remote_url`, '')
+  const [localUrl, setLocalUrl] = useSessionState(`block_${blockId}_local_url`, legacyIsRemote ? '' : legacyVideoUrl)
+  const [remoteUrl, setRemoteUrl] = useSessionState(`block_${blockId}_remote_url`, legacyIsRemote ? legacyVideoUrl : '')
   const [uploadedFingerprint, setUploadedFingerprint] = useSessionState(`block_${blockId}_uploaded_fingerprint`, '')
 
   const [previewUrl, setPreviewUrl] = useState('')

@@ -30,7 +30,6 @@ Install flow (Stage B):
 from __future__ import annotations
 
 import json
-import os
 import re
 import signal
 import subprocess
@@ -472,6 +471,7 @@ def _run_comfy_gen_capture(
     log_fp,
     label: str,
     timeout: int,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run a comfy-gen subcommand. Stream stderr to the install log file as
     it arrives (so /preset_install.log stays useful for diagnosis), collect
@@ -487,6 +487,7 @@ def _run_comfy_gen_capture(
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        env=env,
     )
     stderr_tail: deque[str] = deque(maxlen=80)
     # sgs-ui-hh9: separate, smaller rolling tail surfaced to /progress (the
@@ -600,17 +601,19 @@ def _delete_paths(
             comfy_gen = comfy_gen_cli.resolve_comfy_gen()
         except comfy_gen_cli.ComfyGenNotFound as exc:
             return {"ok": False, "results": [], "error": str(exc)}
-        rc, stdout, stderr = _run_comfy_gen_capture(
-            comfy_gen.command(
-                "delete",
-                "--batch", paths_file,
-                "--endpoint-id", endpoint_id,
-                "--timeout", "300",
-            ),
-            log_fp=log_fp,
-            label="delete",
-            timeout=360,
-        )
+        with comfy_gen_cli.settings_subprocess_env(endpoint_id=endpoint_id) as env:
+            rc, stdout, stderr = _run_comfy_gen_capture(
+                comfy_gen.command(
+                    "delete",
+                    "--batch", paths_file,
+                    "--endpoint-id", endpoint_id,
+                    "--timeout", "300",
+                ),
+                log_fp=log_fp,
+                label="delete",
+                timeout=360,
+                env=env,
+            )
         if rc != 0:
             return {"ok": False, "results": [], "error": stderr[-500:] or "delete failed"}
         try:
@@ -825,50 +828,52 @@ def _run_gpu_install_subprocess(
             "--endpoint-id", endpoint_id,
             "--timeout", "3600",
         )
-        proc = subprocess.Popen(
-            args,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-        _install_proc["proc"] = proc
+        with comfy_gen_cli.settings_subprocess_env(endpoint_id=endpoint_id) as env:
+            proc = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+            _install_proc["proc"] = proc
 
-        stderr_tail: deque[str] = deque(maxlen=_LOG_TAIL_MAXLEN)
-        stdout_chunks: list[str] = []
+            stderr_tail: deque[str] = deque(maxlen=_LOG_TAIL_MAXLEN)
+            stdout_chunks: list[str] = []
 
-        def _pump_stderr() -> None:
-            assert proc is not None and proc.stderr is not None
-            try:
-                for line in iter(proc.stderr.readline, ""):
-                    stderr_tail.append(line)
-                    _install_state["log_tail"] = "".join(stderr_tail)
-                    log_fp.write("[stderr] " + line)
-                    # Best-effort progress: each '[i/N] downloaded ...'-shaped
-                    # line increments files_done.
-                    if re.search(r"\[\d+/\d+\]|downloaded\s+", line):
-                        if _install_state["files_done"] < files_total:
-                            _install_state["files_done"] += 1
-            except (ValueError, OSError):
-                pass
+            def _pump_stderr() -> None:
+                assert proc is not None and proc.stderr is not None
+                try:
+                    for line in iter(proc.stderr.readline, ""):
+                        stderr_tail.append(line)
+                        _install_state["log_tail"] = "".join(stderr_tail)
+                        log_fp.write("[stderr] " + line)
+                        # Best-effort progress: each '[i/N] downloaded ...'-shaped
+                        # line increments files_done.
+                        if re.search(r"\[\d+/\d+\]|downloaded\s+", line):
+                            if _install_state["files_done"] < files_total:
+                                _install_state["files_done"] += 1
+                except (ValueError, OSError):
+                    pass
 
-        def _pump_stdout() -> None:
-            assert proc is not None and proc.stdout is not None
-            try:
-                for line in iter(proc.stdout.readline, ""):
-                    stdout_chunks.append(line)
-                    log_fp.write("[stdout] " + line)
-            except (ValueError, OSError):
-                pass
+            def _pump_stdout() -> None:
+                assert proc is not None and proc.stdout is not None
+                try:
+                    for line in iter(proc.stdout.readline, ""):
+                        stdout_chunks.append(line)
+                        log_fp.write("[stdout] " + line)
+                except (ValueError, OSError):
+                    pass
 
-        t_err = threading.Thread(target=_pump_stderr, daemon=True)
-        t_out = threading.Thread(target=_pump_stdout, daemon=True)
-        t_err.start()
-        t_out.start()
+            t_err = threading.Thread(target=_pump_stderr, daemon=True)
+            t_out = threading.Thread(target=_pump_stdout, daemon=True)
+            t_err.start()
+            t_out.start()
 
-        rc = proc.wait(timeout=3660)
-        t_err.join(timeout=5)
-        t_out.join(timeout=5)
+            rc = proc.wait(timeout=3660)
+            t_err.join(timeout=5)
+            t_out.join(timeout=5)
 
         if _install_state["state"] == "cancelling":
             _install_state.update({
@@ -971,61 +976,61 @@ def _run_install_subprocess(
     # sgs-ui-h1c.1.4 / sgs-ui-8ef: tokens are passed via env, not argv, so
     # they don't surface in `ps aux` or process listings. comfy-gen reads
     # env first and falls back to deprecated --civitai-token/--hf-token.
-    env = os.environ.copy()
-    if civitai_token:
-        env["COMFY_GEN_CIVITAI_TOKEN"] = civitai_token
-    if hf_token:
-        env["COMFY_GEN_HF_TOKEN"] = hf_token
+    extra_env = {
+        "COMFY_GEN_CIVITAI_TOKEN": civitai_token,
+        "COMFY_GEN_HF_TOKEN": hf_token,
+    }
 
     terminal: dict = {}
     proc: subprocess.Popen | None = None
     try:
-        proc = subprocess.Popen(
-            args,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            env=env,
-        )
-        _install_proc["proc"] = proc
+        with comfy_gen_cli.settings_subprocess_env(extra_env=extra_env) as env:
+            proc = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+            _install_proc["proc"] = proc
 
-        stderr_tail: deque[str] = deque(maxlen=_LOG_TAIL_MAXLEN)
+            stderr_tail: deque[str] = deque(maxlen=_LOG_TAIL_MAXLEN)
 
-        def _pump_stderr() -> None:
-            assert proc is not None and proc.stderr is not None
+            def _pump_stderr() -> None:
+                assert proc is not None and proc.stderr is not None
+                try:
+                    for line in iter(proc.stderr.readline, ""):
+                        stderr_tail.append(line)
+                        _install_state["log_tail"] = "".join(stderr_tail)
+                        log_fp.write("[stderr] " + line)
+                except (ValueError, OSError):
+                    pass
+
+            t_err = threading.Thread(target=_pump_stderr, daemon=True)
+            t_err.start()
+
+            assert proc.stdout is not None
+            for line in iter(proc.stdout.readline, ""):
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    evt = json.loads(stripped)
+                except json.JSONDecodeError:
+                    log_fp.write(f"[install] non-JSON stdout line: {stripped[:200]}\n")
+                    continue
+                log_fp.write(stripped + "\n")
+                maybe_terminal = _process_install_event(evt)
+                if maybe_terminal is not None:
+                    terminal = maybe_terminal
+
+            rc = proc.wait(timeout=60)
             try:
-                for line in iter(proc.stderr.readline, ""):
-                    stderr_tail.append(line)
-                    _install_state["log_tail"] = "".join(stderr_tail)
-                    log_fp.write("[stderr] " + line)
-            except (ValueError, OSError):
+                proc.stderr.close()  # type: ignore[union-attr]
+            except (OSError, ValueError):
                 pass
-
-        t_err = threading.Thread(target=_pump_stderr, daemon=True)
-        t_err.start()
-
-        assert proc.stdout is not None
-        for line in iter(proc.stdout.readline, ""):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                evt = json.loads(stripped)
-            except json.JSONDecodeError:
-                log_fp.write(f"[install] non-JSON stdout line: {stripped[:200]}\n")
-                continue
-            log_fp.write(stripped + "\n")
-            maybe_terminal = _process_install_event(evt)
-            if maybe_terminal is not None:
-                terminal = maybe_terminal
-
-        rc = proc.wait(timeout=60)
-        try:
-            proc.stderr.close()  # type: ignore[union-attr]
-        except (OSError, ValueError):
-            pass
-        t_err.join(timeout=5)
+            t_err.join(timeout=5)
 
         # Cancellation takes precedence over the terminal event — the CLI
         # may have emitted install_error("cancelled") just before exit, but

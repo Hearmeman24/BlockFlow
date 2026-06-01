@@ -31,6 +31,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from fakes import comfy_gen as fakes  # noqa: E402
 
+from backend import settings_store  # noqa: E402
+
 _spec = importlib.util.spec_from_file_location(
     "comfy_gen_block_cancel",
     ROOT / "custom_blocks" / "comfy_gen" / "backend.block.py",
@@ -86,6 +88,33 @@ def test_cancel_success_returns_status_ok(client, monkeypatch):
     assert body["ok"] is True
     assert body["cancelled_remote"] is True
     assert body["remote_cancel_status"] == "ok"
+
+
+def test_cancel_passes_settings_runpod_config(client, monkeypatch, tmp_path):
+    db_path = tmp_path / "settings.db"
+    monkeypatch.setattr(settings_store, "DB_PATH", db_path)
+    settings_store.init_db()
+    settings_store.set_credential("runpod_api_key", "rpa_cancel")
+    settings_store.set_endpoint("comfygen", endpoint_id="ep_cancel", volume_id="vol")
+    job_id = _seed_job(endpoint_id="ep_cancel")
+    captured: dict[str, object] = {}
+
+    def _capture(args, **kw):
+        captured["args"] = args
+        captured["env"] = kw.get("env")
+        captured["cfg"] = (Path(captured["env"]["HOME"]) / ".comfy-gen" / "config.json").read_text(encoding="utf-8")
+        return fakes.run_result(stdout="cancelled\n", returncode=0)
+
+    monkeypatch.setattr(mod.subprocess, "run", _capture)
+
+    r = client.post(f"/cancel/{job_id}")
+
+    assert r.status_code == 200
+    env = captured["env"]
+    cfg = captured["cfg"]
+    assert env["RUNPOD_API_KEY"] == "rpa_cancel"
+    assert '"runpod_api_key": "rpa_cancel"' in cfg
+    assert "rpa_cancel" not in captured["args"]
 
 
 # ---- timeout: the audit's core concern -------------------------------------

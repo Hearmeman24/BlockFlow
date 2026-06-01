@@ -11,6 +11,8 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from backend import settings_store  # noqa: E402
+
 
 def _make_executable(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,3 +138,41 @@ def test_comfy_gen_health_reports_resolved_sidecar_mode(monkeypatch, tmp_path):
     assert body["mode"] == "sidecar"
     assert body["path"] == str(sidecar)
     assert captured["args"] == [str(sidecar), "--help"]
+
+
+def test_settings_subprocess_env_writes_temp_comfy_gen_config(monkeypatch, tmp_path):
+    comfy_gen_cli = _load_resolver()
+    stale_home = tmp_path / "stale-home"
+    stale_cfg = stale_home / ".comfy-gen" / "config.json"
+    stale_cfg.parent.mkdir(parents=True)
+    stale_cfg.write_text(json.dumps({"runpod_api_key": ""}), encoding="utf-8")
+    monkeypatch.setenv("HOME", str(stale_home))
+    monkeypatch.setenv("PATH", "/bin")
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+
+    db_path = tmp_path / "settings.db"
+    monkeypatch.setattr(settings_store, "DB_PATH", db_path)
+    settings_store.init_db()
+    settings_store.set_credential("runpod_api_key", "rpa_settings")
+    settings_store.set_credential("r2_access_key_id", "r2_access")
+    settings_store.set_credential("r2_secret_access_key", "r2_secret")
+    settings_store.set_credential("r2_bucket", "bucket")
+    settings_store.set_credential("r2_region", "auto")
+    settings_store.set_credential("r2_endpoint_url", "https://r2.example")
+    settings_store.set_endpoint("comfygen", endpoint_id="ep_settings", volume_id="vol")
+
+    with comfy_gen_cli.settings_subprocess_env() as env:
+        temp_home = Path(env["HOME"])
+        cfg = json.loads((temp_home / ".comfy-gen" / "config.json").read_text(encoding="utf-8"))
+        assert cfg["runpod_api_key"] == "rpa_settings"
+        assert cfg["endpoint_id"] == "ep_settings"
+        assert cfg["aws_access_key_id"] == "r2_access"
+        assert cfg["aws_secret_access_key"] == "r2_secret"
+        assert cfg["s3_bucket"] == "bucket"
+        assert cfg["s3_region"] == "auto"
+        assert cfg["s3_endpoint_url"] == "https://r2.example"
+        assert env["RUNPOD_API_KEY"] == "rpa_settings"
+        assert env["PATH"] == "/bin"
+        assert temp_home != stale_home
+
+    assert not temp_home.exists()

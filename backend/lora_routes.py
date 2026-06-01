@@ -17,6 +17,7 @@ to render live percentage + log tail. Mirrors the preset_routes installer.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import re
 import subprocess
@@ -124,6 +125,24 @@ def _endpoint_id_or_409() -> str:
     return str(ep["endpoint_id"])
 
 
+@contextlib.contextmanager
+def _comfy_gen_subprocess_env(endpoint_id: str | None = None):
+    """Build env for comfy-gen subprocesses from BlockFlow Settings.
+
+    comfy-gen still reads RunPod auth from its own config/env layer. BlockFlow's
+    canonical credential source is Settings, so bridge it at the subprocess
+    boundary while keeping the secret out of argv.
+    """
+    try:
+        with comfy_gen_cli.settings_subprocess_env(endpoint_id=endpoint_id) as env:
+            yield env
+    except comfy_gen_cli.ComfyGenConfigurationError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+
 def _read_cached_loras() -> tuple[list[str], float | None]:
     """Read the shared comfy_gen info cache file. Returns (filenames, fetched_at).
 
@@ -206,10 +225,12 @@ def _fetch_loras_from_comfygen(endpoint_id: str) -> list[str]:
         comfy_gen = comfy_gen_cli.resolve_comfy_gen()
     except comfy_gen_cli.ComfyGenNotFound as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    proc = subprocess.run(
-        comfy_gen.command("list", "loras", "--endpoint-id", endpoint_id),
-        capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
-    )
+    with _comfy_gen_subprocess_env(endpoint_id) as env:
+        proc = subprocess.run(
+            comfy_gen.command("list", "loras", "--endpoint-id", endpoint_id),
+            capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
+            env=env,
+        )
     if proc.returncode != 0:
         raise HTTPException(
             status_code=502,
@@ -247,10 +268,12 @@ def _delete_subprocess(filenames: list[str], endpoint_id: str) -> list[dict[str,
             comfy_gen = comfy_gen_cli.resolve_comfy_gen()
         except comfy_gen_cli.ComfyGenNotFound as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-        proc = subprocess.run(
-            comfy_gen.command("delete", "--batch", batch_file, "--endpoint-id", endpoint_id),
-            capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
-        )
+        with _comfy_gen_subprocess_env(endpoint_id) as env:
+            proc = subprocess.run(
+                comfy_gen.command("delete", "--batch", batch_file, "--endpoint-id", endpoint_id),
+                capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
+                env=env,
+            )
     finally:
         try:
             Path(batch_file).unlink(missing_ok=True)
@@ -304,24 +327,30 @@ def _run_download_streaming(
             comfy_gen = comfy_gen_cli.resolve_comfy_gen()
         except comfy_gen_cli.ComfyGenNotFound as exc:
             return (False, str(exc))
-        proc = subprocess.Popen(
-            comfy_gen.command("download", "--batch", batch_file, "--endpoint-id", endpoint_id),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        pump = threading.Thread(target=_pump, args=(proc.stderr,), daemon=True)
-        pump.start()
         try:
-            stdout, _stderr = proc.communicate(timeout=_DOWNLOAD_TIMEOUT_SEC)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            return (False, f"comfy-gen download timed out after {_DOWNLOAD_TIMEOUT_SEC}s")
-        pump.join(timeout=2)
-        if proc.returncode != 0:
-            return (False, ((stdout or "").strip() or "comfy-gen download failed")[:1000])
-        try:
-            return (True, json.loads(stdout))
-        except json.JSONDecodeError as exc:
-            return (False, f"non-JSON output from comfy-gen: {exc}")
+            env_ctx = _comfy_gen_subprocess_env(endpoint_id)
+            with env_ctx as env:
+                proc = subprocess.Popen(
+                    comfy_gen.command("download", "--batch", batch_file, "--endpoint-id", endpoint_id),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env=env,
+                )
+                pump = threading.Thread(target=_pump, args=(proc.stderr,), daemon=True)
+                pump.start()
+                try:
+                    stdout, _stderr = proc.communicate(timeout=_DOWNLOAD_TIMEOUT_SEC)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    return (False, f"comfy-gen download timed out after {_DOWNLOAD_TIMEOUT_SEC}s")
+                pump.join(timeout=2)
+                if proc.returncode != 0:
+                    return (False, ((stdout or "").strip() or "comfy-gen download failed")[:1000])
+                try:
+                    return (True, json.loads(stdout))
+                except json.JSONDecodeError as exc:
+                    return (False, f"non-JSON output from comfy-gen: {exc}")
+        except HTTPException as exc:
+            return (False, str(exc.detail))
     finally:
         try:
             Path(batch_file).unlink(missing_ok=True)

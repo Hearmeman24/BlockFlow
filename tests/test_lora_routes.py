@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import pytest  # noqa: E402
-from fastapi import FastAPI  # noqa: E402
+from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from backend import civitai_client, config, lora_metadata, lora_routes, settings_store  # noqa: E402
@@ -155,6 +155,115 @@ def test_fetch_loras_uses_resolved_sidecar_command(monkeypatch, tmp_path) -> Non
     assert lora_routes._fetch_loras_from_comfygen("ep-sidecar") == ["fresh.safetensors"]
     assert captured["args"][:3] == [str(sidecar), "list", "loras"]
     assert "--endpoint-id" in captured["args"]
+
+
+def test_fetch_loras_passes_settings_runpod_key_via_env_not_argv(client, monkeypatch, tmp_path) -> None:
+    _configure_endpoint()
+    settings_store.set_credential("runpod_api_key", "rpa_from_settings")
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.setattr(config, "COMFY_GEN_INFO_CACHE_PATH", tmp_path / "comfy_gen_info_cache.json")
+
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = json.dumps({"ok": True, "files": [{"filename": "fresh.safetensors"}]})
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(lora_routes.subprocess, "run", fake_run)
+
+    assert lora_routes._fetch_loras_from_comfygen("ep-sidecar") == ["fresh.safetensors"]
+    assert captured["env"]["RUNPOD_API_KEY"] == "rpa_from_settings"
+    assert "rpa_from_settings" not in captured["args"]
+
+
+def test_fetch_loras_requires_settings_runpod_key(client, monkeypatch, tmp_path) -> None:
+    _configure_endpoint()
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.setattr(
+        lora_routes.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("subprocess should not run without Settings RunPod key"),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        lora_routes._fetch_loras_from_comfygen("ep-sidecar")
+
+    assert exc.value.status_code == 400
+    assert "runpod_api_key not configured in Settings" in exc.value.detail
+
+
+def test_sync_route_passes_settings_runpod_key_to_comfy_gen(client, monkeypatch, tmp_path) -> None:
+    _configure_endpoint()
+    settings_store.set_credential("runpod_api_key", "rpa_sync_route")
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.setattr(config, "COMFY_GEN_INFO_CACHE_PATH", tmp_path / "comfy_gen_info_cache.json")
+
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = json.dumps({"ok": True, "files": [{"filename": "route.safetensors"}]})
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(lora_routes.subprocess, "run", fake_run)
+
+    r = client.post("/api/loras/sync")
+
+    assert r.status_code == 200
+    assert r.json()["loras"][0]["filename"] == "route.safetensors"
+    assert captured["env"]["RUNPOD_API_KEY"] == "rpa_sync_route"
+    assert "rpa_sync_route" not in captured["args"]
+
+
+def test_delete_subprocess_passes_settings_runpod_key_via_env_not_argv(client, monkeypatch, tmp_path) -> None:
+    _configure_endpoint()
+    settings_store.set_credential("runpod_api_key", "rpa_delete")
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = json.dumps({"results": [{"path": f"{lora_routes.LORA_DEST_DIR}/a.safetensors", "deleted": True}]})
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(lora_routes.subprocess, "run", fake_run)
+
+    assert lora_routes._delete_subprocess(["a.safetensors"], "ep-sidecar")[0]["deleted"] is True
+    assert captured["env"]["RUNPOD_API_KEY"] == "rpa_delete"
+    assert "rpa_delete" not in captured["args"]
 
 
 # ---- POST /api/loras/delete ----
@@ -355,6 +464,42 @@ def test_url_download_generic_url(client, monkeypatch) -> None:
     assert r.status_code == 202
     row = lora_metadata.get("x.safetensors")
     assert row["source"] == "url"
+
+
+def test_download_subprocess_passes_settings_runpod_key_via_env_not_argv(client, monkeypatch, tmp_path) -> None:
+    _configure_endpoint()
+    settings_store.set_credential("runpod_api_key", "rpa_download")
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+
+    captured: dict[str, object] = {}
+
+    class FakePopen:
+        returncode = 0
+        stderr: list[str] = []
+
+        def __init__(self, args, **kwargs):
+            captured["args"] = args
+            captured["env"] = kwargs.get("env")
+
+        def communicate(self, timeout=None):
+            return (json.dumps({"ok": True}), "")
+
+    monkeypatch.setattr(lora_routes.subprocess, "Popen", FakePopen)
+
+    ok, payload = lora_routes._run_download_streaming(
+        [{"source": "url", "url": "https://x/a.safetensors", "dest": "loras"}],
+        "ep-sidecar",
+    )
+
+    assert ok is True
+    assert payload == {"ok": True}
+    assert captured["env"]["RUNPOD_API_KEY"] == "rpa_download"
+    assert "rpa_download" not in captured["args"]
 
 
 def test_download_appends_filename_to_shared_cache(client, monkeypatch, tmp_path) -> None:

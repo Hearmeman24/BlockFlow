@@ -106,40 +106,43 @@ _refresh_lock = threading.Lock()
 def _run_refresh(cmd: list[str]) -> None:
     """Run comfy-gen info in a thread, streaming stderr lines to _refresh_state."""
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        # Stream stderr for live status
-        assert proc.stderr is not None
-        for line in proc.stderr:
-            line = line.strip()
-            if line:
-                _refresh_state["status"] = line
-        proc.wait(timeout=90)
+        with comfy_gen_cli.settings_subprocess_env() as env:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            )
+            # Stream stderr for live status
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                line = line.strip()
+                if line:
+                    _refresh_state["status"] = line
+            proc.wait(timeout=90)
 
-        if proc.returncode != 0:
+            if proc.returncode != 0:
+                stdout = proc.stdout.read() if proc.stdout else ""
+                _refresh_state["error"] = stdout.strip() or "comfy-gen info failed"
+                _refresh_state["done"] = True
+                _refresh_state["running"] = False
+                return
+
             stdout = proc.stdout.read() if proc.stdout else ""
-            _refresh_state["error"] = stdout.strip() or "comfy-gen info failed"
-            _refresh_state["done"] = True
-            _refresh_state["running"] = False
-            return
+            data = json.loads(stdout)
+            if not data.get("ok"):
+                _refresh_state["error"] = data.get("error", "comfy-gen info returned not ok")
+                _refresh_state["done"] = True
+                _refresh_state["running"] = False
+                return
 
-        stdout = proc.stdout.read() if proc.stdout else ""
-        data = json.loads(stdout)
-        if not data.get("ok"):
-            _refresh_state["error"] = data.get("error", "comfy-gen info returned not ok")
-            _refresh_state["done"] = True
-            _refresh_state["running"] = False
-            return
-
-        _cache["samplers"] = data.get("samplers", [])
-        _cache["schedulers"] = data.get("schedulers", [])
-        loras = data.get("loras", [])
-        details = [item for item in loras
-                   if isinstance(item, dict) and "filename" in item]
-        _cache["lora_details"] = details
-        _cache["loras"] = [item["filename"] for item in details]
-        _cache["fetched_at"] = time.time()
-        _save_cache_to_disk()
-        _refresh_state["status"] = f"Done — {len(_cache['samplers'])} samplers, {len(_cache['schedulers'])} schedulers, {len(_cache['loras'])} loras"
+            _cache["samplers"] = data.get("samplers", [])
+            _cache["schedulers"] = data.get("schedulers", [])
+            loras = data.get("loras", [])
+            details = [item for item in loras
+                       if isinstance(item, dict) and "filename" in item]
+            _cache["lora_details"] = details
+            _cache["loras"] = [item["filename"] for item in details]
+            _cache["fetched_at"] = time.time()
+            _save_cache_to_disk()
+            _refresh_state["status"] = f"Done — {len(_cache['samplers'])} samplers, {len(_cache['schedulers'])} schedulers, {len(_cache['loras'])} loras"
 
     except subprocess.TimeoutExpired:
         _refresh_state["error"] = "comfy-gen info timed out (90s)"
@@ -209,32 +212,35 @@ _download_lock = threading.Lock()
 def _run_download(cmd: list[str]) -> None:
     """Run comfy-gen download in a thread, streaming stderr lines to _download_state."""
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        assert proc.stderr is not None
-        for line in proc.stderr:
-            line = line.strip()
-            if line:
-                _download_state["status"] = line
-        proc.wait(timeout=1200)  # 20 min timeout for large models
+        with comfy_gen_cli.settings_subprocess_env() as env:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+            )
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                line = line.strip()
+                if line:
+                    _download_state["status"] = line
+            proc.wait(timeout=1200)  # 20 min timeout for large models
 
-        stdout = proc.stdout.read() if proc.stdout else ""
-        print(f"[comfy-gen] Download stdout: {stdout[:1000]}", flush=True)
-        print(f"[comfy-gen] Download returncode: {proc.returncode}", flush=True)
-        if proc.returncode != 0:
-            _download_state["error"] = stdout.strip() or "comfy-gen download failed"
-        else:
-            try:
-                data = json.loads(stdout)
-                if data.get("ok") is not False:
-                    files = data.get("files", data.get("downloaded", []))
-                    count = len(files) if isinstance(files, list) else _download_state.get("total", 0)
-                    if count == 0:
-                        count = _download_state.get("total", 1)
-                    _download_state["status"] = f"Downloaded {count} model(s)"
-                else:
-                    _download_state["error"] = data.get("error", "Download returned not ok")
-            except (json.JSONDecodeError, ValueError):
-                _download_state["status"] = "Download completed"
+            stdout = proc.stdout.read() if proc.stdout else ""
+            print(f"[comfy-gen] Download stdout: {stdout[:1000]}", flush=True)
+            print(f"[comfy-gen] Download returncode: {proc.returncode}", flush=True)
+            if proc.returncode != 0:
+                _download_state["error"] = stdout.strip() or "comfy-gen download failed"
+            else:
+                try:
+                    data = json.loads(stdout)
+                    if data.get("ok") is not False:
+                        files = data.get("files", data.get("downloaded", []))
+                        count = len(files) if isinstance(files, list) else _download_state.get("total", 0)
+                        if count == 0:
+                            count = _download_state.get("total", 1)
+                        _download_state["status"] = f"Downloaded {count} model(s)"
+                    else:
+                        _download_state["error"] = data.get("error", "Download returned not ok")
+                except (json.JSONDecodeError, ValueError):
+                    _download_state["status"] = "Download completed"
 
     except subprocess.TimeoutExpired:
         _download_state["error"] = "Download timed out (20 min)"
@@ -1303,54 +1309,57 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
         print(f"[comfy-gen] Job {job_id} overrides: {json.dumps(overrides, default=str)}", flush=True)
 
         # Run as subprocess, streaming stderr for progress
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        env_ctx = comfy_gen_cli.settings_subprocess_env(endpoint_id=endpoint_id)
+        with env_ctx as env:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
 
-        # Store process reference so cancel endpoint can kill it
-        with state.JOBS_LOCK:
-            if job_id in state.JOBS:
-                state.JOBS[job_id]["_proc"] = proc
+            # Store process reference so cancel endpoint can kill it
+            with state.JOBS_LOCK:
+                if job_id in state.JOBS:
+                    state.JOBS[job_id]["_proc"] = proc
 
-        services._update_job(job_id, status="RUNNING")
+            services._update_job(job_id, status="RUNNING")
 
-        # Read stderr line by line for progress updates
-        assert proc.stderr is not None
-        stderr_errors: list[str] = []
-        for line in proc.stderr:
-            line = line.strip()
-            if not line:
-                continue
-            progress = _parse_progress_line(line)
-            if progress:
-                services._update_job(job_id, **progress)
-            elif "IN_QUEUE" in line:
-                services._update_job(job_id, remote_status="IN_QUEUE",
-                                     progress_stage="queue", progress_message="In queue...")
-            elif "IN_PROGRESS" in line:
-                services._update_job(job_id, remote_status="IN_PROGRESS",
-                                     progress_stage="running", progress_message="Running...")
-            elif "Uploading" in line:
-                services._update_job(job_id, progress_stage="upload", progress_message="Uploading inputs...")
-            elif "Submitting" in line:
-                services._update_job(job_id, progress_stage="submit", progress_message="Submitting...")
-            elif "Job submitted" in line:
-                # Extract RunPod job ID: "Job submitted: <remote_id>"
-                match = re.search(r"Job submitted:\s*(\S+)", line)
-                if match:
-                    services._update_job(job_id, remote_job_id=match.group(1))
-                services._update_job(job_id, progress_stage="queue", progress_message="Waiting for worker...")
-            # Capture validation/error lines from stderr
-            elif any(kw in line for kw in ("Failed to validate", "Value not in list",
-                                            "not in list", "Error:", "ERROR")):
-                stderr_errors.append(line)
+            # Read stderr line by line for progress updates
+            assert proc.stderr is not None
+            stderr_errors: list[str] = []
+            for line in proc.stderr:
+                line = line.strip()
+                if not line:
+                    continue
+                progress = _parse_progress_line(line)
+                if progress:
+                    services._update_job(job_id, **progress)
+                elif "IN_QUEUE" in line:
+                    services._update_job(job_id, remote_status="IN_QUEUE",
+                                         progress_stage="queue", progress_message="In queue...")
+                elif "IN_PROGRESS" in line:
+                    services._update_job(job_id, remote_status="IN_PROGRESS",
+                                         progress_stage="running", progress_message="Running...")
+                elif "Uploading" in line:
+                    services._update_job(job_id, progress_stage="upload", progress_message="Uploading inputs...")
+                elif "Submitting" in line:
+                    services._update_job(job_id, progress_stage="submit", progress_message="Submitting...")
+                elif "Job submitted" in line:
+                    # Extract RunPod job ID: "Job submitted: <remote_id>"
+                    match = re.search(r"Job submitted:\s*(\S+)", line)
+                    if match:
+                        services._update_job(job_id, remote_job_id=match.group(1))
+                    services._update_job(job_id, progress_stage="queue", progress_message="Waiting for worker...")
+                # Capture validation/error lines from stderr
+                elif any(kw in line for kw in ("Failed to validate", "Value not in list",
+                                                "not in list", "Error:", "ERROR")):
+                    stderr_errors.append(line)
 
-        proc.wait()
-        assert proc.stdout is not None
-        stdout = proc.stdout.read()
+            proc.wait()
+            assert proc.stdout is not None
+            stdout = proc.stdout.read()
 
         # Single parse+classify pass — works for rc==0 AND rc!=0, surfacing
         # any structured error (missing_models, future error_types) before
@@ -1828,7 +1837,8 @@ def cancel(job_id: str) -> JSONResponse:
             if endpoint_id:
                 cmd.extend(["--endpoint-id", endpoint_id])
             print(f"[comfy-gen] Cancel command: {' '.join(cmd)}", flush=True)
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            with comfy_gen_cli.settings_subprocess_env(endpoint_id=endpoint_id) as env:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
             if result.returncode == 0:
                 cancelled_remote = True
                 remote_cancel_status = "ok"

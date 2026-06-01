@@ -17,7 +17,9 @@ message + whether to consult returncode.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -26,6 +28,8 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from fakes import comfy_gen as fakes  # noqa: E402
 
+from backend import settings_store, state  # noqa: E402
+
 _spec = importlib.util.spec_from_file_location(
     "comfy_gen_block_classify",
     ROOT / "custom_blocks" / "comfy_gen" / "backend.block.py",
@@ -33,6 +37,40 @@ _spec = importlib.util.spec_from_file_location(
 mod = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = mod  # required so @dataclass can resolve cls.__module__
 _spec.loader.exec_module(mod)
+
+
+def test_run_comfy_job_passes_settings_runpod_config(monkeypatch, tmp_path):
+    db_path = tmp_path / "settings.db"
+    monkeypatch.setattr(settings_store, "DB_PATH", db_path)
+    settings_store.init_db()
+    settings_store.set_credential("runpod_api_key", "rpa_submit")
+    settings_store.set_endpoint("comfygen", endpoint_id="ep_submit", volume_id="vol")
+    monkeypatch.setattr(state, "JOBS", {})
+    monkeypatch.setattr(state, "JOBS_LOCK", threading.Lock())
+    job_id = "job_submit"
+    workflow = tmp_path / "workflow.json"
+    workflow.write_text("{}", encoding="utf-8")
+    state.JOBS[job_id] = {"job_id": job_id, "status": "QUEUED"}
+    captured: dict[str, object] = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        captured["cfg"] = json.loads(
+            (Path(captured["env"]["HOME"]) / ".comfy-gen" / "config.json").read_text(encoding="utf-8")
+        )
+        return fakes.submit_proc(error_type="worker_error", error_message="stop")
+
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+    mod._run_comfy_job(job_id, str(workflow), {}, endpoint_id="ep_submit")
+
+    env = captured["env"]
+    cfg = captured["cfg"]
+    assert env["RUNPOD_API_KEY"] == "rpa_submit"
+    assert cfg["runpod_api_key"] == "rpa_submit"
+    assert cfg["endpoint_id"] == "ep_submit"
+    assert "rpa_submit" not in captured["args"]
 
 
 # ---- success ---------------------------------------------------------------

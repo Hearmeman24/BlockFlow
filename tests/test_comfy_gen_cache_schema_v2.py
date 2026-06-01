@@ -45,7 +45,7 @@ mod = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = mod
 _spec.loader.exec_module(mod)
 
-from backend import config, lora_routes  # noqa: E402
+from backend import config, lora_routes, settings_store  # noqa: E402
 
 
 @pytest.fixture
@@ -180,6 +180,65 @@ def test_refresh_stores_lora_objects_with_path_and_size(cache_path, monkeypatch)
     data = json.loads(cache_path.read_text())
     assert data["version"] == 2
     assert data["loras"][0]["size_mb"] == 100.5
+
+
+def test_refresh_passes_settings_runpod_config_to_comfy_gen(cache_path, monkeypatch, tmp_path):
+    db_path = tmp_path / "settings.db"
+    monkeypatch.setattr(settings_store, "DB_PATH", db_path)
+    settings_store.init_db()
+    settings_store.set_credential("runpod_api_key", "rpa_refresh")
+    settings_store.set_endpoint("comfygen", endpoint_id="ep_refresh", volume_id="vol")
+
+    info_payload = {"ok": True, "samplers": [], "schedulers": [], "loras": []}
+    captured: dict[str, object] = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        captured["cfg"] = json.loads(
+            (Path(captured["env"]["HOME"]) / ".comfy-gen" / "config.json").read_text(encoding="utf-8")
+        )
+        return fakes.make_proc(stdout=json.dumps(info_payload), returncode=0)
+
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+    mod._run_refresh(["comfy-gen", "info"])
+
+    env = captured["env"]
+    cfg = captured["cfg"]
+    assert env["RUNPOD_API_KEY"] == "rpa_refresh"
+    assert cfg["runpod_api_key"] == "rpa_refresh"
+    assert cfg["endpoint_id"] == "ep_refresh"
+    assert "rpa_refresh" not in captured["args"]
+
+
+def test_download_models_passes_settings_runpod_config(cache_path, monkeypatch, tmp_path):
+    db_path = tmp_path / "settings.db"
+    monkeypatch.setattr(settings_store, "DB_PATH", db_path)
+    settings_store.init_db()
+    settings_store.set_credential("runpod_api_key", "rpa_download_models")
+    settings_store.set_endpoint("comfygen", endpoint_id="ep_download", volume_id="vol")
+
+    captured: dict[str, object] = {}
+
+    def fake_popen(args, **kwargs):
+        captured["args"] = args
+        captured["env"] = kwargs.get("env")
+        captured["cfg"] = json.loads(
+            (Path(captured["env"]["HOME"]) / ".comfy-gen" / "config.json").read_text(encoding="utf-8")
+        )
+        return fakes.make_proc(stdout=json.dumps({"ok": True, "files": ["x"]}), returncode=0)
+
+    monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+
+    mod._run_download(["comfy-gen", "download", "--batch", "batch.json"])
+
+    env = captured["env"]
+    cfg = captured["cfg"]
+    assert env["RUNPOD_API_KEY"] == "rpa_download_models"
+    assert cfg["runpod_api_key"] == "rpa_download_models"
+    assert cfg["endpoint_id"] == "ep_download"
+    assert "rpa_download_models" not in captured["args"]
 
 
 # ---- lora_routes file helpers ----------------------------------------------

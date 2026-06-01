@@ -43,7 +43,12 @@ def app(tmp_path, monkeypatch):
 
     fastapi_app = FastAPI()
     fastapi_app.include_router(preset_routes.router)
-    return fastapi_app
+    yield fastapi_app
+
+    for _ in range(100):
+        if preset_routes._install_state["state"] not in ("queued", "running", "cancelling"):
+            break
+        time.sleep(0.01)
 
 
 @pytest.fixture
@@ -177,6 +182,7 @@ def test_install_allowed_when_civitai_preset_has_credential(client, mocker):
 
     r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
     assert r.status_code == 202
+    _wait_for_install_state("completed", "error", "cancelled")
 
 
 def test_install_detects_civitai_by_url_when_source_field_missing(client, mocker):
@@ -453,7 +459,15 @@ def test_install_passes_civitai_token_via_env_not_argv(client, mocker):
         {"type": "install_done", "ok": True, "files": 0, "elapsed_sec": 1},
     ]
     proc = _make_proc(stdout=_events_to_stdout(events), returncode=0)
-    popen = mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+    captured: dict[str, object] = {}
+
+    def fake_popen(args, **kwargs):
+        captured["cfg"] = json.loads(
+            (Path(kwargs["env"]["HOME"]) / ".comfy-gen" / "config.json").read_text(encoding="utf-8")
+        )
+        return proc
+
+    popen = mocker.patch.object(preset_routes.subprocess, "Popen", side_effect=fake_popen)
 
     r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
     assert r.status_code == 202
@@ -465,7 +479,11 @@ def test_install_passes_civitai_token_via_env_not_argv(client, mocker):
 
     assert "--civitai-token" not in argv, f"token leaked onto argv: {argv}"
     assert "ck_secret_xyz" not in argv, f"token value leaked onto argv: {argv}"
-    assert env.get("COMFY_GEN_CIVITAI_TOKEN") == "ck_secret_xyz", env
+    assert env.get("COMFY_GEN_CIVITAI_TOKEN") == "ck_secret_xyz"
+    assert env.get("RUNPOD_API_KEY") == "rpa_test"
+    cfg = captured["cfg"]
+    assert cfg["runpod_api_key"] == "rpa_test"
+    assert cfg["endpoint_id"] == "ep_test"
 
 
 def test_install_passes_hf_token_via_env_not_argv(client, mocker):
@@ -1111,11 +1129,14 @@ def test_install_mode_gpu_uses_old_download_cli(client, mocker):
     assert s["state"] == "completed", s
 
     args = preset_routes.subprocess.Popen.call_args.args[0]
+    env = preset_routes.subprocess.Popen.call_args.kwargs.get("env") or {}
     assert Path(args[0]).name == "comfy-gen"
     assert args[1] == "download"
     assert "install-preset" not in args
     assert "--batch" in args
     assert "--endpoint-id" in args and "ep_test" in args
+    assert env.get("RUNPOD_API_KEY") == "rpa_test"
+    assert "rpa_test" not in args
 
     row = settings_store.get_installed_preset(preset["id"])
     assert row is not None

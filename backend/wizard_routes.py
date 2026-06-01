@@ -12,7 +12,8 @@ until the trainer image is publishable.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Literal
+from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -22,39 +23,64 @@ from backend import runpod_api, settings_store
 
 router = APIRouter()
 
-# === ComfyGen tier definitions (mirrors ComfyGen init.py TIERS) =============
+# === ComfyGen deploy recommendation tiers ===================================
 
-TIERS: dict[str, dict[str, Any]] = {
-    "budget": {
-        "name": "Budget",
-        "gpu_ids": ["NVIDIA GeForce RTX 5090"],
-        "datacenter": "EU-RO-1",
-        "label": "RTX 5090 (32GB)",
-        "region": "Europe — Romania",
-    },
-    "recommended": {
-        "name": "Recommended",
-        # Multiple RTX PRO 6000 Blackwell variants widen the scheduling pool
-        # (matches the user's working ComfyGen endpoint config). A100 SXM as
-        # a fallback for capacity headroom.
+DEPLOY_TIERS: list[dict[str, Any]] = [
+    {
+        "id": "minimum_viable",
+        "name": "Minimum viable",
+        "target_vram_gb": 32,
+        "target_label": "32GB",
         "gpu_ids": [
+            "NVIDIA RTX PRO 4500 Blackwell",
+            "NVIDIA GeForce RTX 5090",
+        ],
+    },
+    {
+        "id": "starter",
+        "name": "Starter",
+        "target_vram_gb": 48,
+        "target_label": "48GB",
+        "gpu_ids": [
+            "NVIDIA A40",
+            "NVIDIA L40S",
+            "NVIDIA L40",
+            "NVIDIA RTX A6000",
+            "NVIDIA RTX 6000 Ada Generation",
+            "NVIDIA RTX PRO 5000 Blackwell",
+        ],
+    },
+    {
+        "id": "recommended",
+        "name": "Recommended",
+        "target_vram_gb": 80,
+        "target_label": "80/96GB",
+        "gpu_ids": [
+            "NVIDIA H100 80GB HBM3",
+            "NVIDIA A100-SXM4-80GB",
+            "NVIDIA A100 80GB PCIe",
+            "NVIDIA H100 PCIe",
             "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "NVIDIA H100 NVL",
             "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
             "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
-            "NVIDIA A100-SXM4-80GB",
         ],
-        "datacenter": "EUR-IS-1",
-        "label": "RTX PRO 6000 / A100 SXM (96/80GB)",
-        "region": "Europe — Iceland",
     },
-    "performance": {
-        "name": "Performance",
-        "gpu_ids": ["NVIDIA H100 NVL", "NVIDIA H100 PCIe"],
-        "datacenter": "US-KS-2",
-        "label": "H100 NVL / H100 PCIe (94/80GB)",
-        "region": "US — Kansas",
+    {
+        "id": "best",
+        "name": "Best",
+        "target_vram_gb": 96,
+        "target_label": "96/141GB",
+        "gpu_ids": [
+            "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+            "NVIDIA H100 NVL",
+            "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+            "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition",
+            "NVIDIA H200",
+            "NVIDIA H200 NVL",
+        ],
     },
-}
+]
 
 # Required credentials must be present + non-empty.
 REQUIRED_R2_CREDS: tuple[str, ...] = (
@@ -74,11 +100,6 @@ OPTIONAL_S3_CREDS: tuple[str, ...] = (
 DEFAULT_VOLUME_SIZE_GB = 200
 DEFAULT_MAX_WORKERS = 3
 
-# sgs-ui-5nn: preflight only treats a cached validation as 'valid' if recorded
-# within the last 10 minutes. Older entries report status=stale and force the
-# UI to refresh before unlocking the Set up button.
-VALIDATION_TTL_SECONDS = 600
-
 REQUIRED_VALIDATOR_SERVICES: tuple[str, ...] = ("runpod", "r2")
 OPTIONAL_VALIDATOR_SERVICES: tuple[str, ...] = ("civitai",)
 
@@ -91,7 +112,10 @@ _QUICKSTART_FALLBACK_ID = "sdxl-turbo-quickstart"
 # === request bodies =========================================================
 
 class ProvisionBody(BaseModel):
-    tier: Literal["budget", "recommended", "performance"] = "budget"
+    tier: str = Field(..., min_length=1)
+    datacenter: str = Field(..., min_length=1)
+    primary_gpu_id: str = Field(..., min_length=1)
+    fallback_gpu_ids: list[str] = Field(default_factory=list, max_length=2)
     volume_size_gb: int = Field(DEFAULT_VOLUME_SIZE_GB, ge=10, le=10000)
     max_workers: int = Field(DEFAULT_MAX_WORKERS, ge=1, le=10)
     name: str | None = None
@@ -118,9 +142,9 @@ def _required_creds_present() -> tuple[bool, list[str]]:
 def _required_services_validated() -> tuple[bool, list[str]]:
     """sgs-ui-5nn: backend defense-in-depth gate. Returns (ok, problems).
 
-    `problems` lists services that aren't currently usable: not yet validated,
-    stale, or last-validated as failed. Empty list means all required services
-    have status=valid within VALIDATION_TTL_SECONDS.
+    `problems` lists services that aren't currently usable: missing, not yet
+    validated, or last-validated as failed. Empty list means all required
+    services have status=valid.
 
     This is what provision/attach refuse on — independent of UI gating so a
     direct curl can't bypass it.
@@ -160,6 +184,164 @@ def _short_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _stock_rank(stock: str | None) -> int:
+    return {"High": 3, "Medium": 2, "Low": 1}.get(stock or "", 0)
+
+
+def _gpu_price(gpu: dict[str, Any]) -> float | None:
+    lowest = gpu.get("lowestPrice") or {}
+    for key in ("uninterruptablePrice", "securePrice", "communityPrice"):
+        value = lowest.get(key) if key in lowest else gpu.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+    return None
+
+
+def _gpu_option(
+    *,
+    gpu: dict[str, Any],
+    availability: dict[str, Any],
+    primary_memory_gb: int | None = None,
+    primary_price: float | None = None,
+) -> dict[str, Any]:
+    memory_gb = int(gpu.get("memoryInGb") or 0)
+    price = _gpu_price(gpu)
+    warnings: list[str] = []
+    if primary_price is not None and price is not None and price > primary_price:
+        warnings.append(f"Higher cost than primary (${price:.2f}/hr).")
+    if primary_memory_gb is not None and memory_gb < primary_memory_gb:
+        warnings.append("Less VRAM than primary; larger workflows may fail.")
+    return {
+        "gpu_type_id": gpu["id"],
+        "display_name": gpu.get("displayName") or gpu["id"],
+        "memory_gb": memory_gb,
+        "price_per_hr": price,
+        "stock": availability.get("stockStatus") or "unknown",
+        "warnings": warnings,
+    }
+
+
+def _recommend_deploy_options(
+    gpu_types: list[dict[str, Any]],
+    datacenters: list[dict[str, Any]],
+    *,
+    checked_at: str | None = None,
+    source: str = "live",
+) -> list[dict[str, Any]]:
+    """Build one-volume/same-region deploy recommendations.
+
+    A recommendation is valid only when a listed datacenter supports network
+    volumes and reports concrete same-region stock for at least one tier GPU.
+    The route returns one tier group with concrete GPU+datacenter deployment
+    options, rather than collapsing each tier to one winner.
+    """
+    checked_at = checked_at or _now_iso()
+    gpu_by_id = {
+        g["id"]: g
+        for g in gpu_types
+        if g.get("id")
+        and (g.get("manufacturer") or "NVIDIA").upper() == "NVIDIA"
+        and ((g.get("memoryInGb") or 0) >= 32 or "5090" in g.get("id", ""))
+    }
+    tier_options: list[dict[str, Any]] = []
+    for tier in DEPLOY_TIERS:
+        tier_gpu_ids = [gid for gid in tier["gpu_ids"] if gid in gpu_by_id]
+        deployment_options: list[tuple[int, int, float, str, str, dict[str, Any]]] = []
+        for dc in datacenters:
+            if not dc.get("listed") or not dc.get("storageSupport"):
+                continue
+            available = [
+                a for a in (dc.get("gpuAvailability") or [])
+                if (
+                    a.get("available")
+                    and a.get("gpuTypeId") in tier_gpu_ids
+                    and _stock_rank(a.get("stockStatus")) > 0
+                )
+            ]
+            if not available:
+                continue
+
+            available_by_id = {a["gpuTypeId"]: a for a in available}
+            for primary_availability in available:
+                primary_id = primary_availability["gpuTypeId"]
+                primary_gpu = gpu_by_id[primary_id]
+                primary = _gpu_option(gpu=primary_gpu, availability=primary_availability)
+                fallback_available = [
+                    available_by_id[gid]
+                    for gid in tier_gpu_ids
+                    if gid in available_by_id and gid != primary_id
+                ]
+                fallback_available.sort(key=lambda a: (
+                    -_stock_rank(a.get("stockStatus")),
+                    tier_gpu_ids.index(a["gpuTypeId"]),
+                    _gpu_price(gpu_by_id[a["gpuTypeId"]]) or 999.0,
+                ))
+                fallbacks = [
+                    _gpu_option(
+                        gpu=gpu_by_id[a["gpuTypeId"]],
+                        availability=a,
+                        primary_memory_gb=primary["memory_gb"],
+                        primary_price=primary["price_per_hr"],
+                    )
+                    for a in fallback_available[:2]
+                ]
+                option = {
+                    "id": f"{dc['id']}:{primary_id}",
+                    "datacenter": dc["id"],
+                    "region": dc.get("region") or dc.get("name") or dc["id"],
+                    "label": f"{primary['display_name']} ({primary['memory_gb']}GB)",
+                    "gpu_ids": [primary["gpu_type_id"]],
+                    "primary": primary,
+                    "fallback_candidates": fallbacks,
+                    "reasons": [
+                        f"{primary['memory_gb']}GB primary GPU in a network-volume datacenter.",
+                        f"RunPod reports {primary['stock']} stock; availability is not guaranteed until a worker starts.",
+                    ],
+                    "warnings": [
+                        "Optional fallback GPUs are not selected automatically.",
+                        "RunPod tries selected GPUs in priority order.",
+                    ],
+                    "checked_at": checked_at,
+                    "source": source,
+                }
+                deployment_options.append((
+                    _stock_rank(primary_availability.get("stockStatus")),
+                    -tier_gpu_ids.index(primary_id),
+                    -(_gpu_price(primary_gpu) or 999.0),
+                    dc["id"],
+                    primary_id,
+                    option,
+                ))
+
+        if not deployment_options:
+            continue
+
+        deployment_options.sort(key=lambda x: (x[0], x[1], x[2], x[3], x[4]), reverse=True)
+        options = [option for *_meta, option in deployment_options]
+        prices = [
+            option["primary"]["price_per_hr"]
+            for option in options
+            if isinstance(option["primary"]["price_per_hr"], (int, float))
+        ]
+        tier_options.append({
+            "id": tier["id"],
+            "name": tier["name"],
+            "target_vram_gb": tier["target_vram_gb"],
+            "target_label": tier["target_label"],
+            "deployment_options": options,
+            "option_count": len(options),
+            "gpu_family_count": len({option["primary"]["gpu_type_id"] for option in options}),
+            "min_price_per_hr": min(prices) if prices else None,
+            "checked_at": checked_at,
+            "source": source,
+        })
+    return tier_options
+
+
 # === routes =================================================================
 
 def _service_status(service: str, *, missing_creds: bool) -> dict[str, Any]:
@@ -168,9 +350,11 @@ def _service_status(service: str, *, missing_creds: bool) -> dict[str, Any]:
     Status values:
       - credentials_missing: the underlying credential(s) are empty in Settings.
       - unvalidated:         creds present but no validation has been recorded.
-      - stale:               last validation older than VALIDATION_TTL_SECONDS.
       - invalid:             last validation ran and returned ok=False.
-      - valid:               last validation ok=True and fresh.
+      - valid:               last validation ok=True.
+
+    Successful validations remain valid until the underlying credential value is
+    edited, deleted, or a later provider validation records ok=False.
     """
     if missing_creds:
         return {"status": "credentials_missing", "validated_at": None, "error": None}
@@ -186,21 +370,6 @@ def _service_status(service: str, *, missing_creds: bool) -> dict[str, Any]:
             "error": record["error"],
         }
 
-    # Check freshness against TTL.
-    from datetime import datetime, timezone
-    try:
-        ts = datetime.fromisoformat(record["validated_at"])
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return {
-            "status": "stale",
-            "validated_at": record["validated_at"],
-            "error": None,
-        }
-    age = (datetime.now(timezone.utc) - ts).total_seconds()
-    if age > VALIDATION_TTL_SECONDS:
-        return {"status": "stale", "validated_at": record["validated_at"], "error": None}
     return {"status": "valid", "validated_at": record["validated_at"], "error": None}
 
 
@@ -228,7 +397,7 @@ def preflight() -> JSONResponse:
     """Aggregate gating state for the ComfyGen wizard.
 
     Backwards-compat: `ready` and `missing` keys retained. New: a `services`
-    map giving per-validator status (valid / unvalidated / stale / invalid /
+    map giving per-validator status (valid / unvalidated / invalid /
     credentials_missing). `ready=True` requires all REQUIRED services to be
     `valid`. Optional services (CivitAI) never gate `ready` but are surfaced
     for the wizard UI to render the yellow recommended banner.
@@ -317,15 +486,40 @@ def quickstart_preset() -> JSONResponse:
 
 @router.get("/api/wizard/comfygen/tiers")
 def tiers() -> JSONResponse:
-    return JSONResponse({
-        "tiers": [{"id": tier_id, **spec} for tier_id, spec in TIERS.items()],
-    })
+    api_key = settings_store.get_credential("runpod_api_key")
+    if not api_key:
+        return JSONResponse({
+            "source": "unavailable",
+            "error": "runpod_api_key not configured",
+            "tiers": [],
+        })
+    try:
+        options = _recommend_deploy_options(
+            runpod_api.list_gpu_types_for_deploy(api_key),
+            runpod_api.list_datacenters(api_key),
+        )
+    except runpod_api.RunPodAPIError as exc:
+        return JSONResponse({
+            "source": "unavailable",
+            "error": str(exc),
+            "tiers": [],
+        })
+    if not options:
+        return JSONResponse({
+            "source": "unavailable",
+            "error": "RunPod returned no storage-backed GPU availability",
+            "tiers": [],
+        })
+    return JSONResponse({"source": "live", "tiers": options})
 
 
 @router.post("/api/wizard/comfygen/provision")
 def provision(body: ProvisionBody) -> JSONResponse:
-    if body.tier not in TIERS:
-        raise HTTPException(status_code=400, detail=f"unknown tier '{body.tier}'; allowed: {list(TIERS)}")
+    allowed_tiers = {tier["id"] for tier in DEPLOY_TIERS}
+    if body.tier not in allowed_tiers:
+        raise HTTPException(status_code=400, detail=f"unknown tier '{body.tier}'; allowed: {sorted(allowed_tiers)}")
+    if len({body.primary_gpu_id, *body.fallback_gpu_ids}) != 1 + len(body.fallback_gpu_ids):
+        raise HTTPException(status_code=400, detail="duplicate GPU ids are not allowed")
 
     ready, missing = _required_creds_present()
     if not ready:
@@ -335,21 +529,16 @@ def provision(body: ProvisionBody) -> JSONResponse:
         )
 
     # sgs-ui-5nn: backend defense-in-depth gate. Refuse to spawn RunPod
-    # resources unless all required services have a fresh `valid` row.
+    # resources unless all required services have a `valid` row.
     services_ok, problems = _required_services_validated()
     if not services_ok:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"credentials not validated within TTL: {problems} — "
-                "open Settings → Credentials and re-validate before provisioning"
-            ),
+            detail=f"credentials not validated: {problems}",
         )
 
     api_key = settings_store.get_credential("runpod_api_key")
     assert api_key  # ready=True guarantees it
-    tier = TIERS[body.tier]
-
     suffix = _short_id()
     name = body.name or f"blockflow-comfygen-{suffix}"
     template_name = f"{name}-template-{suffix}"
@@ -360,7 +549,7 @@ def provision(body: ProvisionBody) -> JSONResponse:
             api_key,
             name=name,
             size_gb=body.volume_size_gb,
-            datacenter_id=tier["datacenter"],
+            datacenter_id=body.datacenter,
         )
     except runpod_api.RunPodAPIError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -387,7 +576,8 @@ def provision(body: ProvisionBody) -> JSONResponse:
             api_key,
             name=name,
             template_id=template_id,
-            gpu_type_ids=tier["gpu_ids"],
+            gpu_type_ids=[body.primary_gpu_id, *body.fallback_gpu_ids],
+            data_center_ids=[body.datacenter],
             network_volume_id=volume_id,
             workers_min=0,
             workers_max=body.max_workers,
@@ -437,10 +627,7 @@ def attach(body: AttachBody) -> JSONResponse:
     if not services_ok:
         raise HTTPException(
             status_code=400,
-            detail=(
-                f"credentials not validated within TTL: {problems} — "
-                "open Settings → Credentials and re-validate before attaching"
-            ),
+            detail=f"credentials not validated: {problems}",
         )
 
     # Verify the endpoint is reachable + the API key has access to it.

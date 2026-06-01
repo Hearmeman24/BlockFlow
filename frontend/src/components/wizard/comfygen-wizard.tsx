@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 import {
@@ -19,6 +19,7 @@ import {
   type EndpointRecord,
   type InstallProgress,
   type TierId,
+  type WizardDeploymentOption,
   type WizardPreflight,
   type WizardProvisionResult,
   type WizardQuickstartPreset,
@@ -26,6 +27,7 @@ import {
   type WizardTier,
   type WorkerCounts,
 } from '@/lib/settings/client'
+import { classifyInstallErrorKind, isInstallFallbackEligible } from '@/lib/install-error-kind'
 
 type Step =
   | 'preflight'
@@ -65,7 +67,10 @@ export function ComfyGenWizard({ onClose, onSuccess }: Props) {
   const [revalidating, setRevalidating] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode | null>(null)
   const [tiers, setTiers] = useState<WizardTier[]>([])
+  const [tierLoadError, setTierLoadError] = useState<string | null>(null)
   const [selectedTier, setSelectedTier] = useState<TierId | null>(null)
+  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
+  const [selectedFallbackGpuIds, setSelectedFallbackGpuIds] = useState<string[]>([])
   const [volumeSize, setVolumeSize] = useState<number>(200)
   const [maxWorkers, setMaxWorkers] = useState<number>(3)
   const [provisionResult, setProvisionResult] = useState<WizardProvisionResult | null>(null)
@@ -78,9 +83,10 @@ export function ComfyGenWizard({ onClose, onSuccess }: Props) {
   const [healthWorkers, setHealthWorkers] = useState<WorkerCounts | null>(null)
   const [healthElapsed, setHealthElapsed] = useState(0)
   const [healthError, setHealthError] = useState<string | null>(null)
+  const [provisionCredentialCheckNeeded, setProvisionCredentialCheckNeeded] = useState(false)
 
   // Preflight on mount + after revalidation. Auto-advance to 'mode' if
-  // all required validations are already valid + fresh — most return visits
+  // all required validations are already valid — most return visits
   // hit this fast path.
   const refreshPreflight = async () => {
     try {
@@ -148,19 +154,32 @@ export function ComfyGenWizard({ onClose, onSuccess }: Props) {
   }, [step, provisionResult])
 
   const handleProvision = async () => {
-    if (!selectedTier) return
+    const tier = tiers.find((t) => t.id === selectedTier)
+    const option = tier?.deployment_options.find((o) => o.id === selectedOptionId)
+    if (!tier || !option) return
     setProvisioning(true)
     setProvisionError(null)
+    setProvisionCredentialCheckNeeded(false)
     try {
       const result = await wizardProvision({
-        tier: selectedTier,
+        tier: tier.id,
+        datacenter: option.datacenter,
+        primary_gpu_id: option.primary.gpu_type_id,
+        fallback_gpu_ids: selectedFallbackGpuIds,
         volume_size_gb: volumeSize,
         max_workers: maxWorkers,
       })
       setProvisionResult(result)
       setStep('health')
     } catch (err) {
-      setProvisionError(err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      if (isCredentialValidationError(message)) {
+        setProvisionCredentialCheckNeeded(true)
+        setProvisionError('Credential validation is needed before provisioning. Check the required services here, then retry provisioning.')
+        await refreshPreflight()
+      } else {
+        setProvisionError(message)
+      }
     } finally {
       setProvisioning(false)
     }
@@ -244,9 +263,35 @@ export function ComfyGenWizard({ onClose, onSuccess }: Props) {
           {step === 'tier' && (
             <TierView
               tiers={tiers.length === 0 ? [] : tiers}
-              loadTiers={async () => setTiers(await wizardTiers().catch(() => []))}
+              loadTiers={async () => {
+                try {
+                  setTiers(await wizardTiers())
+                  setTierLoadError(null)
+                } catch (err) {
+                  setTiers([])
+                  setTierLoadError(err instanceof Error ? err.message : String(err))
+                }
+              }}
+              loadError={tierLoadError}
               selected={selectedTier}
-              onSelect={setSelectedTier}
+              selectedOptionId={selectedOptionId}
+              selectedFallbackGpuIds={selectedFallbackGpuIds}
+              onSelect={(id) => {
+                setSelectedTier(id)
+                setSelectedOptionId(null)
+                setSelectedFallbackGpuIds([])
+              }}
+              onSelectOption={(id) => {
+                setSelectedOptionId(id)
+                setSelectedFallbackGpuIds([])
+              }}
+              onToggleFallback={(gpuId) => {
+                setSelectedFallbackGpuIds((prev) => (
+                  prev.includes(gpuId)
+                    ? prev.filter((id) => id !== gpuId)
+                    : [...prev, gpuId]
+                ))
+              }}
               onNext={() => setStep('config')}
             />
           )}
@@ -260,6 +305,13 @@ export function ComfyGenWizard({ onClose, onSuccess }: Props) {
               onProvision={handleProvision}
               provisioning={provisioning}
               provisionError={provisionError}
+              credentialCheckNeeded={provisionCredentialCheckNeeded}
+              preflight={preflight}
+              revalidating={revalidating}
+              onRevalidate={handleRevalidate}
+              selectedTier={tiers.find((t) => t.id === selectedTier) ?? null}
+              selectedOption={tiers.find((t) => t.id === selectedTier)?.deployment_options.find((o) => o.id === selectedOptionId) ?? null}
+              selectedFallbackGpuIds={selectedFallbackGpuIds}
             />
           )}
 
@@ -362,6 +414,13 @@ function PreflightView({
   // Defensive: tests / older backends may return a preflight body without
   // `services`. Treat that as all services unvalidated.
   const services = preflight.services ?? {}
+  const shouldShowCredentialFields = !preflight.ready && (
+    preflight.missing.length > 0 ||
+    REQUIRED_SERVICES.some(({ service }) => {
+      const status = services[service]?.status
+      return status === 'credentials_missing' || status === 'invalid'
+    })
+  )
 
   return (
     <div className="space-y-4">
@@ -370,7 +429,7 @@ function PreflightView({
         waste minutes on a failing RunPod call.
       </p>
 
-      {!preflight.ready && (
+      {shouldShowCredentialFields && (
         <div className="rounded-md border border-border/60 bg-muted/20 p-3 space-y-3">
           <div>
             <div className="text-sm font-medium">Add setup credentials</div>
@@ -483,6 +542,11 @@ function ServiceRow({
 }) {
   const status = state?.status ?? 'unvalidated'
   const indicator = STATUS_INDICATOR[status]
+  const actionLabel = revalidating
+    ? 'Checking…'
+    : status === 'valid' || status === 'stale'
+      ? 'Re-check'
+      : 'Validate'
   return (
     <li className="flex items-center justify-between gap-3 p-3 rounded border border-border">
       <div className="flex items-center gap-3 min-w-0">
@@ -506,7 +570,7 @@ function ServiceRow({
         }
         className="px-2 py-1 text-xs rounded border border-border hover:bg-accent/50 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
       >
-        {revalidating ? 'Checking…' : status === 'valid' ? 'Re-check' : 'Validate'}
+        {actionLabel}
       </button>
     </li>
   )
@@ -523,7 +587,7 @@ const STATUS_INDICATOR: Record<WizardServiceState['status'], { icon: string; col
 const STATUS_DESCRIPTION: Record<WizardServiceState['status'], string> = {
   valid: 'Validated',
   unvalidated: 'Not yet validated — click Validate',
-  stale: 'Validation expired (10 min) — re-check',
+  stale: 'Previously validated — re-check available',
   invalid: 'Validation failed',
   credentials_missing: 'Credential missing — open Settings → Credentials',
 }
@@ -569,58 +633,241 @@ function CivitaiBanner({
   )
 }
 
+function formatGpuPrice(price: number | null): string {
+  return typeof price === 'number' ? `$${price.toFixed(2)}/hr` : 'price unknown'
+}
+
+function formatCheckedAt(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function formatTargetLabel(tier: WizardTier): string {
+  return tier.target_label ?? `${tier.target_vram_gb}GB`
+}
+
+function isCredentialValidationError(message: string): boolean {
+  return message.includes('credentials not validated')
+}
+
 function TierView({
   tiers,
   loadTiers,
+  loadError,
   selected,
+  selectedOptionId,
+  selectedFallbackGpuIds,
   onSelect,
+  onSelectOption,
+  onToggleFallback,
   onNext,
 }: {
   tiers: WizardTier[]
   loadTiers: () => Promise<void>
+  loadError: string | null
   selected: TierId | null
+  selectedOptionId: string | null
+  selectedFallbackGpuIds: string[]
   onSelect: (id: TierId) => void
+  onSelectOption: (id: string) => void
+  onToggleFallback: (gpuId: string) => void
   onNext: () => void
 }) {
   useEffect(() => {
     if (tiers.length === 0) loadTiers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+  const selectedTier = tiers.find((t) => t.id === selected) ?? null
+  const selectedOption = selectedTier?.deployment_options.find((o) => o.id === selectedOptionId) ?? null
+  const selectedFallbacks = selectedOption
+    ? selectedOption.fallback_candidates.filter((g) => selectedFallbackGpuIds.includes(g.gpu_type_id))
+    : []
+  const selectedGpus = selectedOption ? [selectedOption.primary, ...selectedFallbacks] : []
+  const selectedPrices = selectedGpus
+    .map((g) => g.price_per_hr)
+    .filter((price): price is number => typeof price === 'number')
+  const maxSelectedPrice = selectedPrices.length > 0 ? Math.max(...selectedPrices) : null
   return (
     <div className="space-y-3">
-      <p className="text-sm text-muted-foreground">Pick a GPU tier:</p>
-      <div className="space-y-2">
-        {tiers.map((t) => (
-          <label
-            key={t.id}
-            className={`flex items-start gap-3 p-3 rounded border cursor-pointer ${
-              selected === t.id ? 'border-primary bg-primary/5' : 'border-border'
-            }`}
-          >
-            <input
-              type="radio"
-              name="tier"
-              value={t.id}
-              checked={selected === t.id}
-              onChange={() => onSelect(t.id)}
-              aria-label={t.name}
-              className="mt-0.5"
-            />
-            <div className="text-sm">
-              <div className="font-medium">{t.name}</div>
-              <div className="text-xs text-muted-foreground">{t.label} · {t.region}</div>
-            </div>
-          </label>
-        ))}
+      <div className="space-y-1">
+        <p className="text-sm text-muted-foreground">Pick a live RunPod deploy recommendation:</p>
+        <p className="text-xs text-muted-foreground">
+          Stock is a live signal, not a reservation. Fallback GPUs stay off until you select them.
+        </p>
       </div>
-      <button
-        type="button"
-        onClick={onNext}
-        disabled={!selected}
-        className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50"
+      <div className="space-y-2">
+        {loadError && (
+          <div className="rounded border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+            Could not load live RunPod recommendations: {loadError}
+          </div>
+        )}
+        {!loadError && tiers.length === 0 && (
+          <div className="rounded border border-border/60 p-3 text-xs text-muted-foreground">
+            Loading live RunPod recommendations…
+          </div>
+        )}
+        {tiers.map((t) => {
+          const optionLabel = `${t.option_count} deployment option${t.option_count === 1 ? '' : 's'}`
+          return (
+            <div
+              key={t.id}
+              className={`space-y-3 p-3 rounded border ${
+                selected === t.id ? 'border-primary bg-primary/5' : 'border-border'
+              }`}
+            >
+              <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="radio"
+                name="tier"
+                value={t.id}
+                checked={selected === t.id}
+                onChange={() => onSelect(t.id)}
+                aria-label={t.name}
+                className="mt-0.5"
+              />
+              <div className="min-w-0 flex-1 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{t.name}</span>
+                  <span className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                    {formatTargetLabel(t)} target
+                  </span>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {optionLabel} · {t.gpu_family_count} GPU family{t.gpu_family_count === 1 ? '' : 'ies'}
+                </div>
+                <div className="mt-1 text-xs">
+                  From {formatGpuPrice(t.min_price_per_hr)} · checked {formatCheckedAt(t.checked_at)}
+                </div>
+              </div>
+            </label>
+
+            {selected === t.id && (
+              <div className="space-y-3 border-t border-border/60 pt-3 text-xs">
+                <div className="space-y-2">
+                  <div className="font-medium">Deployment options</div>
+                  {t.deployment_options.map((option) => {
+                    const optionSelected = selectedOptionId === option.id
+                    return (
+                      <Fragment key={option.id}>
+                        <label
+                          className={`flex items-start gap-2 rounded border p-2 cursor-pointer ${
+                            optionSelected ? 'border-primary bg-primary/10' : 'border-border/60'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="deployment-option"
+                            className="mt-0.5"
+                            checked={optionSelected}
+                            onChange={() => onSelectOption(option.id)}
+                            aria-label={`Use ${option.primary.display_name} in ${option.datacenter}`}
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block font-medium">
+                              {option.primary.display_name} · {option.primary.memory_gb}GB · {option.region} · {option.datacenter}
+                            </span>
+                            <span className="mt-1 block text-muted-foreground">
+                              Primary: {formatGpuPrice(option.primary.price_per_hr)} · {option.primary.stock} stock
+                              {option.fallback_candidates.length > 0 ? ` · ${option.fallback_candidates.length} optional fallback${option.fallback_candidates.length === 1 ? '' : 's'}` : ''}
+                            </span>
+                          </span>
+                        </label>
+
+                        {optionSelected && selectedOption && (
+                          <div className="ml-6 space-y-3 rounded border border-primary/30 bg-background/60 p-3">
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              <div className="rounded border border-border/60 p-2">
+                                <div className="font-medium">RunPod priority order</div>
+                                <ol className="mt-1 list-decimal space-y-1 pl-4 text-muted-foreground">
+                                  <li>{selectedOption.primary.display_name} ({selectedOption.primary.memory_gb}GB)</li>
+                                  {selectedFallbacks.map((gpu) => (
+                                    <li key={gpu.gpu_type_id}>{gpu.display_name} ({gpu.memory_gb}GB)</li>
+                                  ))}
+                                </ol>
+                              </div>
+                              <div className="rounded border border-border/60 p-2">
+                                <div className="font-medium">Selected GPU cost ceiling</div>
+                                <div className="mt-1 text-muted-foreground">{formatGpuPrice(maxSelectedPrice)}</div>
+                                <div className="mt-1 text-muted-foreground">Checked {formatCheckedAt(selectedOption.checked_at)}</div>
+                              </div>
+                            </div>
+
+                            {selectedOption.reasons.length > 0 && (
+                              <div className="flex flex-wrap gap-1.5">
+                                {selectedOption.reasons.map((reason) => (
+                                  <span key={reason} className="rounded border border-border/60 px-2 py-1 text-muted-foreground">
+                                    {reason}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+
+                            <div className="space-y-2">
+                              <div className="font-medium">Optional fallback GPUs</div>
+                              {selectedOption.fallback_candidates.length > 0 ? (
+                                selectedOption.fallback_candidates.map((gpu) => (
+                                  <label key={gpu.gpu_type_id} className="flex items-start gap-2 rounded border border-border/60 p-2">
+                                    <input
+                                      type="checkbox"
+                                      className="mt-0.5"
+                                      checked={selectedFallbackGpuIds.includes(gpu.gpu_type_id)}
+                                      onChange={() => onToggleFallback(gpu.gpu_type_id)}
+                                      aria-label={`Use fallback ${gpu.display_name}`}
+                                    />
+                                    <span className="min-w-0 flex-1">
+                                      <span className="block">
+                                        {gpu.display_name} · {gpu.memory_gb}GB · {formatGpuPrice(gpu.price_per_hr)} · {gpu.stock} stock
+                                      </span>
+                                      {gpu.warnings.length > 0 && (
+                                        <span className="mt-1 block text-amber-300">{gpu.warnings.join(' ')}</span>
+                                      )}
+                                    </span>
+                                  </label>
+                                ))
+                              ) : (
+                                <div className="rounded border border-border/60 bg-muted/20 p-2 text-muted-foreground">
+                                  No same-datacenter fallback GPU with concrete stock is available for {selectedOption.datacenter}.
+                                </div>
+                              )}
+                            </div>
+
+                            <p className="text-muted-foreground">
+                              Manual override: choose a different recommendation or customize volume and worker counts next.
+                              Starter preset install will reuse this endpoint and volume after provisioning.
+                            </p>
+                          </div>
+                        )}
+                      </Fragment>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+          )
+        })}
+      </div>
+      <div
+        data-testid="deployment-action-bar"
+        className="sticky bottom-0 z-10 -mx-1 border-t border-border/60 bg-card/95 px-1 pb-1 pt-3 backdrop-blur supports-[backdrop-filter]:bg-card/85"
       >
-        Next
-      </button>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onNext}
+            disabled={!selected || !selectedOption}
+            className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Customize deploy settings
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -633,6 +880,13 @@ function ConfigView({
   onProvision,
   provisioning,
   provisionError,
+  credentialCheckNeeded,
+  preflight,
+  revalidating,
+  onRevalidate,
+  selectedTier,
+  selectedOption,
+  selectedFallbackGpuIds,
 }: {
   volumeSize: number
   maxWorkers: number
@@ -641,9 +895,29 @@ function ConfigView({
   onProvision: () => void
   provisioning: boolean
   provisionError: string | null
+  credentialCheckNeeded: boolean
+  preflight: WizardPreflight | null
+  revalidating: string | null
+  onRevalidate: (service: string) => void
+  selectedTier: WizardTier | null
+  selectedOption: WizardDeploymentOption | null
+  selectedFallbackGpuIds: string[]
 }) {
+  const selectedFallbacks = selectedOption
+    ? selectedOption.fallback_candidates.filter((g) => selectedFallbackGpuIds.includes(g.gpu_type_id))
+    : []
   return (
     <div className="space-y-3">
+      {selectedTier && selectedOption && (
+        <div className="rounded border border-border/60 bg-muted/20 p-3 text-xs">
+          <div className="font-medium">Deploying {selectedTier.name}</div>
+          <div className="mt-1 text-muted-foreground">
+            {selectedOption.datacenter} · primary {selectedOption.primary.display_name}
+            {selectedFallbacks.length > 0 ? ` · fallbacks ${selectedFallbacks.map((g) => g.display_name).join(', ')}` : ' · no fallback GPUs selected'}
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-1">
         <label htmlFor="vol-size" className="text-sm">Volume size (GB)</label>
         <input
@@ -685,7 +959,17 @@ function ConfigView({
         {provisioning ? 'Provisioning…' : 'Provision'}
       </button>
 
-      {provisionError && (
+      {credentialCheckNeeded && (
+        <CredentialRecheckPanel
+          preflight={preflight}
+          revalidating={revalidating}
+          onRevalidate={onRevalidate}
+          onRetry={onProvision}
+          retrying={provisioning}
+        />
+      )}
+
+      {provisionError && !credentialCheckNeeded && (
         <div className="space-y-2">
           <p className="text-xs text-destructive">{provisionError}</p>
           <button
@@ -697,6 +981,66 @@ function ConfigView({
           </button>
         </div>
       )}
+    </div>
+  )
+}
+
+function CredentialRecheckPanel({
+  preflight,
+  revalidating,
+  onRevalidate,
+  onRetry,
+  retrying,
+}: {
+  preflight: WizardPreflight | null
+  revalidating: string | null
+  onRevalidate: (service: string) => void
+  onRetry: () => void
+  retrying: boolean
+}) {
+  const services = preflight?.services ?? {}
+  return (
+    <div className="space-y-3 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+      <div>
+        <div className="font-medium text-amber-100">Credential validation needed</div>
+        <p className="mt-1 text-muted-foreground">
+          Re-check the required services here. Your GPU, datacenter, fallback,
+          volume, and worker selections are preserved.
+        </p>
+      </div>
+
+      {preflight?.ready ? (
+        <div className="rounded border border-emerald-500/40 bg-emerald-500/10 p-2 text-emerald-200">
+          Credentials are validated. Retry provisioning when you are ready.
+        </div>
+      ) : preflight ? (
+        <ul className="space-y-2">
+          {REQUIRED_SERVICES.map(({ service, label }) => (
+            <ServiceRow
+              key={service}
+              service={service}
+              label={label}
+              state={services[service]}
+              revalidating={revalidating === service}
+              onRevalidate={() => onRevalidate(service)}
+              required
+            />
+          ))}
+        </ul>
+      ) : (
+        <div className="rounded border border-border/60 bg-muted/20 p-2 text-muted-foreground">
+          Refreshing credential status…
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={retrying || !preflight?.ready}
+        className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {retrying ? 'Provisioning…' : 'Retry provisioning'}
+      </button>
     </div>
   )
 }
@@ -829,9 +1173,11 @@ function PresetOnboardingView({
 }) {
   const [preset, setPreset] = useState<WizardQuickstartPreset | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [installActionError, setInstallActionError] = useState<string | null>(null)
   const [installing, setInstalling] = useState(false)
   const [progress, setProgress] = useState<InstallProgress | null>(null)
-  const [supplyPrompt, setSupplyPrompt] = useState(false)
+  const [fallbackPrompt, setFallbackPrompt] = useState(false)
+  const [requestedInstallMode, setRequestedInstallMode] = useState<'cpu' | 'gpu'>('cpu')
 
   // Pick the quickstart preset on mount.
   useEffect(() => {
@@ -849,10 +1195,11 @@ function PresetOnboardingView({
         const p = await getInstallProgress()
         if (cancelled) return
         setProgress(p)
-        // sgs-ui-wx0: CPU pod out of capacity. Pause + ask the user before
-        // retrying via GPU fallback. We DON'T auto-retry — Q8 of the grill.
-        if (p.state === 'error' && p.error_kind === 'supply_constraint') {
-          setSupplyPrompt(true)
+        const kind = p.state === 'error'
+          ? (p.error_kind ?? classifyInstallErrorKind(p.error))
+          : null
+        if (p.state === 'error' && isInstallFallbackEligible(kind)) {
+          setFallbackPrompt(true)
           setInstalling(false)
         } else if (p.state === 'completed') {
           setInstalling(false)
@@ -874,14 +1221,45 @@ function PresetOnboardingView({
 
   const startInstall = async (mode: 'cpu' | 'gpu') => {
     if (!preset) return
-    setSupplyPrompt(false)
+    setRequestedInstallMode(mode)
+    setFallbackPrompt(false)
+    setInstallActionError(null)
+    try {
+      const current = await getInstallProgress()
+      const active = current.state === 'queued' || current.state === 'running' || current.state === 'cancelling'
+      if (active) {
+        setProgress(current)
+        setRequestedInstallMode(current.install_mode ?? mode)
+        if (current.preset_id === preset.preset_id) {
+          setInstalling(true)
+        } else {
+          setInstalling(false)
+          setInstallActionError(`Another install is in progress: ${current.preset_id ?? 'unknown preset'}`)
+        }
+        return
+      }
+    } catch {
+      // Progress is best-effort; if the snapshot fetch fails, try starting.
+    }
     setProgress(null)
     setInstalling(true)
     try {
       await installPreset(preset.preset_id, { mode })
     } catch (err) {
+      try {
+        const current = await getInstallProgress()
+        const active = current.state === 'queued' || current.state === 'running' || current.state === 'cancelling'
+        if (active && current.preset_id === preset.preset_id) {
+          setProgress(current)
+          setRequestedInstallMode(current.install_mode ?? mode)
+          setInstalling(true)
+          return
+        }
+      } catch {
+        // Keep the original POST error below.
+      }
       setInstalling(false)
-      setLoadError(err instanceof Error ? err.message : String(err))
+      setInstallActionError(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -912,16 +1290,31 @@ function PresetOnboardingView({
     return <div className="text-sm text-muted-foreground">Picking a starter preset…</div>
   }
 
-  if (supplyPrompt) {
+  const errorKind = progress?.state === 'error'
+    ? (progress.error_kind ?? classifyInstallErrorKind(progress.error))
+    : null
+  const isSupplyConstraint = errorKind === 'supply_constraint'
+  const fallbackEligible = isInstallFallbackEligible(errorKind)
+
+  if (fallbackPrompt && fallbackEligible) {
     return (
       <div className="space-y-3">
-        <div className="text-sm font-medium">CPU installer pods are unavailable</div>
+        <div className="text-sm font-medium">
+          {isSupplyConstraint ? 'CPU installer pods are unavailable' : 'CPU installer pod failed'}
+        </div>
         <p className="text-xs text-muted-foreground">
-          RunPod is out of CPU pod capacity right now. We can instead download
-          using your ComfyGen GPU endpoint — same end result, but the worker
-          spins up at GPU rates while downloading (~$1–2 for a one-time install).
+          {isSupplyConstraint
+            ? 'RunPod is out of CPU pod capacity right now. We can instead download using your ComfyGen GPU endpoint — same end result, but the worker spins up at GPU rates while downloading (~$1–2 for a one-time install).'
+            : 'RunPod stopped the CPU installer pod before downloads started. You can retry CPU, or download using your ComfyGen GPU endpoint — same end result, but the worker spins up at GPU rates while downloading (~$1–2 for a one-time install).'}
         </p>
         <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => startInstall('cpu')}
+            className="px-3 py-1.5 text-xs rounded border border-border"
+          >
+            Retry CPU
+          </button>
           <button
             type="button"
             onClick={() => startInstall('gpu')}
@@ -931,12 +1324,19 @@ function PresetOnboardingView({
           </button>
           <button
             type="button"
-            onClick={() => setSupplyPrompt(false)}
+            onClick={() => setFallbackPrompt(false)}
             className="px-3 py-1.5 text-xs rounded border border-border"
           >
             Cancel
           </button>
         </div>
+        {progress?.error && (
+          <details className="text-[10px]">
+            <summary className="cursor-pointer text-muted-foreground">Show raw error</summary>
+            <p className="mt-1 text-destructive whitespace-pre-wrap">{progress.error}</p>
+          </details>
+        )}
+        {installActionError && <p className="text-xs text-destructive">{installActionError}</p>}
       </div>
     )
   }
@@ -944,13 +1344,13 @@ function PresetOnboardingView({
   if (installing) {
     const filesDone = progress?.files_done ?? 0
     const filesTotal = progress?.files_total ?? 0
-    const mode = progress?.install_mode ?? 'cpu'
+    const mode = progress?.install_mode ?? requestedInstallMode
     return (
       <div className="space-y-3">
         <div className="text-sm font-medium">Installing {preset.name}…</div>
         <p className="text-xs text-muted-foreground">
           {mode === 'gpu'
-            ? 'Downloading via your ComfyGen GPU endpoint (CPU fallback).'
+            ? 'Downloading via your ComfyGen GPU endpoint.'
             : 'Downloading via a CPU installer pod (~$0.06/hr).'}
         </p>
         <div className="text-xs font-mono">
@@ -963,11 +1363,12 @@ function PresetOnboardingView({
         >
           Cancel install
         </button>
+        {installActionError && <p className="text-xs text-destructive">{installActionError}</p>}
       </div>
     )
   }
 
-  if (progress?.state === 'error' && progress.error_kind !== 'supply_constraint') {
+  if (progress?.state === 'error' && !fallbackEligible) {
     return (
       <div className="space-y-3">
         <div className="text-sm text-destructive">Install failed: {progress.error}</div>
@@ -987,6 +1388,7 @@ function PresetOnboardingView({
             Skip to generate
           </button>
         </div>
+        {installActionError && <p className="text-xs text-destructive">{installActionError}</p>}
       </div>
     )
   }

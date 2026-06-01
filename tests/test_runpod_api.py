@@ -199,6 +199,7 @@ def test_create_endpoint_posts_to_rest_with_full_config(monkeypatch):
         name="blockflow-comfygen",
         template_id="tmpl_abc",
         gpu_type_ids=["NVIDIA RTX 5090"],
+        data_center_ids=["EU-RO-1"],
         network_volume_id="vol_xyz",
         workers_min=0,
         workers_max=3,
@@ -213,6 +214,7 @@ def test_create_endpoint_posts_to_rest_with_full_config(monkeypatch):
     assert body["name"] == "blockflow-comfygen"
     assert body["templateId"] == "tmpl_abc"
     assert body["gpuTypeIds"] == ["NVIDIA RTX 5090"]
+    assert body["dataCenterIds"] == ["EU-RO-1"]
     assert body["networkVolumeId"] == "vol_xyz"
     assert body["workersMin"] == 0
     assert body["workersMax"] == 3

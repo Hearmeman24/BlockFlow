@@ -166,7 +166,8 @@ export async function validateService(service: string): Promise<ValidationResult
 }
 
 // Read-only gating status for a service, derived from the cached verdict (no
-// live network call). Mirrors the backend `service_status` state machine.
+// live network call). `stale` is retained for compatibility with old API
+// responses, but the current backend does not expire successful validations.
 export type ValidationStatus = 'valid' | 'unvalidated' | 'stale' | 'invalid' | 'credentials_missing'
 
 export type ValidationStatusResult = {
@@ -183,20 +184,48 @@ export async function getValidationStatus(service: string): Promise<ValidationSt
 
 // === wizard (ComfyGen) ======================================================
 
-export type TierId = 'budget' | 'recommended' | 'performance'
+export type TierId = 'minimum_viable' | 'starter' | 'recommended' | 'best'
 
-export type WizardTier = {
-  id: TierId
-  name: string
+export type WizardGpuOption = {
+  gpu_type_id: string
+  display_name: string
+  memory_gb: number
+  price_per_hr: number | null
+  stock: string
+  warnings: string[]
+}
+
+export type WizardDeploymentOption = {
+  id: string
   gpu_ids: string[]
   datacenter: string
   label: string
   region: string
+  primary: WizardGpuOption
+  fallback_candidates: WizardGpuOption[]
+  reasons: string[]
+  warnings: string[]
+  checked_at: string
+  source?: 'live' | 'unavailable' | string
+}
+
+export type WizardTier = {
+  id: TierId
+  name: string
+  target_vram_gb: number
+  target_label?: string
+  deployment_options: WizardDeploymentOption[]
+  option_count: number
+  gpu_family_count: number
+  min_price_per_hr: number | null
+  checked_at: string
+  source?: 'live' | 'unavailable' | string
 }
 
 export type WizardServiceStatus =
   | 'valid'
   | 'unvalidated'
+  // Legacy only: successful validations no longer expire by age.
   | 'stale'
   | 'invalid'
   | 'credentials_missing'
@@ -226,7 +255,10 @@ export type WizardQuickstartPreset = {
 }
 
 export type WizardProvisionInput = {
-  tier?: TierId
+  tier: TierId
+  datacenter: string
+  primary_gpu_id: string
+  fallback_gpu_ids?: string[]
   volume_size_gb?: number
   max_workers?: number
   name?: string
@@ -278,6 +310,9 @@ export async function wizardTiers(): Promise<WizardTier[]> {
   const res = await fetch('/api/wizard/comfygen/tiers', { method: 'GET' })
   await _throwIfNonOk(res)
   const body = await res.json()
+  if (body.error && (!Array.isArray(body.tiers) || body.tiers.length === 0)) {
+    throw new Error(String(body.error))
+  }
   return body.tiers as WizardTier[]
 }
 
@@ -346,7 +381,7 @@ export type PresetManifestEntry = {
   comfygen_min_version: string
   tags?: string[]
   disk_size_estimate_gb: number
-  gpu_tier_hint?: 'budget' | 'recommended' | 'performance' | string
+  gpu_tier_hint?: string
   preset_url: string
 }
 
@@ -499,10 +534,10 @@ export type InstallProgress = {
   pod_id?: string | null
   // Rolling tail of the subprocess's stderr (~30 lines).
   log_tail?: string
-  // sgs-ui-wx0: classified terminal-failure mode. 'supply_constraint'
-  // gets the friendly retry + GPU-fallback card variant; everything
-  // else surfaces the raw error text.
-  error_kind?: 'supply_constraint' | 'unknown' | null
+  // Classified terminal-failure mode. Some CPU-installer failures are
+  // fallback-eligible and get a GPU fallback action; everything else
+  // surfaces the raw error text.
+  error_kind?: 'supply_constraint' | 'installer_pod_failed' | 'unknown' | null
   // sgs-ui-wx0: 'cpu' (install-preset CLI) or 'gpu' (pre-8ww fallback).
   install_mode?: 'cpu' | 'gpu' | null
   // sgs-ui-5k7: milestone phase, narrower than `state`. Drives the install

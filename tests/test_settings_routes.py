@@ -276,9 +276,9 @@ def test_credentials_endpoints_prefs_are_isolated_namespaces(client):
 
 # === GET validation status (sgs-ui storage R2 gating) =======================
 # The Storage tab needs to read the *cached* validation verdict for a service
-# WITHOUT running a live (slow, network) validation. GET mirrors the wizard's
-# _service_status state machine: credentials_missing | unvalidated | stale |
-# invalid | valid, with the same 10-minute freshness TTL.
+# WITHOUT running a live (slow, network) validation. A successful validation
+# stays valid until an underlying credential value changes or a real provider
+# auth failure records an invalid verdict.
 
 def _stamp_r2_validation(ok: bool, *, age_seconds: int = 0, error=None):
     from datetime import datetime, timedelta, timezone
@@ -309,7 +309,7 @@ def test_validation_status_unvalidated_when_creds_present_no_verdict(client):
     assert r.json()["status"] == "unvalidated"
 
 
-def test_validation_status_valid_when_fresh_ok(client):
+def test_validation_status_valid_when_ok(client):
     _configure_r2()
     _stamp_r2_validation(True, age_seconds=0)
     body = client.get("/api/settings/validate/r2").json()
@@ -317,10 +317,10 @@ def test_validation_status_valid_when_fresh_ok(client):
     assert body["validated_at"]
 
 
-def test_validation_status_stale_when_ok_but_old(client):
+def test_validation_status_valid_when_ok_even_if_old(client):
     _configure_r2()
     _stamp_r2_validation(True, age_seconds=601)
-    assert client.get("/api/settings/validate/r2").json()["status"] == "stale"
+    assert client.get("/api/settings/validate/r2").json()["status"] == "valid"
 
 
 def test_validation_status_invalid_surfaces_error(client):

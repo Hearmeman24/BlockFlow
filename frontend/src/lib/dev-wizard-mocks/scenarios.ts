@@ -8,6 +8,7 @@
  */
 
 export type Scenario =
+  | 'live-backend'
   | 'happy-path'
   | 'preflight-red-all-missing'
   | 'preflight-red-invalid-runpod'
@@ -16,6 +17,7 @@ export type Scenario =
   | 'supply-constraint'
 
 export const SCENARIO_LABELS: Record<Scenario, string> = {
+  'live-backend': 'Live backend — real Settings, RunPod, R2, and preset registry',
   'happy-path': 'Happy path — green preflight, success through Step 8',
   'preflight-red-all-missing': 'Preflight red — all required creds missing',
   'preflight-red-invalid-runpod': 'Preflight red — invalid RunPod key',
@@ -40,9 +42,127 @@ function nowIso(): string {
 // === shared payloads =======================================================
 
 const TIERS = [
-  { id: 'budget', name: 'Budget', gpu_ids: ['NVIDIA GeForce RTX 5090'], datacenter: 'EU-RO-1', label: 'RTX 5090 (32GB)', region: 'Europe — Romania' },
-  { id: 'recommended', name: 'Recommended', gpu_ids: ['NVIDIA RTX PRO 6000 Blackwell Server Edition'], datacenter: 'EUR-IS-1', label: 'RTX PRO 6000', region: 'Europe — Iceland' },
-  { id: 'performance', name: 'Performance', gpu_ids: ['NVIDIA H100 NVL'], datacenter: 'US-KS-2', label: 'H100 NVL', region: 'US — Kansas' },
+  {
+    id: 'minimum_viable',
+    name: 'Minimum viable',
+    target_vram_gb: 32,
+    target_label: '32GB',
+    deployment_options: [
+      {
+        id: 'EUR-IS-1:NVIDIA GeForce RTX 5090',
+        gpu_ids: ['NVIDIA GeForce RTX 5090'],
+        datacenter: 'EUR-IS-1',
+        label: 'RTX 5090 (32GB)',
+        region: 'EUROPE',
+        primary: { gpu_type_id: 'NVIDIA GeForce RTX 5090', display_name: 'RTX 5090', memory_gb: 32, price_per_hr: 0.99, stock: 'Low', warnings: [] },
+        fallback_candidates: [],
+        reasons: ['32GB primary GPU in a network-volume datacenter.', 'RunPod reports Low stock; availability is not guaranteed until a worker starts.'],
+        warnings: ['Optional fallback GPUs are not selected automatically.'],
+        checked_at: nowIso(),
+        source: 'live',
+      },
+    ],
+    option_count: 1,
+    gpu_family_count: 1,
+    min_price_per_hr: 0.99,
+    checked_at: nowIso(),
+    source: 'live',
+  },
+  {
+    id: 'starter',
+    name: 'Starter',
+    target_vram_gb: 48,
+    target_label: '48GB',
+    deployment_options: [
+      {
+        id: 'EU-NL-1:NVIDIA L40S',
+        gpu_ids: ['NVIDIA L40S'],
+        datacenter: 'EU-NL-1',
+        label: 'L40S (48GB)',
+        region: 'EUROPE',
+        primary: { gpu_type_id: 'NVIDIA L40S', display_name: 'L40S', memory_gb: 48, price_per_hr: 0.86, stock: 'Low', warnings: [] },
+        fallback_candidates: [],
+        reasons: ['48GB primary GPU in a network-volume datacenter.', 'RunPod reports Low stock; availability is not guaranteed until a worker starts.'],
+        warnings: ['Optional fallback GPUs are not selected automatically.'],
+        checked_at: nowIso(),
+        source: 'live',
+      },
+      {
+        id: 'US-WA-1:NVIDIA RTX 6000 Ada Generation',
+        gpu_ids: ['NVIDIA RTX 6000 Ada Generation'],
+        datacenter: 'US-WA-1',
+        label: 'RTX 6000 Ada (48GB)',
+        region: 'NORTH_AMERICA',
+        primary: { gpu_type_id: 'NVIDIA RTX 6000 Ada Generation', display_name: 'RTX 6000 Ada', memory_gb: 48, price_per_hr: 0.77, stock: 'Low', warnings: [] },
+        fallback_candidates: [],
+        reasons: ['48GB primary GPU in a network-volume datacenter.', 'RunPod reports Low stock; availability is not guaranteed until a worker starts.'],
+        warnings: ['Optional fallback GPUs are not selected automatically.'],
+        checked_at: nowIso(),
+        source: 'live',
+      },
+    ],
+    option_count: 2,
+    gpu_family_count: 2,
+    min_price_per_hr: 0.77,
+    checked_at: nowIso(),
+    source: 'live',
+  },
+  {
+    id: 'recommended',
+    name: 'Recommended',
+    target_vram_gb: 80,
+    target_label: '80/96GB',
+    deployment_options: [
+      {
+        id: 'CA-MTL-3:NVIDIA H100 PCIe',
+        gpu_ids: ['NVIDIA H100 PCIe'],
+        datacenter: 'CA-MTL-3',
+        label: 'H100 PCIe (80GB)',
+        region: 'NORTH_AMERICA',
+        primary: { gpu_type_id: 'NVIDIA H100 PCIe', display_name: 'H100 PCIe', memory_gb: 80, price_per_hr: 2.89, stock: 'Low', warnings: [] },
+        fallback_candidates: [
+          { gpu_type_id: 'NVIDIA RTX PRO 6000 Blackwell Server Edition', display_name: 'RTX PRO 6000', memory_gb: 96, price_per_hr: 2.09, stock: 'Low', warnings: [] },
+        ],
+        reasons: ['80GB primary GPU in a network-volume datacenter.', 'RunPod reports Low stock; availability is not guaranteed until a worker starts.'],
+        warnings: ['Optional fallback GPUs are not selected automatically.'],
+        checked_at: nowIso(),
+        source: 'live',
+      },
+    ],
+    option_count: 1,
+    gpu_family_count: 2,
+    min_price_per_hr: 2.09,
+    checked_at: nowIso(),
+    source: 'live',
+  },
+  {
+    id: 'best',
+    name: 'Best',
+    target_vram_gb: 96,
+    target_label: '96/141GB',
+    deployment_options: [
+      {
+        id: 'EUR-IS-1:NVIDIA RTX PRO 6000 Blackwell Server Edition',
+        gpu_ids: ['NVIDIA RTX PRO 6000 Blackwell Server Edition'],
+        datacenter: 'EUR-IS-1',
+        label: 'RTX PRO 6000 (96GB)',
+        region: 'EUROPE',
+        primary: { gpu_type_id: 'NVIDIA RTX PRO 6000 Blackwell Server Edition', display_name: 'RTX PRO 6000', memory_gb: 96, price_per_hr: 2.09, stock: 'Medium', warnings: [] },
+        fallback_candidates: [
+          { gpu_type_id: 'NVIDIA H100 NVL', display_name: 'H100 NVL', memory_gb: 94, price_per_hr: 3.19, stock: 'Low', warnings: ['Higher cost than primary ($3.19/hr).', 'Less VRAM than primary; larger workflows may fail.'] },
+        ],
+        reasons: ['96GB primary GPU in a network-volume datacenter.', 'RunPod reports Medium stock; availability is not guaranteed until a worker starts.'],
+        warnings: ['Optional fallback GPUs are not selected automatically.'],
+        checked_at: nowIso(),
+        source: 'live',
+      },
+    ],
+    option_count: 1,
+    gpu_family_count: 1,
+    min_price_per_hr: 2.09,
+    checked_at: nowIso(),
+    source: 'live',
+  },
 ]
 
 const VALID_SERVICES_PREFLIGHT = {
@@ -69,7 +189,7 @@ const PROVISION_OK = {
   template_name: 'blockflow-comfygen-dev-abc',
   volume_id: 'vol_dev_abc',
   name: 'blockflow-comfygen-dev-abc',
-  tier: 'budget',
+  tier: 'minimum_viable',
   status: 'provisioning',
 }
 
@@ -227,6 +347,8 @@ export function buildHandler(scenario: Scenario): Handler {
     supplyConstraintFired: false,
   }
   switch (scenario) {
+    case 'live-backend':
+      return async () => null
     case 'happy-path':
       return happyPathHandler(state)
     case 'preflight-red-all-missing':

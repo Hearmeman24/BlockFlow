@@ -75,7 +75,7 @@ describe('StorageTab', () => {
     })
   })
 
-  test('R2 with a fresh valid verdict shows Verified and enables Save', async () => {
+  test('R2 with a valid verdict shows Verified and enables Save', async () => {
     const user = userEvent.setup()
     vi.mocked(getValidationStatus).mockResolvedValue({
       status: 'valid',
@@ -109,7 +109,7 @@ describe('StorageTab', () => {
     await waitFor(() => expect(save()).toBeEnabled())
   })
 
-  test('R2 stale verdict still blocks Save (fresh validation required)', async () => {
+  test('legacy R2 stale verdict is treated as verified and does not block Save', async () => {
     const user = userEvent.setup()
     vi.mocked(getValidationStatus).mockResolvedValue({
       status: 'stale',
@@ -120,8 +120,9 @@ describe('StorageTab', () => {
 
     await user.click(await screen.findByRole('radio', { name: /private r2 signed urls/i }))
 
-    expect(save()).toBeDisabled()
-    expect(screen.getByRole('button', { name: /validate r2/i })).toBeInTheDocument()
+    expect(await screen.findByText(/r2 verified/i)).toBeInTheDocument()
+    expect(save()).toBeEnabled()
+    expect(screen.queryByRole('button', { name: /validate r2/i })).not.toBeInTheDocument()
   })
 
   test('R2 invalid verdict surfaces the error and blocks Save', async () => {

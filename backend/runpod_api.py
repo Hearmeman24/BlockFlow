@@ -194,6 +194,58 @@ def list_gpu_types(api_key: str) -> list[dict[str, Any]]:
     return data.get("gpuTypes", []) or []
 
 
+def list_gpu_types_for_deploy(api_key: str) -> list[dict[str, Any]]:
+    """Return GPU type metadata used by the ComfyGen deploy recommender."""
+    data = _graphql(api_key, """
+query {
+  gpuTypes {
+    id
+    displayName
+    manufacturer
+    memoryInGb
+    secureCloud
+    communityCloud
+    securePrice
+    communityPrice
+    maxGpuCount
+    maxGpuCountSecureCloud
+    maxGpuCountCommunityCloud
+    minPodGpuCount
+    lowestPrice(input: { gpuCount: 1, secureCloud: true }) {
+      stockStatus
+      uninterruptablePrice
+      minimumBidPrice
+      maxUnreservedGpuCount
+      availableGpuCounts
+    }
+  }
+}
+""".strip())
+    return data.get("gpuTypes", []) or []
+
+
+def list_datacenters(api_key: str) -> list[dict[str, Any]]:
+    """Return datacenter capability + GPU availability metadata."""
+    data = _graphql(api_key, """
+query {
+  dataCenters {
+    id
+    name
+    region
+    storageSupport
+    listed
+    gpuAvailability {
+      gpuTypeId
+      gpuTypeDisplayName
+      stockStatus
+      available
+    }
+  }
+}
+""".strip())
+    return data.get("dataCenters", []) or []
+
+
 # === network volumes ========================================================
 
 def create_network_volume(
@@ -282,6 +334,7 @@ def create_endpoint(
     name: str,
     template_id: str,
     gpu_type_ids: list[str],
+    data_center_ids: list[str] | None = None,
     network_volume_id: str,
     workers_min: int = 0,
     workers_max: int = 3,
@@ -292,6 +345,7 @@ def create_endpoint(
         "name": name,
         "templateId": template_id,
         "gpuTypeIds": gpu_type_ids,
+        **({"dataCenterIds": data_center_ids} if data_center_ids else {}),
         "networkVolumeId": network_volume_id,
         "workersMin": workers_min,
         "workersMax": workers_max,

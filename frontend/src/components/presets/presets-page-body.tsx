@@ -17,7 +17,7 @@ import {
   type PresetManifestEntry,
   type RefreshInstalledSummary,
 } from '@/lib/settings/client'
-import { classifyInstallErrorKind } from '@/lib/install-error-kind'
+import { classifyInstallErrorKind, isInstallFallbackEligible } from '@/lib/install-error-kind'
 import { InstallMilestones } from './install-milestones'
 
 export function PresetsPageBody() {
@@ -114,6 +114,7 @@ export function PresetsPageBody() {
         started_at: result.started_at,
         completed_at: null,
         files_total: result.files_total,
+        install_mode: mode,
         error: null,
       })
     } catch (err) {
@@ -265,10 +266,13 @@ function InstallProgressCard({
       ? (progress.error_kind ?? classifyInstallErrorKind(progress.error))
       : null
   const isSupplyConstraint = errorKind === 'supply_constraint'
+  const isInstallerPodFailed = errorKind === 'installer_pod_failed'
+  const fallbackEligible = isInstallFallbackEligible(errorKind)
 
   const headline =
     progress.state === 'completed' ? '✓ Install complete'
     : isSupplyConstraint            ? '⏳ RunPod is temporarily out of CPU capacity'
+    : isInstallerPodFailed          ? '✗ CPU installer pod failed'
     : progress.state === 'error'   ? '✗ Install failed'
     : progress.state === 'cancelled' ? '⏹ Install cancelled'
     : cancelling                    ? `Cancelling ${progress.preset_id}…`
@@ -335,10 +339,12 @@ function InstallProgressCard({
           {progress.log_tail}
         </pre>
       )}
-      {isSupplyConstraint ? (
+      {fallbackEligible ? (
         <div className="space-y-2">
           <p className="text-xs text-amber-400">
-            Try again in a few minutes — the CPU installer pod pool is exhausted.
+            {isSupplyConstraint
+              ? 'Try again in a few minutes — the CPU installer pod pool is exhausted.'
+              : 'The CPU installer pod failed before downloads started. You can retry CPU, or download through the GPU endpoint instead.'}
           </p>
           <div className="flex gap-2">
             <button

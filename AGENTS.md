@@ -1,94 +1,256 @@
-# sgs-ui
+# sgs-ui / BlockFlow
 
-Local-only pipeline UI for submitting video/image generation jobs to RunPod serverless endpoints.
+Distributed visual pipeline UI for AI image and video generation. BlockFlow runs
+locally for each user, but this repository is a released OSS/npm project rather
+than a private scratch app.
 
 ## Tech Stack
 
 - **Frontend**: Next.js 16, React 19, shadcn/ui, Tailwind CSS (dark theme only)
 - **Backend**: FastAPI, uvicorn
-- **Launch**: `uv run app.py` starts both FastAPI (:8000) and Next.js (:3000)
+- **Launch**: `uv run app.py` starts FastAPI on `:8000` and Next.js on `:3000`
+- **Package**: npm package `@hearmeman24/blockflow`
+
+## Product Model
+
+- BlockFlow is local-first software distributed through npm and GitHub releases.
+- The main backend path is ComfyUI through ComfyGen on RunPod serverless.
+- Direct provider blocks may call providers such as PiAPI, OpenRouter, RunPod,
+  CivitAI, or other hosted services.
+- Users provide their own credentials and pay providers directly.
 
 ## Pipeline System
 
-The `/generate` page uses a linear left-to-right pipeline with a tree branching model.
+The `/generate` page uses a linear left-to-right pipeline with a tree branching
+model.
 
-- **Block** is the canonical term (not node, step, or stage)
-- One global "Run Pipeline" button — no per-block actions
-- Accumulator data model: outputs collected by `PortKind`, resolved as inputs to downstream blocks
-- Execute functions receive fresh `inputs` parameter from the pipeline runner
+- **Block** is the canonical term. Do not call blocks nodes, steps, or stages in
+  user-facing product copy.
+- One global **Run Pipeline** button. Do not add per-block run actions.
+- Accumulator data model: outputs are collected by `PortKind` and resolved as
+  downstream inputs.
+- Execute functions receive fresh `inputs` from the pipeline runner.
+- Execute functions that do async work must honor `AbortSignal` cancellation.
+- Multiple pipeline tabs can run simultaneously; cancellation is tab-scoped.
 
 ## Adding a Block
 
-1. Create `custom_blocks/<slug>/frontend.block.tsx` exporting `blockDef: BlockDef`
-2. Optionally add `custom_blocks/<slug>/backend.block.py` exporting `router: APIRouter`
-3. Registration is automatic via codegen (`npm run predev`)
+1. Create `custom_blocks/<slug>/frontend.block.tsx` exporting `blockDef: BlockDef`.
+2. Optionally add `custom_blocks/<slug>/backend.block.py` exporting
+   `router: APIRouter`.
+3. Registration is automatic through codegen: `npm run predev`.
+
+Block API routes must live under `/api/blocks/<slug>/...`.
 
 ## Block Sizes
 
-sm (280x220, blue), md (360x320, emerald), lg (440x460, violet), huge (540x580, amber)
+- `sm`: 280x220, blue
+- `md`: 360x320, emerald
+- `lg`: 440x460, violet
+- `huge`: 540x580, amber
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
 | `app.py` | Single entrypoint, starts FastAPI + Next.js |
-| `frontend/src/lib/pipeline/` | Registry, types, pipeline-context, tree-utils |
+| `frontend/src/lib/pipeline/` | Registry, types, pipeline context, tree utils |
 | `frontend/src/components/pipeline/` | Pipeline view, block card, chain renderer |
-| `custom_blocks/` | Self-contained block definitions |
+| `custom_blocks/` | Public self-contained block definitions |
+| `private_blocks/` | Gitignored local-only block overlay |
 | `backend/main.py` | FastAPI app, auto-loads block sidecars |
-| `backend/routes.py` | Shared routes: flows + runs only |
+| `backend/routes.py` | Shared routes: flows and runs only |
+| `docs/testing.md` | Testing/TDD standard |
+| `docs/npm-release.md` | npm release flow |
+
+## Beads Issue Tracker
+
+This project uses `bd` (Beads) for task tracking. Use Beads for every code,
+documentation, release, or repo-maintenance change.
+
+Before changing files:
+
+1. Run `bd prime` for the current workflow context.
+2. Create or identify the bead for the work.
+3. Claim it with `bd update <id> --claim`.
+4. Record the plan, scope, or design in the bead for non-trivial changes.
+
+Do not use TodoWrite, TaskCreate, ad hoc markdown TODO lists, or MEMORY.md files
+for project tracking. Use `bd remember` for persistent project knowledge.
+
+Useful commands:
+
+```bash
+bd ready
+bd show <id>
+bd create --title="..." --description="..." --type=task --priority=2
+bd update <id> --claim
+bd close <id> --reason="..."
+bd prime
+```
+
+Issues live in the local Dolt DB and sync through `refs/dolt/data`.
+`.beads/issues.jsonl` is a passive export and is intentionally ignored.
+
+## Branches And Worktrees
+
+- Use a branch/worktree for every non-trivial task.
+- Branch names should include the Bead ID when practical, for example
+  `sgs-ui-abc-short-slug`.
+- Worktrees should live under `.claude/worktrees/<branch>` so the main checkout
+  remains usable.
+- Keep changes scoped to the bead. Do not fold unrelated cleanup into the same
+  branch.
+- Small documentation-only edits may happen in the main checkout when the user
+  explicitly asks for an immediate update.
+
+## Test-Driven Development
+
+TDD is mandatory for production code changes.
+
+No production code without a failing test first:
+
+1. Write the test.
+2. Run it and verify it fails for the expected reason.
+3. Write the minimal implementation.
+4. Run the test and verify it passes.
+5. Refactor only after the test is green.
+
+Tests must assert the behavior produced, not just that a route returns 200 or a
+component renders without throwing.
+
+Examples:
+
+- If an endpoint writes a file, assert the file exists with the right contents.
+- If code updates Settings, DB state, or cache state, assert the new state.
+- If code calls a downstream service, assert the payload and call behavior.
+- If code returns data, assert the fields that matter.
+
+Every non-trivial bead must identify edge cases before implementation:
+
+- empty, missing, malformed, null, or undefined inputs
+- network and external-service failures
+- partial failures in multi-step flows
+- concurrent calls and race conditions
+- boundary values and large inputs
+- Unicode or special characters for user text
+- auth failures
+- cancellation through `AbortSignal`
+
+External-resource tests that require GPU hardware, paid APIs, real provider
+credentials, real worker provisioning, or human visual judgment must be flagged
+for the user before implementation. Default to mocked tests at the external
+boundary; do not mock the logic under test.
+
+## Blast Radius Before Fixing
+
+Before applying a block-specific bug fix, classify the bug:
+
+1. **Local defect**: caused only by this block's implementation.
+2. **Contract defect**: caused by shared pipeline semantics, media refs,
+   settings, credentials, cancellation, artifacts, provider input shape, or
+   generated block patterns.
+3. **Sibling-pattern defect**: this block copied a pattern used by other blocks.
+
+If the issue may be a contract or sibling-pattern defect, do not patch only the
+visible block and call the bug fixed. First audit the relevant sibling blocks and
+shared helpers, then decide whether the fix belongs in:
+
+- a shared helper or contract
+- the pipeline runner
+- generated block glue
+- each consuming block, with explicit per-block semantics
+
+For every non-trivial bug bead, record:
+
+- observed failing surface
+- likely shared contract involved
+- sibling blocks or modules audited
+- why the fix is local or shared
+- regression tests covering the affected class, not only the first failing block
+
+A surgical fix is allowed only when it is clearly labeled as an immediate local
+fix and follow-up Beads are filed for the broader class of bug.
+
+## CI And Verification
+
+No Playwright testing in this repo. Use Vitest/RTL for frontend behavior and
+manual browser testing only where visual or provider behavior cannot be automated.
+
+CI is defined in `.github/workflows/ci.yml` and runs on pushes to `main` and PRs
+if a PR is explicitly requested.
+
+Required gates:
+
+```bash
+uv run ruff check .
+uv run pytest tests/ -ra
+npm --prefix frontend run gen:custom-blocks
+npm --prefix frontend exec tsc -- --noEmit
+npm --prefix frontend run lint
+npm --prefix frontend test
+npm --prefix frontend run build
+```
+
+Run the focused gate first while developing, then run the relevant full gate
+before claiming completion. For docs-only changes, verify by inspecting rendered
+Markdown or line-numbered output and by checking for contradictory instructions.
+
+## Delivery Workflow
+
+Default project-owner workflow:
+
+1. Track the work in Beads.
+2. Work on a Bead-named branch/worktree for non-trivial changes.
+3. Validate with the appropriate gates.
+4. Merge locally to `main` after user review/approval.
+5. Push directly to `origin/main` only after validation and explicit
+   in-conversation user confirmation.
+
+Do not push autonomously. Do not push merely because a session is ending. Do not
+say work is done only because it is committed locally.
+
+PRs are not the default workflow for this repo. Do not open a PR unless the user
+explicitly asks for one.
+
+## Release Flow
+
+This repo is released as an npm package. Release work must follow
+`docs/npm-release.md` and verify package behavior, not just source tests.
+
+Typical release checks include:
+
+```bash
+npm run build
+npm run pack:check
+npm run smoke:npm-package
+```
+
+When changing packaged files, update the root `package.json` `files` list if
+needed. Publishing uses the npm/GitHub release flow documented in
+`docs/npm-release.md` and `.github/workflows/publish-npm.yml`.
 
 ## Conventions
 
-- Dark theme only (shadcn/ui, `class="dark"` on `<html>`)
-- URL-state routing: filters/sort in URL search params
-- Block API routes: `/api/blocks/<slug>/...` only
-- No Playwright testing — user tests manually, use `npm run build` for verification
+- Dark theme only: shadcn/ui with `class="dark"` on `<html>`.
+- URL-state routing: filters and sort state belong in URL search params.
+- Block routes live under `/api/blocks/<slug>/...`.
+- Credentials belong in the Settings store / backend credential path, not
+  frontend localStorage.
+- Use structured parsers and shared helpers instead of ad hoc string handling
+  when the codebase already provides them.
+- Prefer existing block and pipeline patterns over new abstractions unless the
+  abstraction clearly reduces duplicated behavior or formalizes a real contract.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:7510c1e2 -->
-## Beads Issue Tracker
+## Completion
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+Before handing off:
 
-### Quick Reference
+1. Run `git status --short` and identify all changed files.
+2. Confirm no unrelated user changes were modified or reverted.
+3. Run the relevant verification gates.
+4. Update or close the Bead.
+5. Report what changed, what was verified, and what remains unpushed.
 
-```bash
-bd ready              # Find available work
-bd show <id>          # View issue details
-bd update <id> --claim  # Claim work
-bd close <id>         # Complete work
-```
-
-### Rules
-
-- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
-- Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
-
-**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
-
-## Session Completion
-
-**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
-   ```bash
-   git pull --rebase
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
-
-**CRITICAL RULES:**
-- Work is NOT complete until `git push` succeeds
-- NEVER stop before pushing - that leaves work stranded locally
-- NEVER say "ready to push when you are" - YOU must push
-- If push fails, resolve and retry until it succeeds
-<!-- END BEADS INTEGRATION -->
+Push only when the user explicitly confirms the validated change should be pushed
+to `main`.

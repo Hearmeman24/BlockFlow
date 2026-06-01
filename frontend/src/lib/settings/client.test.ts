@@ -396,9 +396,88 @@ describe('wizardPreflight', () => {
 describe('wizardTiers', () => {
   test('returns the list of tiers in canonical order', async () => {
     const tiers = [
-      { id: 'budget', name: 'Budget', gpu_ids: ['NVIDIA GeForce RTX 5090'], datacenter: 'EU-RO-1', label: 'RTX 5090 (32GB)', region: 'Europe — Romania' },
-      { id: 'recommended', name: 'Recommended', gpu_ids: ['NVIDIA RTX PRO 6000 Blackwell Server Edition'], datacenter: 'EUR-IS-1', label: 'RTX PRO 6000', region: 'Europe — Iceland' },
-      { id: 'performance', name: 'Performance', gpu_ids: ['NVIDIA H100 NVL'], datacenter: 'US-KS-2', label: 'H100', region: 'US — Kansas' },
+      {
+        id: 'minimum_viable',
+        name: 'Minimum viable',
+        target_vram_gb: 32,
+        target_label: '32GB',
+        deployment_options: [
+          {
+            id: 'EUR-IS-1:NVIDIA GeForce RTX 5090',
+            gpu_ids: ['NVIDIA GeForce RTX 5090'],
+            datacenter: 'EUR-IS-1',
+            label: 'RTX 5090 (32GB)',
+            region: 'EUROPE',
+            primary: { gpu_type_id: 'NVIDIA GeForce RTX 5090', display_name: 'RTX 5090', memory_gb: 32, price_per_hr: 0.99, stock: 'Low', warnings: [] },
+            fallback_candidates: [],
+            reasons: ['availability is not guaranteed'],
+            warnings: ['Optional fallback GPUs are not selected automatically.'],
+            checked_at: '2026-05-31T00:00:00+00:00',
+            source: 'live',
+          },
+        ],
+        option_count: 1,
+        gpu_family_count: 1,
+        min_price_per_hr: 0.99,
+        checked_at: '2026-05-31T00:00:00+00:00',
+        source: 'live',
+      },
+      {
+        id: 'recommended',
+        name: 'Recommended',
+        target_vram_gb: 80,
+        target_label: '80/96GB',
+        deployment_options: [
+          {
+            id: 'CA-MTL-3:NVIDIA H100 PCIe',
+            gpu_ids: ['NVIDIA H100 PCIe'],
+            datacenter: 'CA-MTL-3',
+            label: 'H100 PCIe (80GB)',
+            region: 'NORTH_AMERICA',
+            primary: { gpu_type_id: 'NVIDIA H100 PCIe', display_name: 'H100 PCIe', memory_gb: 80, price_per_hr: 2.89, stock: 'Low', warnings: [] },
+            fallback_candidates: [
+              { gpu_type_id: 'NVIDIA RTX PRO 6000 Blackwell Server Edition', display_name: 'RTX PRO 6000', memory_gb: 96, price_per_hr: 2.09, stock: 'Low', warnings: [] },
+            ],
+            reasons: ['availability is not guaranteed'],
+            warnings: ['Optional fallback GPUs are not selected automatically.'],
+            checked_at: '2026-05-31T00:00:00+00:00',
+            source: 'live',
+          },
+        ],
+        option_count: 1,
+        gpu_family_count: 2,
+        min_price_per_hr: 2.09,
+        checked_at: '2026-05-31T00:00:00+00:00',
+        source: 'live',
+      },
+      {
+        id: 'best',
+        name: 'Best',
+        target_vram_gb: 96,
+        target_label: '96/141GB',
+        deployment_options: [
+          {
+            id: 'EUR-IS-1:NVIDIA RTX PRO 6000 Blackwell Server Edition',
+            gpu_ids: ['NVIDIA RTX PRO 6000 Blackwell Server Edition'],
+            datacenter: 'EUR-IS-1',
+            label: 'RTX PRO 6000 (96GB)',
+            region: 'EUROPE',
+            primary: { gpu_type_id: 'NVIDIA RTX PRO 6000 Blackwell Server Edition', display_name: 'RTX PRO 6000', memory_gb: 96, price_per_hr: 2.09, stock: 'Medium', warnings: [] },
+            fallback_candidates: [
+              { gpu_type_id: 'NVIDIA H100 NVL', display_name: 'H100 NVL', memory_gb: 94, price_per_hr: 3.19, stock: 'Low', warnings: ['Higher cost than primary ($3.19/hr).'] },
+            ],
+            reasons: ['availability is not guaranteed'],
+            warnings: ['Optional fallback GPUs are not selected automatically.'],
+            checked_at: '2026-05-31T00:00:00+00:00',
+            source: 'live',
+          },
+        ],
+        option_count: 1,
+        gpu_family_count: 1,
+        min_price_per_hr: 2.09,
+        checked_at: '2026-05-31T00:00:00+00:00',
+        source: 'live',
+      },
     ]
     const fetchMock = mockFetch([{ body: JSON.stringify({ tiers }) }])
     vi.stubGlobal('fetch', fetchMock)
@@ -408,12 +487,30 @@ describe('wizardTiers', () => {
       '/api/wizard/comfygen/tiers',
       expect.objectContaining({ method: 'GET' }),
     )
-    expect(result.map((t) => t.id)).toEqual(['budget', 'recommended', 'performance'])
-    expect(result[0].gpu_ids).toEqual(['NVIDIA GeForce RTX 5090'])
+    expect(result.map((t) => t.id)).toEqual(['minimum_viable', 'recommended', 'best'])
+    expect(result[0].deployment_options[0].gpu_ids).toEqual(['NVIDIA GeForce RTX 5090'])
+    expect(result[1].target_label).toBe('80/96GB')
+    expect(result[1].deployment_options[0].fallback_candidates[0].gpu_type_id).toBe('NVIDIA RTX PRO 6000 Blackwell Server Edition')
+  })
+
+  test('throws when live recommendations are unavailable instead of accepting static fallbacks', async () => {
+    const fetchMock = mockFetch([
+      { body: JSON.stringify({ source: 'unavailable', error: 'RunPod unavailable', tiers: [] }) },
+    ])
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(wizardTiers()).rejects.toThrow(/RunPod unavailable/)
   })
 })
 
 describe('wizardProvision', () => {
+  const provisionInput = {
+    tier: 'best' as const,
+    datacenter: 'EUR-IS-1',
+    primary_gpu_id: 'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+    fallback_gpu_ids: ['NVIDIA H100 NVL'],
+  }
+
   test('POSTs the input + returns the provisioning result', async () => {
     const fetchMock = mockFetch([
       {
@@ -423,20 +520,23 @@ describe('wizardProvision', () => {
           template_name: 'blockflow-comfygen-x-template-x',
           volume_id: 'vol_x',
           name: 'blockflow-comfygen-x',
-          tier: 'budget',
+          tier: 'best',
           status: 'provisioning',
         }),
       },
     ])
     vi.stubGlobal('fetch', fetchMock)
 
-    const result = await wizardProvision({ tier: 'budget', volume_size_gb: 200, max_workers: 3 })
+    const result = await wizardProvision({ ...provisionInput, volume_size_gb: 200, max_workers: 3 })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/wizard/comfygen/provision')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({
-      tier: 'budget',
+      tier: 'best',
+      datacenter: 'EUR-IS-1',
+      primary_gpu_id: 'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+      fallback_gpu_ids: ['NVIDIA H100 NVL'],
       volume_size_gb: 200,
       max_workers: 3,
     })
@@ -450,17 +550,25 @@ describe('wizardProvision', () => {
       {
         body: JSON.stringify({
           endpoint_id: 'ep_y', template_id: 't', template_name: 'n', volume_id: 'v',
-          name: 'n', tier: 'budget', status: 'provisioning',
+          name: 'n', tier: 'best', status: 'provisioning',
         }),
       },
     ])
     vi.stubGlobal('fetch', fetchMock)
 
-    await wizardProvision({ tier: 'budget' })
+    await wizardProvision({
+      tier: 'best',
+      datacenter: 'EUR-IS-1',
+      primary_gpu_id: 'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+    })
 
     const init = fetchMock.mock.calls[0][1] as RequestInit
     const body = JSON.parse(init.body as string)
-    expect(body).toEqual({ tier: 'budget' })
+    expect(body).toEqual({
+      tier: 'best',
+      datacenter: 'EUR-IS-1',
+      primary_gpu_id: 'NVIDIA RTX PRO 6000 Blackwell Server Edition',
+    })
     expect('volume_size_gb' in body).toBe(false)
     expect('max_workers' in body).toBe(false)
   })
@@ -471,7 +579,7 @@ describe('wizardProvision', () => {
     ])
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(wizardProvision({ tier: 'budget' })).rejects.toThrow(/runpod_api_key/)
+    await expect(wizardProvision(provisionInput)).rejects.toThrow(/runpod_api_key/)
   })
 
   test('throws when backend returns 500 (provisioning failed)', async () => {
@@ -480,7 +588,7 @@ describe('wizardProvision', () => {
     ])
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(wizardProvision({ tier: 'budget' })).rejects.toThrow(/quota/)
+    await expect(wizardProvision(provisionInput)).rejects.toThrow(/quota/)
   })
 })
 

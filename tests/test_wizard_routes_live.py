@@ -11,7 +11,7 @@ Flow:
      is not exercised by provisioning itself; the values just get baked into
      the template env vars, which is fine — we tear down before any worker
      spins up).
-  2. POST /api/wizard/comfygen/provision with tier="budget".
+  2. Fetch live RunPod deploy recommendations and provision the first option.
   3. Verify response shape + Settings was persisted correctly.
   4. Verify /api/wizard/comfygen/health returns valid worker counts.
   5. Tear down via direct runpod_api calls (drain → DELETE endpoint →
@@ -60,10 +60,30 @@ def app(tmp_path, monkeypatch):
     settings_store.set_credential("r2_access_key_id", "dummy-access-key")
     settings_store.set_credential("r2_secret_access_key", "dummy-secret-key")
     settings_store.set_credential("r2_bucket", "blockflow-test-dummy-bucket")
+    settings_store.set_credential_validation("runpod", {"ok": True, "error": None, "validated_at": "2099-01-01T00:00:00+00:00"})
+    settings_store.set_credential_validation("r2", {"ok": True, "error": None, "validated_at": "2099-01-01T00:00:00+00:00"})
 
     fastapi_app = FastAPI()
     fastapi_app.include_router(wizard_routes.router)
     return fastapi_app
+
+
+def _live_provision_payload(client: TestClient, *, volume_size_gb: int = 10, max_workers: int = 1) -> dict[str, object]:
+    tiers_resp = client.get("/api/wizard/comfygen/tiers")
+    assert tiers_resp.status_code == 200, tiers_resp.text
+    tiers = tiers_resp.json()["tiers"]
+    assert tiers, tiers_resp.json()
+    tier = tiers[0]
+    assert tier["datacenter"]
+    assert tier["primary"]["gpu_type_id"]
+    return {
+        "tier": tier["id"],
+        "datacenter": tier["datacenter"],
+        "primary_gpu_id": tier["primary"]["gpu_type_id"],
+        "fallback_gpu_ids": [],
+        "volume_size_gb": volume_size_gb,
+        "max_workers": max_workers,
+    }
 
 
 def test_live_wizard_provision_then_teardown(app):
@@ -74,17 +94,15 @@ def test_live_wizard_provision_then_teardown(app):
     # Preflight should report ready
     pre = client.get("/api/wizard/comfygen/preflight")
     assert pre.status_code == 200
-    assert pre.json() == {"ready": True, "missing": []}, pre.json()
+    assert pre.json()["ready"] is True, pre.json()
+    assert pre.json()["missing"] == []
 
-    # Tiers endpoint
-    tiers = client.get("/api/wizard/comfygen/tiers").json()["tiers"]
-    assert any(t["id"] == "budget" for t in tiers)
-
-    # Provision (low tier = budget; workersMin/Max stay small)
+    # Provision (first live recommendation; workersMin/Max stay small)
     print("[live] provisioning ComfyGen endpoint via wizard...")
+    payload = _live_provision_payload(client)
     provision_resp = client.post(
         "/api/wizard/comfygen/provision",
-        json={"tier": "budget", "volume_size_gb": 10, "max_workers": 1},
+        json=payload,
     )
 
     endpoint_id: str | None = None
@@ -113,7 +131,7 @@ def test_live_wizard_provision_then_teardown(app):
         assert ep["endpoint_id"] == endpoint_id
         assert ep["template_id"] == template_id
         assert ep["volume_id"] == volume_id
-        assert ep["gpu_tier"] == "budget"
+        assert ep["gpu_tier"] == payload["tier"]
         assert ep["volume_size_gb"] == 10
         assert ep["max_workers"] == 1
 
@@ -173,7 +191,7 @@ def test_live_wizard_teardown_route_cleans_up_everything(app):
     # Provision a fresh endpoint to tear down
     r = client.post(
         "/api/wizard/comfygen/provision",
-        json={"tier": "budget", "volume_size_gb": 10, "max_workers": 1},
+        json=_live_provision_payload(client),
     )
     assert r.status_code == 200, r.text
     provisioned = r.json()

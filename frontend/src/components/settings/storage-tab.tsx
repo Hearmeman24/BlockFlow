@@ -112,7 +112,7 @@ export function StorageTab() {
     }
   }
 
-  const r2BlocksSave = mode === 'r2_signed' && r2Status !== 'valid'
+  const r2BlocksSave = mode === 'r2_signed' && !isVerifiedR2Status(r2Status)
   const dirty = savedMode !== null && mode !== savedMode
   const canSave = !loading && !saving && dirty && !r2BlocksSave
 
@@ -194,7 +194,7 @@ export function StorageTab() {
 
 function R2StatusChip({ status }: { status: ValidationStatus | null }) {
   if (status === null) return null
-  if (status === 'valid') {
+  if (isVerifiedR2Status(status)) {
     return (
       <span className="inline-flex items-center gap-1 text-xs text-emerald-400">
         <CheckCircle2 className="size-3.5" /> Verified
@@ -215,7 +215,7 @@ function R2StatusChip({ status }: { status: ValidationStatus | null }) {
       </span>
     )
   }
-  // unvalidated | stale
+  // unvalidated
   return (
     <span className="inline-flex items-center gap-1 text-xs text-amber-400">
       <AlertTriangle className="size-3.5" /> Not verified
@@ -257,15 +257,13 @@ function R2Gate({
 
   return (
     <div className="space-y-3 rounded-md border border-border/60 bg-background/60 p-3">
-      {status === 'valid' ? (
+      {isVerifiedR2Status(status) ? (
         <p className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
           <CheckCircle2 className="size-4" /> R2 verified — assets will upload to your private bucket.
         </p>
       ) : (
         <p className="text-xs leading-5 text-muted-foreground">
-          {status === 'stale'
-            ? 'Your last R2 check is over 10 minutes old. Re-validate to enable saving this mode.'
-            : 'Validate your R2 credentials to enable saving this mode.'}
+          Validate your R2 credentials to enable saving this mode.
         </p>
       )}
 
@@ -273,7 +271,7 @@ function R2Gate({
         <p className="text-xs text-destructive">{statusError}</p>
       )}
 
-      {status !== 'valid' && (
+      {!isVerifiedR2Status(status) && (
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -288,4 +286,8 @@ function R2Gate({
       )}
     </div>
   )
+}
+
+function isVerifiedR2Status(status: ValidationStatus | null): boolean {
+  return status === 'valid' || status === 'stale'
 }

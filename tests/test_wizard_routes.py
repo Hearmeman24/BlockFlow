@@ -61,9 +61,9 @@ def all_creds_configured():
 
 @pytest.fixture
 def all_creds_validated(all_creds_configured):
-    """sgs-ui-5nn: provision/attach also check that creds were validated
-    within the TTL. Tests that mutate Settings before posting need fresh
-    validation rows; this fixture stamps them."""
+    """Provision/attach require cached successful validation rows. Tests that
+    mutate Settings before posting need validation rows; credential changes
+    clear them."""
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     settings_store.set_credential_validation(
@@ -135,8 +135,8 @@ def test_preflight_lists_only_actually_missing_creds(client):
 #
 # Old behavior: ready = True iff all required credentials are non-empty.
 # New behavior: ready = True iff all required credentials are present AND
-# validated successfully within the TTL window. Preflight is a pure reader;
-# the UI calls /api/settings/validate/{service} to refresh stale validations.
+# validated successfully. Preflight is a pure reader; validation is cleared
+# when credential values change or when a real provider check fails.
 
 def _stamp_validation(service: str, ok: bool, validated_at: str, error: str | None = None) -> None:
     settings_store.set_credential_validation(
@@ -161,7 +161,7 @@ def test_preflight_not_ready_when_creds_present_but_unvalidated(client, all_cred
     assert body["services"]["r2"]["status"] == "unvalidated"
 
 
-def test_preflight_ready_when_required_services_validated_within_ttl(client, all_creds_configured):
+def test_preflight_ready_when_required_services_validated(client, all_creds_configured):
     _stamp_validation("runpod", ok=True, validated_at=_iso(seconds_ago=60))
     _stamp_validation("r2", ok=True, validated_at=_iso(seconds_ago=60))
 
@@ -172,16 +172,16 @@ def test_preflight_ready_when_required_services_validated_within_ttl(client, all
     assert body["services"]["r2"]["status"] == "valid"
 
 
-def test_preflight_stale_validation_does_not_count_as_ready(client, all_creds_configured):
-    """A 'valid' validation older than the TTL must surface as status=stale
-    and ready=False — the wizard needs a fresh re-check."""
-    _stamp_validation("runpod", ok=True, validated_at=_iso(seconds_ago=700))  # > 600s TTL
+def test_preflight_old_successful_validation_still_counts_as_ready(client, all_creds_configured):
+    """A successful validation remains valid until credentials change or a
+    real provider auth failure records an invalid verdict."""
+    _stamp_validation("runpod", ok=True, validated_at=_iso(seconds_ago=700))
     _stamp_validation("r2", ok=True, validated_at=_iso(seconds_ago=60))
 
     r = client.get("/api/wizard/comfygen/preflight")
     body = r.json()
-    assert body["ready"] is False
-    assert body["services"]["runpod"]["status"] == "stale"
+    assert body["ready"] is True
+    assert body["services"]["runpod"]["status"] == "valid"
     assert body["services"]["r2"]["status"] == "valid"
 
 
@@ -243,12 +243,12 @@ def test_preflight_required_field_marks_services(client, all_creds_configured):
 
 
 def test_preflight_credentials_missing_overrides_validation(client):
-    """Even if a stale validation row exists for r2, an empty r2_bucket
+    """Even if a validation row exists for r2, an empty r2_bucket
     means the credential is missing — that takes precedence."""
     # Set runpod fully + validated
     settings_store.set_credential("runpod_api_key", "rpa")
     _stamp_validation("runpod", ok=True, validated_at=_iso(0))
-    # Set 3 of 4 R2 creds, leave r2_bucket missing, but persist a stale 'valid' row.
+    # Set 3 of 4 R2 creds, leave r2_bucket missing, but persist a valid row.
     settings_store.set_credential("r2_endpoint_url", "https://x.r2.com")
     settings_store.set_credential("r2_access_key_id", "AKIA")
     settings_store.set_credential("r2_secret_access_key", "sekret")
@@ -260,21 +260,408 @@ def test_preflight_credentials_missing_overrides_validation(client):
     assert body["services"]["r2"]["status"] == "credentials_missing"
 
 
-# === tiers ==================================================================
+# === deploy tiers ============================================================
 
-def test_tiers_returns_three_tiers_with_required_fields(client):
+def _deploy_payload(
+    *,
+    tier: str = "minimum_viable",
+    datacenter: str = "EU-RO-1",
+    primary_gpu_id: str = "NVIDIA GeForce RTX 5090",
+    fallback_gpu_ids: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "tier": tier,
+        "datacenter": datacenter,
+        "primary_gpu_id": primary_gpu_id,
+        "fallback_gpu_ids": fallback_gpu_ids or [],
+    }
+
+def test_tiers_returns_live_recommendations_from_storage_backed_datacenters(client, mocker):
+    settings_store.set_credential("runpod_api_key", "rpa_valid")
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_gpu_types_for_deploy",
+        return_value=[
+            {
+                "id": "NVIDIA GeForce RTX 5090",
+                "displayName": "RTX 5090",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 32,
+                "securePrice": 0.99,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 0.99},
+            },
+            {
+                "id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "displayName": "RTX PRO 6000",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 96,
+                "securePrice": 2.09,
+                "lowestPrice": {"stockStatus": "Medium", "uninterruptablePrice": 2.09},
+            },
+            {
+                "id": "NVIDIA H100 NVL",
+                "displayName": "H100 NVL",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 94,
+                "securePrice": 3.19,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 3.19},
+            },
+        ],
+    )
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_datacenters",
+        return_value=[
+            {
+                "id": "EUR-IS-1",
+                "name": "EUR-IS-1",
+                "region": "EUROPE",
+                "listed": True,
+                "storageSupport": True,
+                "gpuAvailability": [
+                    {"gpuTypeId": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "gpuTypeDisplayName": "RTX PRO 6000", "stockStatus": "Low", "available": True},
+                    {"gpuTypeId": "NVIDIA H100 NVL", "gpuTypeDisplayName": "H100 NVL", "stockStatus": "Low", "available": True},
+                    {"gpuTypeId": "NVIDIA GeForce RTX 5090", "gpuTypeDisplayName": "RTX 5090", "stockStatus": "Low", "available": True},
+                ],
+            },
+            {
+                "id": "AP-IN-1",
+                "name": "AP-IN-1",
+                "region": "ASIA",
+                "listed": True,
+                "storageSupport": False,
+                "gpuAvailability": [
+                    {"gpuTypeId": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "gpuTypeDisplayName": "RTX PRO 6000", "stockStatus": "High", "available": True},
+                ],
+            },
+        ],
+    )
+
     r = client.get("/api/wizard/comfygen/tiers")
     assert r.status_code == 200
     tiers = r.json()["tiers"]
-    assert len(tiers) == 3
+    assert [t["id"] for t in tiers] == ["minimum_viable", "recommended", "best"]
 
-    ids = [t["id"] for t in tiers]
-    assert ids == ["budget", "recommended", "performance"]
+    best = next(t for t in tiers if t["id"] == "best")
+    assert best["option_count"] == 2
+    best_option = next(
+        o for o in best["deployment_options"]
+        if o["primary"]["gpu_type_id"] == "NVIDIA RTX PRO 6000 Blackwell Server Edition"
+    )
+    assert best_option["datacenter"] == "EUR-IS-1"
+    assert best_option["gpu_ids"] == ["NVIDIA RTX PRO 6000 Blackwell Server Edition"]
+    assert [g["gpu_type_id"] for g in best_option["fallback_candidates"]] == [
+        "NVIDIA H100 NVL",
+    ]
+    assert any("not guaranteed" in reason.lower() for reason in best_option["reasons"])
+    assert best["checked_at"]
 
-    for t in tiers:
-        # Every tier exposes the fields the UI uses
-        assert {"id", "name", "gpu_ids", "datacenter", "label", "region"} <= set(t.keys())
-        assert isinstance(t["gpu_ids"], list) and len(t["gpu_ids"]) >= 1
+
+def test_tiers_surfaces_multiple_starter_deployment_options_in_storage_datacenters(client, mocker):
+    settings_store.set_credential("runpod_api_key", "rpa_valid")
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_gpu_types_for_deploy",
+        return_value=[
+            {
+                "id": "NVIDIA L40S",
+                "displayName": "L40S",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 48,
+                "securePrice": 0.86,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 0.86},
+            },
+            {
+                "id": "NVIDIA RTX 6000 Ada Generation",
+                "displayName": "RTX 6000 Ada",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 48,
+                "securePrice": 0.77,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 0.77},
+            },
+            {
+                "id": "NVIDIA L40",
+                "displayName": "L40",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 48,
+                "securePrice": 0.69,
+                "lowestPrice": {"stockStatus": None, "uninterruptablePrice": None},
+            },
+        ],
+    )
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_datacenters",
+        return_value=[
+            {
+                "id": "EU-NL-1",
+                "name": "EU-NL-1",
+                "region": "EUROPE",
+                "listed": True,
+                "storageSupport": True,
+                "gpuAvailability": [
+                    {"gpuTypeId": "NVIDIA L40S", "gpuTypeDisplayName": "L40S", "stockStatus": "Low", "available": True},
+                ],
+            },
+            {
+                "id": "US-WA-1",
+                "name": "US-WA-1",
+                "region": "NORTH_AMERICA",
+                "listed": True,
+                "storageSupport": True,
+                "gpuAvailability": [
+                    {"gpuTypeId": "NVIDIA RTX 6000 Ada Generation", "gpuTypeDisplayName": "RTX 6000 Ada", "stockStatus": "Low", "available": True},
+                ],
+            },
+            {
+                "id": "US-KS-2",
+                "name": "US-KS-2",
+                "region": "NORTH_AMERICA",
+                "listed": True,
+                "storageSupport": True,
+                "gpuAvailability": [
+                    {"gpuTypeId": "NVIDIA L40", "gpuTypeDisplayName": "L40", "stockStatus": None, "available": True},
+                ],
+            },
+        ],
+    )
+
+    r = client.get("/api/wizard/comfygen/tiers")
+
+    assert r.status_code == 200
+    starter = r.json()["tiers"][0]
+    assert starter["id"] == "starter"
+    options = starter["deployment_options"]
+    option_pairs = {(o["datacenter"], o["primary"]["gpu_type_id"]) for o in options}
+    assert ("EU-NL-1", "NVIDIA L40S") in option_pairs
+    assert ("US-WA-1", "NVIDIA RTX 6000 Ada Generation") in option_pairs
+    assert ("US-KS-2", "NVIDIA L40") not in option_pairs
+
+
+def test_tiers_omits_fallbacks_with_unreported_datacenter_stock(client, mocker):
+    settings_store.set_credential("runpod_api_key", "rpa_valid")
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_gpu_types_for_deploy",
+        return_value=[
+            {
+                "id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "displayName": "RTX PRO 6000",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 96,
+                "securePrice": 2.09,
+                "lowestPrice": {"stockStatus": "Medium", "uninterruptablePrice": 2.09},
+            },
+            {
+                "id": "NVIDIA H100 NVL",
+                "displayName": "H100 NVL",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 94,
+                "securePrice": 3.19,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 3.19},
+            },
+            {
+                "id": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+                "displayName": "RTX PRO 6000 WK",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 96,
+                "securePrice": 1.89,
+                "lowestPrice": {"stockStatus": None, "uninterruptablePrice": None},
+            },
+        ],
+    )
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_datacenters",
+        return_value=[
+            {
+                "id": "EUR-IS-1",
+                "name": "EUR-IS-1",
+                "region": "EUROPE",
+                "listed": True,
+                "storageSupport": True,
+                "gpuAvailability": [
+                    {"gpuTypeId": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "gpuTypeDisplayName": "RTX PRO 6000", "stockStatus": "Low", "available": True},
+                    {"gpuTypeId": "NVIDIA H100 NVL", "gpuTypeDisplayName": "H100 NVL", "stockStatus": None, "available": True},
+                    {"gpuTypeId": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition", "gpuTypeDisplayName": "RTX PRO 6000 WK", "stockStatus": None, "available": True},
+                ],
+            },
+        ],
+    )
+
+    r = client.get("/api/wizard/comfygen/tiers")
+
+    assert r.status_code == 200
+    best = next(t for t in r.json()["tiers"] if t["id"] == "best")
+    assert best["id"] == "best"
+    option = best["deployment_options"][0]
+    assert option["fallback_candidates"] == []
+
+
+def test_tiers_groups_high_memory_families_for_same_datacenter_fallbacks(client, mocker):
+    settings_store.set_credential("runpod_api_key", "rpa_valid")
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_gpu_types_for_deploy",
+        return_value=[
+            {
+                "id": "NVIDIA H100 PCIe",
+                "displayName": "H100 PCIe",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 80,
+                "securePrice": 2.89,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 2.89},
+            },
+            {
+                "id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+                "displayName": "RTX PRO 6000",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 96,
+                "securePrice": 2.09,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 2.09},
+            },
+            {
+                "id": "NVIDIA H200",
+                "displayName": "H200 SXM",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 141,
+                "securePrice": 4.39,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 4.39},
+            },
+        ],
+    )
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_datacenters",
+        return_value=[
+            {
+                "id": "CA-MTL-3",
+                "name": "CA-MTL-3",
+                "region": "NORTH_AMERICA",
+                "listed": True,
+                "storageSupport": True,
+                "gpuAvailability": [
+                    {"gpuTypeId": "NVIDIA H100 PCIe", "gpuTypeDisplayName": "H100 PCIe", "stockStatus": "Low", "available": True},
+                    {"gpuTypeId": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "gpuTypeDisplayName": "RTX PRO 6000", "stockStatus": "Low", "available": True},
+                    {"gpuTypeId": "NVIDIA H200", "gpuTypeDisplayName": "H200 SXM", "stockStatus": "Low", "available": True},
+                ],
+            },
+        ],
+    )
+
+    r = client.get("/api/wizard/comfygen/tiers")
+
+    assert r.status_code == 200
+    tiers = r.json()["tiers"]
+    assert [t["id"] for t in tiers] == ["recommended", "best"]
+
+    recommended = next(t for t in tiers if t["id"] == "recommended")
+    assert recommended["target_label"] == "80/96GB"
+    recommended_option = next(
+        o for o in recommended["deployment_options"]
+        if o["primary"]["gpu_type_id"] == "NVIDIA H100 PCIe"
+    )
+    assert [g["gpu_type_id"] for g in recommended_option["fallback_candidates"]] == [
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    ]
+
+    best = next(t for t in tiers if t["id"] == "best")
+    assert best["target_label"] == "96/141GB"
+    best_option = next(
+        o for o in best["deployment_options"]
+        if o["primary"]["gpu_type_id"] == "NVIDIA H200"
+    )
+    assert [g["gpu_type_id"] for g in best_option["fallback_candidates"]] == [
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    ]
+
+
+def test_tiers_excludes_unsupported_b200_and_b300_gpus(client, mocker):
+    settings_store.set_credential("runpod_api_key", "rpa_valid")
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_gpu_types_for_deploy",
+        return_value=[
+            {
+                "id": "NVIDIA H200",
+                "displayName": "H200 SXM",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 141,
+                "securePrice": 4.39,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 4.39},
+            },
+            {
+                "id": "NVIDIA H200 NVL",
+                "displayName": "H200 NVL",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 141,
+                "securePrice": 4.49,
+                "lowestPrice": {"stockStatus": "Low", "uninterruptablePrice": 4.49},
+            },
+            {
+                "id": "NVIDIA B200",
+                "displayName": "B200",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 180,
+                "securePrice": 5.89,
+                "lowestPrice": {"stockStatus": "High", "uninterruptablePrice": 5.89},
+            },
+            {
+                "id": "NVIDIA B300 SXM6 AC",
+                "displayName": "B300",
+                "manufacturer": "NVIDIA",
+                "memoryInGb": 288,
+                "securePrice": 6.99,
+                "lowestPrice": {"stockStatus": "High", "uninterruptablePrice": 6.99},
+            },
+        ],
+    )
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_datacenters",
+        return_value=[
+            {
+                "id": "US-CA-2",
+                "name": "US-CA-2",
+                "region": "NORTH_AMERICA",
+                "listed": True,
+                "storageSupport": True,
+                "gpuAvailability": [
+                    {"gpuTypeId": "NVIDIA H200", "gpuTypeDisplayName": "H200 SXM", "stockStatus": "Low", "available": True},
+                    {"gpuTypeId": "NVIDIA H200 NVL", "gpuTypeDisplayName": "H200 NVL", "stockStatus": "Low", "available": True},
+                    {"gpuTypeId": "NVIDIA B200", "gpuTypeDisplayName": "B200", "stockStatus": "High", "available": True},
+                    {"gpuTypeId": "NVIDIA B300 SXM6 AC", "gpuTypeDisplayName": "B300", "stockStatus": "High", "available": True},
+                ],
+            },
+        ],
+    )
+
+    r = client.get("/api/wizard/comfygen/tiers")
+
+    assert r.status_code == 200
+    best = r.json()["tiers"][0]
+    assert best["id"] == "best"
+    option = best["deployment_options"][0]
+    assert option["primary"]["gpu_type_id"] == "NVIDIA H200"
+    gpu_ids = [option["primary"]["gpu_type_id"], *(g["gpu_type_id"] for g in option["fallback_candidates"])]
+    assert "NVIDIA B200" not in gpu_ids
+    assert "NVIDIA B300 SXM6 AC" not in gpu_ids
+
+
+def test_tiers_returns_no_fake_recommendations_when_runpod_scan_fails(client, mocker):
+    settings_store.set_credential("runpod_api_key", "rpa_valid")
+    mocker.patch.object(
+        wizard_routes.runpod_api,
+        "list_gpu_types_for_deploy",
+        side_effect=wizard_routes.runpod_api.RunPodAPIError("RunPod unavailable"),
+    )
+
+    r = client.get("/api/wizard/comfygen/tiers")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "unavailable"
+    assert body["tiers"] == []
+    assert "RunPod unavailable" in body["error"]
 
 
 # === provision (happy path) =================================================
@@ -294,7 +681,12 @@ def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_valida
         return_value={"id": "ep_abc"},
     )
 
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    r = client.post("/api/wizard/comfygen/provision", json={
+        "tier": "best",
+        "datacenter": "EUR-IS-1",
+        "primary_gpu_id": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        "fallback_gpu_ids": ["NVIDIA H100 NVL"],
+    })
 
     assert r.status_code == 200
     body = r.json()
@@ -313,7 +705,7 @@ def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_valida
     # Volume args
     vol_kwargs = create_volume.call_args.kwargs
     assert vol_kwargs["size_gb"] == 200  # default
-    assert vol_kwargs["datacenter_id"] == "EU-RO-1"  # budget tier's DC
+    assert vol_kwargs["datacenter_id"] == "EUR-IS-1"
 
     # Template args: R2 creds must be injected into env vars
     tmpl_kwargs = create_template.call_args.kwargs
@@ -329,7 +721,11 @@ def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_valida
     ep_kwargs = create_endpoint.call_args.kwargs
     assert ep_kwargs["template_id"] == "tmpl_abc"
     assert ep_kwargs["network_volume_id"] == "vol_abc"
-    assert ep_kwargs["gpu_type_ids"] == ["NVIDIA GeForce RTX 5090"]  # budget tier
+    assert ep_kwargs["gpu_type_ids"] == [
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        "NVIDIA H100 NVL",
+    ]
+    assert ep_kwargs["data_center_ids"] == ["EUR-IS-1"]
     assert ep_kwargs["workers_max"] == 3  # default
 
 
@@ -341,7 +737,11 @@ def test_provision_persists_endpoint_to_settings(client, all_creds_validated, mo
     mocker.patch.object(wizard_routes.runpod_api, "create_endpoint",
                         return_value={"id": "ep_x"})
 
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    r = client.post("/api/wizard/comfygen/provision", json={
+        "tier": "minimum_viable",
+        "datacenter": "EU-RO-1",
+        "primary_gpu_id": "NVIDIA GeForce RTX 5090",
+    })
     template_name = r.json()["template_name"]
 
     # State assertion: Settings store actually has the endpoint persisted
@@ -353,7 +753,7 @@ def test_provision_persists_endpoint_to_settings(client, all_creds_validated, mo
     # persisted so tear-down can call deleteTemplate(name=...) later.
     assert ep["template_name"] == template_name
     assert ep["volume_id"] == "vol_x"
-    assert ep["gpu_tier"] == "budget"
+    assert ep["gpu_tier"] == "minimum_viable"
 
 
 def test_provision_passes_user_supplied_volume_size_and_max_workers(client, all_creds_validated, mocker):
@@ -365,21 +765,22 @@ def test_provision_passes_user_supplied_volume_size_and_max_workers(client, all_
 
     client.post("/api/wizard/comfygen/provision", json={
         "tier": "recommended",
+        "datacenter": "EU-RO-1",
+        "primary_gpu_id": "NVIDIA A100-SXM4-80GB",
         "volume_size_gb": 500,
         "max_workers": 1,
     })
 
     assert create_volume.call_args.kwargs["size_gb"] == 500
     assert create_endpoint.call_args.kwargs["workers_max"] == 1
-    # tier-specific datacenter
-    assert create_volume.call_args.kwargs["datacenter_id"] == "EUR-IS-1"
+    assert create_volume.call_args.kwargs["datacenter_id"] == "EU-RO-1"
 
 
 # === provision (failure modes) ==============================================
 
 def test_provision_400_when_runpod_key_missing(client):
     """No credentials at all — should fail before any API call."""
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload())
     assert r.status_code == 400
     assert "runpod_api_key" in r.json()["detail"]
 
@@ -390,7 +791,7 @@ def test_provision_400_when_partial_r2_creds(client):
     settings_store.set_credential("r2_access_key_id", "AKIA")
     # missing r2_secret_access_key + r2_bucket
 
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload())
     assert r.status_code == 400
     detail = r.json()["detail"]
     for missing in ("r2_secret_access_key", "r2_bucket"):
@@ -402,7 +803,7 @@ def test_provision_400_when_partial_r2_creds(client):
 def test_provision_400_when_tier_invalid(client, all_creds_configured):
     """Pydantic Literal type rejects unknown tiers with 422 before our code
     runs — which is fine, the UI still sees a validation error."""
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "ultra"})
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload(tier="ultra"))
     assert r.status_code in (400, 422)
     body = r.json()
     # Either way, the error mentions the bad input
@@ -420,7 +821,7 @@ def test_provision_rolls_back_volume_if_template_creation_fails(client, all_cred
                         side_effect=wizard_routes.runpod_api.RunPodAPIError("template create failed"))
     delete_volume = mocker.patch.object(wizard_routes.runpod_api, "delete_network_volume")
 
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload())
 
     assert r.status_code == 500
     assert "template create failed" in r.json()["detail"]
@@ -440,7 +841,7 @@ def test_provision_rolls_back_volume_and_template_if_endpoint_creation_fails(cli
     delete_volume = mocker.patch.object(wizard_routes.runpod_api, "delete_network_volume")
     delete_template = mocker.patch.object(wizard_routes.runpod_api, "delete_template")
 
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload())
 
     assert r.status_code == 500
     delete_template.assert_called_once()
@@ -488,9 +889,9 @@ def test_attach_400_when_runpod_key_missing(client):
 
 def test_provision_refuses_when_runpod_unvalidated(client, all_creds_configured, mocker):
     """Backend defense in depth: even if the UI is bypassed, provision must
-    refuse to spawn RunPod resources without fresh validation."""
+    refuse to spawn RunPod resources without validation."""
     create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume")
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload())
     assert r.status_code == 400
     assert "validated" in r.json()["detail"].lower()
     create_volume.assert_not_called()
@@ -502,24 +903,33 @@ def test_provision_refuses_when_r2_unvalidated(client, all_creds_configured, moc
     )
     # r2 deliberately not validated
     create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume")
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload())
     assert r.status_code == 400
     assert "r2" in r.json()["detail"].lower() or "validated" in r.json()["detail"].lower()
     create_volume.assert_not_called()
 
 
-def test_provision_refuses_when_validation_is_stale(client, all_creds_configured, mocker):
-    """A stale 'valid' row (older than TTL) must NOT pass the gate."""
+def test_provision_allows_old_successful_validation(client, all_creds_configured, mocker):
+    """A successful validation row remains usable regardless of age."""
     settings_store.set_credential_validation(
         "runpod", {"ok": True, "error": None, "validated_at": _iso(seconds_ago=700)}
     )
     settings_store.set_credential_validation(
         "r2", {"ok": True, "error": None, "validated_at": _iso(0)}
     )
-    create_volume = mocker.patch.object(wizard_routes.runpod_api, "create_network_volume")
-    r = client.post("/api/wizard/comfygen/provision", json={"tier": "budget"})
-    assert r.status_code == 400
-    create_volume.assert_not_called()
+    create_volume = mocker.patch.object(
+        wizard_routes.runpod_api, "create_network_volume", return_value={"id": "vol_old"}
+    )
+    mocker.patch.object(
+        wizard_routes.runpod_api, "create_template", return_value={"id": "tmpl_old", "name": "template"}
+    )
+    mocker.patch.object(
+        wizard_routes.runpod_api, "create_endpoint", return_value={"id": "ep_old"}
+    )
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload())
+    assert r.status_code == 200
+    assert r.json()["endpoint_id"] == "ep_old"
+    create_volume.assert_called_once()
 
 
 # === sgs-ui-5nn: Step 8 quickstart-preset selection ========================

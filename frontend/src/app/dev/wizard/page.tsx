@@ -1,9 +1,10 @@
 /**
  * sgs-ui-5nn: hidden dev-only wizard preview.
  *
- * Renders <ComfyGenWizard> with window.fetch wrapped by a per-scenario
- * mock handler. Lets the wizard's full step machine be exercised in a
- * browser without touching real RunPod / R2 / preset registry.
+ * Renders <ComfyGenWizard> with optional window.fetch scenario handlers.
+ * The live-backend scenario passes through to the real backend; mocked
+ * scenarios let the wizard's failure paths be exercised without touching
+ * real RunPod / R2 / preset registry.
  *
  * Gated to NODE_ENV !== 'production' — a prod build returns 404.
  */
@@ -26,9 +27,9 @@ export default function DevWizardPage() {
 
   const router = useRouter()
   const params = useSearchParams()
-  const initialScenario = (params.get('scenario') as Scenario | null) ?? 'happy-path'
+  const initialScenario = (params.get('scenario') as Scenario | null) ?? 'live-backend'
   const [scenario, setScenario] = useState<Scenario>(
-    SCENARIO_IDS.includes(initialScenario as Scenario) ? initialScenario : 'happy-path',
+    SCENARIO_IDS.includes(initialScenario as Scenario) ? initialScenario : 'live-backend',
   )
   const [wizardKey, setWizardKey] = useState(0)
   const [wizardOpen, setWizardOpen] = useState(true)
@@ -68,9 +69,9 @@ export default function DevWizardPage() {
       <header className="space-y-1">
         <h1 className="text-xl font-semibold">Dev wizard preview</h1>
         <p className="text-xs text-muted-foreground">
-          Hidden dev-only route (404 in production builds). The wizard runs against
-          a mocked fetch — no real RunPod / R2 / preset registry calls. Switch
-          scenarios below to walk through every gate the real wizard surfaces.
+          Hidden dev-only route (404 in production builds). Live backend uses
+          your real Settings credentials and live RunPod / R2 / preset registry
+          calls. Mocked scenarios remain available for failure-path testing.
         </p>
       </header>
 
@@ -91,6 +92,12 @@ export default function DevWizardPage() {
           ))}
         </select>
         <p className="text-xs text-muted-foreground">{heading}</p>
+        {scenario === 'live-backend' && (
+          <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-200">
+            Live mode calls the real backend. Loading recommendations is read-only,
+            but continuing through Provision creates real RunPod resources.
+          </p>
+        )}
         <div className="flex gap-2">
           <button
             type="button"

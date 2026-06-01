@@ -636,14 +636,26 @@ _CPU_INSTALLER_COST_PER_HR = 0.06
 # `SUPPLY_CONSTRAINT` (emitted by comfy-gen install-preset); the human
 # phrase 'no CPU instance available' is the older bare-RunPod-error variant.
 _SUPPLY_CONSTRAINT_RE = re.compile(r"SUPPLY_CONSTRAINT|no CPU instance available", re.IGNORECASE)
+_INSTALLER_POD_FAILED_RE = re.compile(
+    r"IMAGE_AUTH_ERROR|toomanyrequests|pull rate limit|failed to pull image|"
+    r"install error at health:.*not healthy after \d+s|"
+    r"pod .*not healthy after \d+s",
+    re.IGNORECASE,
+)
 
 
 def _classify_error_kind(reason: str | None) -> str:
-    """Map a terminal error message to one of {'supply_constraint', 'unknown'}.
-    Only SUPPLY_CONSTRAINT failures get the friendly retry + GPU-fallback UI;
-    every other failure surfaces the raw reason so real bugs aren't masked."""
+    """Map a terminal error message to a UI-actionable kind.
+
+    Supply constraints and CPU installer pod startup failures are
+    fallback-eligible: retrying via the user's GPU endpoint can still install
+    the same files. Download/model/content failures remain unknown so the UI
+    surfaces the raw cause instead of masking it behind a fallback prompt.
+    """
     if reason and _SUPPLY_CONSTRAINT_RE.search(reason):
         return "supply_constraint"
+    if reason and _INSTALLER_POD_FAILED_RE.search(reason):
+        return "installer_pod_failed"
     return "unknown"
 
 

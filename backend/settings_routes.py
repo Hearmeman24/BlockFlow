@@ -184,7 +184,7 @@ def get_validation_status(service: str) -> JSONResponse:
     """Read the *cached* validation verdict for a service without running a
     live (slow/network) validation. Returns the gating status the Storage tab
     and others use to decide whether a feature is unlocked:
-    credentials_missing | unvalidated | stale | invalid | valid.
+    credentials_missing | unvalidated | invalid | valid.
     """
     if service not in settings_validators.VALIDATORS:
         raise HTTPException(
@@ -207,8 +207,8 @@ def validate_service(service: str) -> JSONResponse:
     except settings_validators.CredentialNotConfigured as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # sgs-ui-5nn: cache the verdict so the wizard preflight can read it
-    # within the TTL window without re-running the live call.
+    # sgs-ui-5nn: cache the verdict so wizard preflight and Settings can read
+    # it without re-running the live call. Credential edits clear this verdict.
     from datetime import datetime, timezone
     validated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     settings_store.set_credential_validation(

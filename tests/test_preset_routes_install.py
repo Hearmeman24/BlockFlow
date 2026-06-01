@@ -1025,6 +1025,29 @@ def test_error_kind_supply_constraint_classification(client, mocker):
     assert preset_routes._install_state["error_kind"] == "supply_constraint"
 
 
+def test_error_kind_installer_pod_failed_for_registry_pull_rate_limit(client, mocker):
+    """RunPod can stop the CPU installer pod before the agent ever starts
+    when Docker Hub rate-limits the installer image pull. That should be
+    fallback-eligible so the UI offers the GPU download path."""
+    preset = _full_preset(n_models=1)
+    _mock_registry_fetches(mocker, preset)
+    events = [
+        {"type": "pod_spawned", "pod_id": "pod_pull", "token": "tok"},
+        {"type": "install_error", "stage": "health",
+         "reason": "IMAGE_AUTH_ERROR: failed to pull image: toomanyrequests: Docker pull rate limit"},
+    ]
+    proc = _make_proc(stdout=_events_to_stdout(events), returncode=1)
+    mocker.patch.object(preset_routes.subprocess, "Popen", return_value=proc)
+
+    r = client.post("/api/presets/install", json={"preset_id": preset["id"]})
+    assert r.status_code == 202
+    _wait_for_install_state("error", "completed", "cancelled")
+
+    s = preset_routes._install_state
+    assert s["state"] == "error"
+    assert s["error_kind"] == "installer_pod_failed"
+
+
 def test_error_kind_unknown_for_non_supply_failures(client, mocker):
     """Any other terminal error → error_kind='unknown' so the UI doesn't
     show the friendly retry copy and the user sees the raw reason."""
@@ -1048,12 +1071,16 @@ def test_error_kind_unknown_for_non_supply_failures(client, mocker):
 
 
 def test_classify_error_kind_pure_helper():
-    """Pure helper: regex-style detection of supply-constraint failures.
-    Both the magic token and the human phrase should match."""
+    """Pure helper: classify fallback-eligible CPU installer startup failures
+    without masking real download/model errors."""
     assert preset_routes._classify_error_kind(
         "SUPPLY_CONSTRAINT: nothing available") == "supply_constraint"
     assert preset_routes._classify_error_kind(
         "RunPod returned 'no CPU instance available'") == "supply_constraint"
+    assert preset_routes._classify_error_kind(
+        "IMAGE_AUTH_ERROR: failed to pull image: toomanyrequests") == "installer_pod_failed"
+    assert preset_routes._classify_error_kind(
+        "install error at health: pod abc not healthy after 180s; last=status=404 payload=None") == "installer_pod_failed"
     assert preset_routes._classify_error_kind(
         "aria2c exit 122 disk quota exceeded") == "unknown"
     assert preset_routes._classify_error_kind("") == "unknown"

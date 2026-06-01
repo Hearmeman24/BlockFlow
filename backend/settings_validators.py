@@ -421,11 +421,6 @@ REQUIRED_CREDENTIALS: dict[str, tuple[str, ...]] = {
     "huggingface": ("hf_token",),
 }
 
-# A cached validation verdict older than this is reported as `stale` and must be
-# re-run before it counts as usable. Mirrors wizard_routes.VALIDATION_TTL_SECONDS.
-VALIDATION_TTL_SECONDS = 600
-
-
 def credentials_missing(service: str) -> bool:
     """Whether any required credential for `service` is empty/unset."""
     fields = REQUIRED_CREDENTIALS.get(service, ())
@@ -439,9 +434,11 @@ def service_status(service: str) -> dict[str, Any]:
     Status values:
       - credentials_missing: a required credential is empty in Settings.
       - unvalidated:         creds present but no validation has been recorded.
-      - stale:               last validation older than VALIDATION_TTL_SECONDS.
       - invalid:             last validation ran and returned ok=False.
-      - valid:               last validation ok=True and fresh.
+      - valid:               last validation ok=True.
+
+    Successful validations remain valid until the underlying credential value is
+    edited, deleted, or a later provider validation records ok=False.
     """
     if credentials_missing(service):
         return {"status": "credentials_missing", "validated_at": None, "error": None}
@@ -457,14 +454,4 @@ def service_status(service: str) -> dict[str, Any]:
             "error": record["error"],
         }
 
-    from datetime import datetime, timezone
-    try:
-        ts = datetime.fromisoformat(record["validated_at"])
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return {"status": "stale", "validated_at": record["validated_at"], "error": None}
-    age = (datetime.now(timezone.utc) - ts).total_seconds()
-    if age > VALIDATION_TTL_SECONDS:
-        return {"status": "stale", "validated_at": record["validated_at"], "error": None}
     return {"status": "valid", "validated_at": record["validated_at"], "error": None}

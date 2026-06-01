@@ -23,6 +23,18 @@ describe('classifyInstallErrorKind', () => {
       .toBe('unknown')
   })
 
+  it('matches installer pod image pull failures', () => {
+    expect(classifyInstallErrorKind(
+      'IMAGE_AUTH_ERROR: failed to pull image: toomanyrequests: Docker pull rate limit',
+    )).toBe('installer_pod_failed')
+  })
+
+  it('matches installer pod health timeout failures', () => {
+    expect(classifyInstallErrorKind(
+      'install error at health: pod abc not healthy after 180s; last=status=404 payload=None',
+    )).toBe('installer_pod_failed')
+  })
+
   it('returns unknown for null/empty input', () => {
     expect(classifyInstallErrorKind(null)).toBe('unknown')
     expect(classifyInstallErrorKind('')).toBe('unknown')

@@ -6,7 +6,7 @@
  * success renders a green status banner with counts; on error renders a
  * destructive banner with the message.
  */
-import { describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
@@ -35,9 +35,18 @@ function emptyManifest() {
 }
 
 beforeEach(() => {
+  vi.useRealTimers()
   mocks.getPresetManifest.mockReset().mockResolvedValue(emptyManifest())
   mocks.listInstalledPresets.mockReset().mockResolvedValue([])
   mocks.refreshInstalledPresets.mockReset()
+  mocks.installPreset.mockReset()
+  mocks.uninstallPreset.mockReset()
+  mocks.cancelInstall.mockReset()
+  mocks.getInstallProgress.mockReset()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('PresetsPageBody Refresh button', () => {
@@ -117,5 +126,96 @@ describe('PresetsPageBody Refresh button', () => {
   })
 })
 
-// vitest provides beforeEach via importing from 'vitest' explicitly:
-import { beforeEach } from 'vitest'
+describe('PresetsPageBody install recovery', () => {
+  test('installer pod startup failures offer GPU fallback on the presets page', async () => {
+    const user = userEvent.setup()
+    mocks.getPresetManifest.mockResolvedValue({
+      presets: [{
+        id: 'hidream-o1',
+        name: 'HiDream O1 Image',
+        description: 'Starter image preset',
+        comfygen_min_version: '0.2.0',
+        disk_size_estimate_gb: 20,
+        preset_url: 'https://example/preset.json',
+      }],
+      cache: 'fresh' as const,
+      fetched_at: '2026-05-31T00:00:00Z',
+    })
+    mocks.installPreset.mockResolvedValue({
+      preset_id: 'hidream-o1',
+      state: 'running',
+      files_total: 4,
+      started_at: '2026-05-31T00:00:00Z',
+    })
+    mocks.getInstallProgress.mockResolvedValue({
+      state: 'error',
+      preset_id: 'hidream-o1',
+      started_at: '2026-05-31T00:00:00Z',
+      completed_at: '2026-05-31T00:03:00Z',
+      files_total: 4,
+      files_done: 0,
+      phase: 'preflight',
+      pod_id: 'wd2023rnlvslk1',
+      error_kind: 'installer_pod_failed',
+      error: 'install error at health: pod wd2023rnlvslk1 not healthy after 180s; last=status=404 payload=None',
+    })
+
+    render(<PresetsPageBody />)
+    await user.click(await screen.findByRole('button', { name: /^Install$/i }))
+
+    await waitFor(
+      () => expect(mocks.getInstallProgress).toHaveBeenCalled(),
+      { timeout: 3000 },
+    )
+
+    expect((await screen.findAllByText(/CPU installer pod failed/i)).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /use gpu instead/i })).toBeInTheDocument()
+  })
+
+  test('GPU fallback on the presets page skips CPU installer pod milestones immediately', async () => {
+    const user = userEvent.setup()
+    mocks.getPresetManifest.mockResolvedValue({
+      presets: [{
+        id: 'hidream-o1',
+        name: 'HiDream O1 Image',
+        description: 'Starter image preset',
+        comfygen_min_version: '0.2.0',
+        disk_size_estimate_gb: 20,
+        preset_url: 'https://example/preset.json',
+      }],
+      cache: 'fresh' as const,
+      fetched_at: '2026-05-31T00:00:00Z',
+    })
+    mocks.installPreset.mockResolvedValue({
+      preset_id: 'hidream-o1',
+      state: 'running',
+      files_total: 4,
+      started_at: '2026-05-31T00:00:00Z',
+    })
+    mocks.getInstallProgress.mockResolvedValue({
+      state: 'error',
+      preset_id: 'hidream-o1',
+      started_at: '2026-05-31T00:00:00Z',
+      completed_at: '2026-05-31T00:03:00Z',
+      files_total: 4,
+      files_done: 0,
+      phase: 'preflight',
+      pod_id: 'wd2023rnlvslk1',
+      error_kind: 'installer_pod_failed',
+      error: 'install error at health: pod wd2023rnlvslk1 not healthy after 180s; last=status=404 payload=None',
+    })
+
+    render(<PresetsPageBody />)
+    await user.click(await screen.findByRole('button', { name: /^Install$/i }))
+    await waitFor(
+      () => expect(mocks.getInstallProgress).toHaveBeenCalled(),
+      { timeout: 3000 },
+    )
+    await user.click(await screen.findByRole('button', { name: /use gpu instead/i }))
+
+    await waitFor(() => {
+      expect(mocks.installPreset).toHaveBeenLastCalledWith('hidream-o1', { mode: 'gpu' })
+    })
+    expect(screen.queryByText(/Deploying installer pod/i)).not.toBeInTheDocument()
+  })
+})

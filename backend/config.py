@@ -184,6 +184,7 @@ PROMPT_WRITER_SETTINGS_PATH = USER_DATA_DIR / "prompt_writer_settings.json"
 PROMPT_LIBRARY_PATH = USER_DATA_DIR / "prompt_library.json"
 RUN_HISTORY_DB_PATH = USER_DATA_DIR / "run_history.db"
 PRESET_MANIFEST_CACHE_PATH = USER_DATA_DIR / "preset_manifest_cache.json"
+RUNTIME_MANIFEST_CACHE_PATH = USER_DATA_DIR / "runtime_manifest_cache.json"
 PRESET_INSTALL_LOG_PATH = USER_DATA_DIR / "preset_install.log"
 
 

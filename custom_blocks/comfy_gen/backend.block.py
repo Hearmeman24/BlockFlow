@@ -1225,6 +1225,22 @@ def _classify_submit_stdout(stdout: str) -> SubmitResult:
             error_message=message,
         )
 
+    if (parsed.get("ok") is False
+            or output_data.get("ok") is False
+            or parsed.get("status") == "error"
+            or output_data.get("status") == "error"):
+        message = (parsed.get("error_message")
+                   or output_data.get("error_message")
+                   or parsed.get("error")
+                   or output_data.get("error")
+                   or "comfy-gen returned an error")
+        return SubmitResult(
+            kind="structured_error",
+            parsed=parsed,
+            error_type="ok_false",
+            error_message=str(message),
+        )
+
     return SubmitResult(kind="success", parsed=parsed)
 
 

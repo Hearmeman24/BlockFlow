@@ -23,7 +23,7 @@ V2_BASE = "https://api.runpod.ai/v2"
 # ComfyGen-specific constants (will become per-endpoint-type constants once
 # the trainer wizard is wired up).
 BASE_TEMPLATE_ID = "bdy0gkebsg"
-BASE_DOCKER_IMAGE = "hearmeman/comfyui-serverless:v17"
+BASE_DOCKER_IMAGE = "hearmeman/comfyui-serverless:v24"
 RUNTIME_REPO_URL = "https://github.com/Hearmeman24/remote-comfy-gen-handler.git"
 # Docker image is CUDA 12.8.1 — only allow worker GPUs reporting compatible CUDA.
 ALLOWED_CUDA_VERSIONS = ["12.9", "12.8"]

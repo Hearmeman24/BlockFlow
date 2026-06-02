@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend import runpod_api, settings_store
+from backend import runpod_api, runtime_manifest, settings_store
 
 router = APIRouter()
 
@@ -561,7 +561,7 @@ def provision(body: ProvisionBody) -> JSONResponse:
         template = runpod_api.create_template(
             api_key,
             name=template_name,
-            image_name=runpod_api.BASE_DOCKER_IMAGE,
+            image_name=runtime_manifest.resolve_comfygen_image(),
             env=_build_env_for_template(),
         )
     except runpod_api.RunPodAPIError as exc:

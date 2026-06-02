@@ -159,7 +159,7 @@ def test_create_template_calls_save_template_mutation(monkeypatch):
     result = runpod_api.create_template(
         "rpa_x",
         name="blockflow-comfygen-test",
-        image_name="hearmeman/comfyui-serverless:v17",
+        image_name=runpod_api.BASE_DOCKER_IMAGE,
         env=env,
     )
 
@@ -171,7 +171,8 @@ def test_create_template_calls_save_template_mutation(monkeypatch):
     # The mutation must embed the env vars
     assert "AWS_ACCESS_KEY_ID" in body["query"]
     assert "my-bucket" in body["query"]
-    assert "hearmeman/comfyui-serverless:v17" in body["query"]
+    assert runpod_api.BASE_DOCKER_IMAGE == "hearmeman/comfyui-serverless:v24"
+    assert "hearmeman/comfyui-serverless:v24" in body["query"]
     # Both volumeInGb and containerDiskInGb are required by RunPod's GraphQL
     # schema — live integration test caught the prior bug where one was missing.
     assert "volumeInGb" in body["query"]

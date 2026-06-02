@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from backend import settings_store, wizard_routes  # noqa: E402
+from backend import runtime_manifest, settings_store, wizard_routes  # noqa: E402
 
 
 @pytest.fixture
@@ -38,6 +38,8 @@ def app(tmp_path, monkeypatch):
     from backend import preset_routes
     monkeypatch.setattr(preset_routes, "_CACHE_PATH", tmp_path / "preset_manifest_cache.json")
     preset_routes._cache_reset()
+    monkeypatch.setattr(runtime_manifest, "_CACHE_PATH", tmp_path / "runtime_manifest_cache.json")
+    runtime_manifest._cache_reset()
 
     fastapi_app = FastAPI()
     fastapi_app.include_router(wizard_routes.router)
@@ -680,6 +682,11 @@ def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_valida
         wizard_routes.runpod_api, "create_endpoint",
         return_value={"id": "ep_abc"},
     )
+    mocker.patch.object(
+        wizard_routes.runtime_manifest,
+        "resolve_comfygen_image",
+        return_value=runtime_manifest.FALLBACK_DOCKER_IMAGE,
+    )
 
     r = client.post("/api/wizard/comfygen/provision", json={
         "tier": "best",
@@ -715,7 +722,7 @@ def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_valida
     assert env["S3_BUCKET"] == "my-bucket"
     assert env["S3_ENDPOINT_URL"] == "https://x.r2.cloudflarestorage.com"
     assert env["RUNTIME_REPO_URL"]  # must be set to ComfyGen handler repo
-    assert tmpl_kwargs["image_name"]  # ComfyGen image
+    assert tmpl_kwargs["image_name"] == runtime_manifest.FALLBACK_DOCKER_IMAGE
 
     # Endpoint args: uses the just-created template + volume + tier GPUs
     ep_kwargs = create_endpoint.call_args.kwargs
@@ -727,6 +734,46 @@ def test_provision_calls_runpod_api_in_correct_sequence(client, all_creds_valida
     ]
     assert ep_kwargs["data_center_ids"] == ["EUR-IS-1"]
     assert ep_kwargs["workers_max"] == 3  # default
+
+
+def test_provision_uses_runtime_manifest_image(client, all_creds_validated, mocker):
+    mocker.patch.object(wizard_routes.runpod_api, "create_network_volume", return_value={"id": "vol_abc"})
+    create_template = mocker.patch.object(
+        wizard_routes.runpod_api,
+        "create_template",
+        return_value={"id": "tmpl_abc", "name": "template"},
+    )
+    mocker.patch.object(wizard_routes.runpod_api, "create_endpoint", return_value={"id": "ep_abc"})
+    mocker.patch.object(
+        wizard_routes.runtime_manifest,
+        "resolve_comfygen_image",
+        return_value="hearmeman/comfyui-serverless:v25",
+    )
+
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload())
+
+    assert r.status_code == 200
+    assert create_template.call_args.kwargs["image_name"] == "hearmeman/comfyui-serverless:v25"
+
+
+def test_provision_falls_back_to_safe_runtime_image(client, all_creds_validated, mocker):
+    mocker.patch.object(wizard_routes.runpod_api, "create_network_volume", return_value={"id": "vol_abc"})
+    create_template = mocker.patch.object(
+        wizard_routes.runpod_api,
+        "create_template",
+        return_value={"id": "tmpl_abc", "name": "template"},
+    )
+    mocker.patch.object(wizard_routes.runpod_api, "create_endpoint", return_value={"id": "ep_abc"})
+    mocker.patch.object(
+        wizard_routes.runtime_manifest,
+        "resolve_comfygen_image",
+        return_value=runtime_manifest.FALLBACK_DOCKER_IMAGE,
+    )
+
+    r = client.post("/api/wizard/comfygen/provision", json=_deploy_payload())
+
+    assert r.status_code == 200
+    assert create_template.call_args.kwargs["image_name"] == "hearmeman/comfyui-serverless:v24"
 
 
 def test_provision_persists_endpoint_to_settings(client, all_creds_validated, mocker):

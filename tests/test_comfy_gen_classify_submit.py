@@ -179,6 +179,32 @@ def test_classify_structured_error_falls_back_to_error_type_as_message():
     assert "worker_oom" in r.error_message
 
 
+def test_classify_ok_false_error_message_as_structured_error():
+    """Worker caught exceptions are emitted as ok:false without error_type.
+    Preserve that error instead of treating the envelope as success/no-url."""
+    payload = {
+        "ok": False,
+        "error_message": "Workflow produced no image/video outputs.",
+        "job_id": "rp_123",
+    }
+    r = mod._classify_submit_stdout(json.dumps(payload))
+    assert r.kind == "structured_error"
+    assert r.error_message == "Workflow produced no image/video outputs."
+    assert r.parsed["job_id"] == "rp_123"
+
+
+def test_classify_status_error_as_structured_error():
+    """CLI pre-submit failures are emitted as status:error envelopes.
+    Preserve errors like RunPod 401 instead of treating them as no-output."""
+    payload = {
+        "status": "error",
+        "error": "RunPod API returned 401: invalid api key",
+    }
+    r = mod._classify_submit_stdout(json.dumps(payload))
+    assert r.kind == "structured_error"
+    assert r.error_message == "RunPod API returned 401: invalid api key"
+
+
 # ---- parse_failure ---------------------------------------------------------
 
 def test_classify_invalid_json_on_rc_nonzero():

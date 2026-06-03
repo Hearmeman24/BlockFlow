@@ -1,7 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { RefreshCwIcon, SearchIcon } from 'lucide-react'
 
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   cancelInstall,
   getInstallProgress,
@@ -31,6 +35,9 @@ export function PresetsPageBody() {
   const [refused, setRefused] = useState<InstallRefusedError | null>(null)
   // sgs-ui-ag2: Refresh button feedback.
   const [refreshing, setRefreshing] = useState(false)
+  const [query, setQuery] = useState('')
+  const [catalogFilter, setCatalogFilter] = useState<'all' | 'installed' | 'available' | 'attention'>('all')
+  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null)
   type RefreshStatus =
     | { kind: 'success'; summary: RefreshInstalledSummary }
     | { kind: 'warning'; summary: RefreshInstalledSummary }
@@ -148,25 +155,60 @@ export function PresetsPageBody() {
   }
 
   const installedIds = new Set(installed.map((p) => p.preset_id))
+  const installedById = useMemo(() => new Map(installed.map((p) => [p.preset_id, p])), [installed])
+  const catalogRows = useMemo(
+    () => (manifest?.presets ?? []).map((preset) => ({
+      preset,
+      installed: installedById.get(preset.id) ?? null,
+    })),
+    [installedById, manifest],
+  )
+  const installedCount = catalogRows.filter((row) => row.installed).length
+  const availableCount = Math.max(0, catalogRows.length - installedCount)
+  const attentionCount = catalogRows.filter((row) => needsAttention(row.installed)).length
+  const diskTotalGb = catalogRows.reduce((acc, row) => acc + (row.preset.disk_size_estimate_gb || 0), 0)
+  const filteredCatalogRows = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return catalogRows.filter((row) => {
+      if (catalogFilter === 'installed' && !row.installed) return false
+      if (catalogFilter === 'available' && row.installed) return false
+      if (catalogFilter === 'attention' && !needsAttention(row.installed)) return false
+      if (!q) return true
+      const haystack = [
+        row.preset.id,
+        row.preset.name,
+        row.preset.description,
+        row.preset.gpu_tier_hint,
+        ...(row.preset.tags ?? []),
+      ].filter(Boolean).join(' ').toLowerCase()
+      return haystack.includes(q)
+    })
+  }, [catalogFilter, catalogRows, query])
+  const selectedRow = (
+    filteredCatalogRows.find((row) => row.preset.id === selectedPresetId)
+    ?? catalogRows.find((row) => row.preset.id === selectedPresetId)
+    ?? filteredCatalogRows[0]
+    ?? null
+  )
 
   return (
-    <main className="mx-auto max-w-4xl px-4 pt-20 pb-6 space-y-6">
-      <header className="flex items-baseline justify-between">
+    <main className="mx-auto max-w-7xl px-6 pt-24 pb-8 space-y-5 text-sm">
+      <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">Presets</h1>
-          <p className="text-sm text-muted-foreground">
-            Install model + workflow bundles onto your ComfyGen endpoint.
-          </p>
+          <h1 className="text-2xl font-semibold tracking-normal">Presets</h1>
+          <p className="text-muted-foreground">Curated model + workflow bundles for ComfyGen.</p>
         </div>
-        <button
+        <Button
           type="button"
+          size="sm"
+          variant="outline"
           onClick={() => refresh({ syncInstalled: true })}
           disabled={refreshing}
-          className="px-3 py-1.5 text-xs rounded border border-border disabled:opacity-50 disabled:cursor-wait"
           title="Re-fetch the registry manifest AND re-sync every installed preset's metadata (workflows, settings, recommendations). Models aren't touched."
         >
+          <RefreshCwIcon className={refreshing ? 'size-4 animate-spin' : 'size-4'} />
           {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+        </Button>
       </header>
       {refreshStatus && <RefreshStatusBanner status={refreshStatus} onDismiss={() => setRefreshStatus(null)} /> }
 
@@ -217,29 +259,92 @@ export function PresetsPageBody() {
         </div>
       )}
 
-      <section className="space-y-3">
-        <h2 className="text-base font-semibold">Available</h2>
+      <section className="grid gap-3 sm:grid-cols-3">
+        <CatalogMetric label="Catalog" value={`${catalogRows.length} presets`} />
+        <CatalogMetric label="Installed" value={`${installedCount} installed`} />
+        <CatalogMetric label="Disk Estimate" value={`${formatGb(diskTotalGb)} total`} />
+      </section>
+
+      <section className="space-y-3 border-y border-border/60 py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <CatalogFilterButton label="All" count={catalogRows.length} active={catalogFilter === 'all'} onClick={() => setCatalogFilter('all')} />
+          <CatalogFilterButton label="Installed" count={installedCount} active={catalogFilter === 'installed'} onClick={() => setCatalogFilter('installed')} />
+          <CatalogFilterButton label="Available" count={availableCount} active={catalogFilter === 'available'} onClick={() => setCatalogFilter('available')} />
+          <CatalogFilterButton label="Needs attention" count={attentionCount} active={catalogFilter === 'attention'} onClick={() => setCatalogFilter('attention')} />
+          <div className="relative ml-auto min-w-[280px] flex-1 sm:max-w-md">
+            <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              aria-label="Search presets"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              className="h-9 pl-9"
+              placeholder="Search presets, tags, ids..."
+            />
+          </div>
+          {manifest && <span className="text-muted-foreground">{filteredCatalogRows.length} of {catalogRows.length}</span>}
+        </div>
+      </section>
+
+      <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
         {!manifest ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <p className="text-muted-foreground">Loading…</p>
         ) : manifest.presets.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No presets in the registry yet.</p>
+          <p className="text-muted-foreground">No presets in the registry yet.</p>
+        ) : filteredCatalogRows.length === 0 ? (
+          <div className="rounded-md border border-border/70 p-8 text-center text-muted-foreground">
+            No presets match the current filters.
+          </div>
         ) : (
-          <div className="space-y-2">
-            {manifest.presets.map((p) => (
-              <PresetCard
-                key={p.id}
-                preset={p}
-                installed={installedIds.has(p.id)}
-                installing={progress?.state === 'running' && progress.preset_id === p.id}
+          <div className="overflow-hidden rounded-md border border-border/70">
+            {filteredCatalogRows.map((row) => (
+              <PresetCatalogRow
+                key={row.preset.id}
+                preset={row.preset}
+                installed={installedIds.has(row.preset.id)}
+                installedSummary={row.installed}
+                selected={selectedRow?.preset.id === row.preset.id}
+                installing={progress?.state === 'running' && progress.preset_id === row.preset.id}
                 disableAction={progress?.state === 'running'}
-                onInstall={() => handleInstall(p.id)}
-                onUninstall={() => handleUninstall(p.id)}
+                onSelect={() => setSelectedPresetId(row.preset.id)}
+                onInstall={() => handleInstall(row.preset.id)}
+                onUninstall={() => handleUninstall(row.preset.id)}
               />
             ))}
           </div>
         )}
+        <PresetDetailPanel
+          row={selectedRow}
+          installing={!!selectedRow && progress?.state === 'running' && progress.preset_id === selectedRow.preset.id}
+          disableAction={progress?.state === 'running'}
+          onInstall={() => selectedRow && handleInstall(selectedRow.preset.id)}
+          onUninstall={() => selectedRow && handleUninstall(selectedRow.preset.id)}
+        />
       </section>
     </main>
+  )
+}
+
+function CatalogMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border/70 bg-card/35 px-4 py-3">
+      <div className="text-xs uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold">{value}</div>
+    </div>
+  )
+}
+
+function CatalogFilterButton({
+  label, count, active, onClick,
+}: {
+  label: string
+  count: number
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <Button type="button" size="sm" variant={active ? 'default' : 'outline'} onClick={onClick}>
+      {label} {count}
+    </Button>
   )
 }
 
@@ -392,77 +497,130 @@ function InstallProgressCard({
   )
 }
 
-function PresetCard({
+function PresetCatalogRow({
   preset,
   installed,
+  installedSummary,
+  selected,
   installing,
   disableAction,
+  onSelect,
   onInstall,
   onUninstall,
 }: {
   preset: PresetManifestEntry
   installed: boolean
+  installedSummary: InstalledPresetSummary | null
+  selected: boolean
+  installing: boolean
+  disableAction: boolean
+  onSelect: () => void
+  onInstall: () => void
+  onUninstall: () => void
+}) {
+  return (
+    <article className={`grid gap-3 border-b border-border/50 px-4 py-3 last:border-b-0 md:grid-cols-[minmax(0,1fr)_180px_112px] ${selected ? 'bg-accent/25' : 'bg-background hover:bg-accent/10'}`}>
+      <div className="min-w-0">
+        <button
+          type="button"
+          onClick={onSelect}
+          className="block max-w-full truncate text-left text-sm font-semibold hover:underline"
+        >
+          {preset.name}
+        </button>
+        <p className="mt-0.5 line-clamp-1 text-sm text-muted-foreground">{preset.description}</p>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {installed && <Badge className="rounded-md bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/15">Installed</Badge>}
+          {needsAttention(installedSummary) && <Badge variant="outline" className="rounded-md border-amber-500/50 text-amber-300">Needs attention</Badge>}
+          {preset.gpu_tier_hint && <Badge variant="secondary" className="rounded-md capitalize">{preset.gpu_tier_hint}</Badge>}
+          {(preset.tags ?? []).slice(0, 4).map((tag) => (
+            <Badge key={tag} variant="secondary" className="rounded-md font-normal">{tag}</Badge>
+          ))}
+        </div>
+      </div>
+      <dl className="grid grid-cols-3 gap-2 text-xs md:grid-cols-1">
+        <Detail label="Disk" value={`${formatGb(preset.disk_size_estimate_gb)}`} />
+        <Detail label="Min ComfyGen" value={preset.comfygen_min_version} />
+        <Detail label="ID" value={preset.id} />
+      </dl>
+      <div className="flex items-start justify-end">
+        {installed ? (
+          <Button type="button" size="sm" variant="destructive" onClick={onUninstall} disabled={disableAction}>
+            Uninstall
+          </Button>
+        ) : (
+          <Button type="button" size="sm" onClick={onInstall} disabled={disableAction}>
+            {installing ? 'Installing…' : 'Install'}
+          </Button>
+        )}
+      </div>
+    </article>
+  )
+}
+
+function PresetDetailPanel({
+  row,
+  installing,
+  disableAction,
+  onInstall,
+  onUninstall,
+}: {
+  row: { preset: PresetManifestEntry; installed: InstalledPresetSummary | null } | null
   installing: boolean
   disableAction: boolean
   onInstall: () => void
   onUninstall: () => void
 }) {
+  if (!row) {
+    return (
+      <aside role="region" aria-label="Preset details" className="rounded-md border border-border/70 p-5 text-muted-foreground">
+        Select a preset to inspect bundle details.
+      </aside>
+    )
+  }
+  const { preset, installed } = row
   return (
-    <article className="rounded border border-border/50 bg-card/40 p-4 space-y-2">
-      <header className="flex items-start justify-between gap-3">
+    <aside role="region" aria-label="Preset details" className="rounded-md border border-border/70 bg-card/25 p-5">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold">{preset.name}</h3>
-          <p className="text-xs text-muted-foreground line-clamp-2">{preset.description}</p>
+          <h2 className="text-base font-semibold">{preset.name}</h2>
+          <p className="mt-1 text-sm text-muted-foreground">{preset.description}</p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {installed && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
-              Installed
-            </span>
-          )}
-          {preset.gpu_tier_hint && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted/40 text-muted-foreground capitalize">
-              {preset.gpu_tier_hint}
-            </span>
-          )}
-        </div>
-      </header>
-      <dl className="grid grid-cols-3 gap-2 text-xs">
-        <Detail label="Disk" value={`${preset.disk_size_estimate_gb} GB`} />
+        {installed && <Badge className="rounded-md bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/15">Installed</Badge>}
+      </div>
+      <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+        <Detail label="Disk" value={`${formatGb(installed?.disk_size_gb ?? preset.disk_size_estimate_gb)}`} />
+        <Detail label="Workflows" value={installed ? `${installed.workflows.length} workflows` : 'Not installed'} />
         <Detail label="Min ComfyGen" value={preset.comfygen_min_version} />
         <Detail label="ID" value={preset.id} />
       </dl>
+      {installed?.workflows.length ? (
+        <div className="mt-4">
+          <div className="text-xs uppercase text-muted-foreground">Installed workflows</div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {installed.workflows.map((workflow) => (
+              <Badge key={workflow.name} variant="secondary" className="rounded-md font-normal">{workflow.name}</Badge>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {preset.tags && preset.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {preset.tags.map((t) => (
-            <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-muted/30 text-muted-foreground">
-              {t}
-            </span>
-          ))}
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {preset.tags.map((tag) => <Badge key={tag} variant="outline" className="rounded-md font-normal">{tag}</Badge>)}
         </div>
       )}
-      <div className="flex gap-2 pt-1">
+      <div className="mt-5">
         {installed ? (
-          <button
-            type="button"
-            onClick={onUninstall}
-            disabled={disableAction}
-            className="px-3 py-1.5 text-xs rounded border border-destructive/50 text-destructive hover:bg-destructive/10 disabled:opacity-50"
-          >
-            Uninstall
-          </button>
+          <Button type="button" size="sm" variant="destructive" onClick={onUninstall} disabled={disableAction}>
+            Uninstall preset
+          </Button>
         ) : (
-          <button
-            type="button"
-            onClick={onInstall}
-            disabled={disableAction}
-            className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50"
-          >
-            {installing ? 'Installing…' : 'Install'}
-          </button>
+          <Button type="button" size="sm" onClick={onInstall} disabled={disableAction}>
+            {installing ? 'Installing preset…' : 'Install preset'}
+          </Button>
         )}
       </div>
-    </article>
+    </aside>
   )
 }
 
@@ -473,6 +631,15 @@ function Detail({ label, value }: { label: string; value: string }) {
       <dd className="font-mono text-xs">{value}</dd>
     </div>
   )
+}
+
+function needsAttention(installed: InstalledPresetSummary | null): boolean {
+  return !!installed && installed.workflows.length === 0
+}
+
+function formatGb(value: number | null | undefined): string {
+  if (!value) return '0 GB'
+  return Number.isInteger(value) ? `${value} GB` : `${value.toFixed(1)} GB`
 }
 
 // sgs-ui-ag2: status banner for the /presets Refresh button. Renders the

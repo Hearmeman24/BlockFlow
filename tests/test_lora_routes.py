@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from backend import civitai_client, config, lora_metadata, lora_routes, settings_store  # noqa: E402
+from tests.fakes import comfy_gen as comfy_gen_fakes  # noqa: E402
 
 
 @pytest.fixture
@@ -238,6 +239,93 @@ def test_sync_route_passes_settings_runpod_key_to_comfy_gen(client, monkeypatch,
     assert r.json()["loras"][0]["filename"] == "route.safetensors"
     assert captured["env"]["RUNPOD_API_KEY"] == "rpa_sync_route"
     assert "rpa_sync_route" not in captured["args"]
+
+
+def test_fetch_loras_preserves_status_error_from_cli_stdout(client, monkeypatch, tmp_path) -> None:
+    _configure_endpoint()
+    settings_store.set_credential("runpod_api_key", "rpa_sync_error")
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.setattr(config, "COMFY_GEN_INFO_CACHE_PATH", tmp_path / "comfy_gen_info_cache.json")
+    _seed_cache(tmp_path, ["cached.safetensors"])
+
+    monkeypatch.setattr(
+        lora_routes.subprocess,
+        "run",
+        lambda *args, **kwargs: comfy_gen_fakes.run_result(
+            stdout=json.dumps({
+                "status": "error",
+                "error": "Listing loras on network volume timed out",
+            }),
+            stderr="Listing loras on network volume...\n",
+            returncode=1,
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        lora_routes._fetch_loras_from_comfygen("ep-sidecar")
+
+    assert exc.value.status_code == 502
+    assert "Listing loras on network volume timed out" in exc.value.detail
+    assert _cached_filenames(tmp_path) == ["cached.safetensors"]
+
+
+def test_sync_route_preserves_status_error_from_cli_stdout(client, monkeypatch, tmp_path) -> None:
+    _configure_endpoint()
+    settings_store.set_credential("runpod_api_key", "rpa_sync_route_error")
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.setattr(config, "COMFY_GEN_INFO_CACHE_PATH", tmp_path / "comfy_gen_info_cache.json")
+    _seed_cache(tmp_path, ["cached.safetensors"])
+
+    monkeypatch.setattr(
+        lora_routes.subprocess,
+        "run",
+        lambda *args, **kwargs: comfy_gen_fakes.run_result(
+            stdout=json.dumps({
+                "status": "error",
+                "error": "RunPod API returned 401 while listing loras",
+            }),
+            stderr="Listing loras on network volume...\n",
+            returncode=1,
+        ),
+    )
+
+    r = client.post("/api/loras/sync")
+
+    assert r.status_code == 502
+    assert "RunPod API returned 401 while listing loras" in r.json()["detail"]
+    assert _cached_filenames(tmp_path) == ["cached.safetensors"]
+
+
+def test_fetch_loras_reads_final_json_after_status_lines(client, monkeypatch, tmp_path) -> None:
+    _configure_endpoint()
+    settings_store.set_credential("runpod_api_key", "rpa_sync_mixed")
+    sidecar = tmp_path / "venv" / "bin" / "comfy-gen"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    sidecar.chmod(0o755)
+    monkeypatch.setenv("BLOCKFLOW_COMFY_GEN_VENV", str(sidecar.parent.parent))
+    monkeypatch.setattr(config, "COMFY_GEN_INFO_CACHE_PATH", tmp_path / "comfy_gen_info_cache.json")
+
+    stdout = "\n".join([
+        "Listing loras on network volume...",
+        json.dumps({"ok": True, "files": [{"filename": "fresh.safetensors"}]}),
+    ])
+    monkeypatch.setattr(
+        lora_routes.subprocess,
+        "run",
+        lambda *args, **kwargs: comfy_gen_fakes.run_result(stdout=stdout, returncode=0),
+    )
+
+    assert lora_routes._fetch_loras_from_comfygen("ep-sidecar") == ["fresh.safetensors"]
+    assert _cached_filenames(tmp_path) == ["fresh.safetensors"]
 
 
 def test_delete_subprocess_passes_settings_runpod_key_via_env_not_argv(client, monkeypatch, tmp_path) -> None:

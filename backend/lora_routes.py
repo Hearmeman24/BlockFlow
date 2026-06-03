@@ -212,14 +212,53 @@ def _write_cached_loras(filenames: list[str], fetched_at: float | None = None) -
         path.write_text(json.dumps(data, ensure_ascii=False))
 
 
+def _loads_comfy_gen_stdout(stdout: str) -> Any:
+    """Parse final comfy-gen JSON even if status lines preceded it."""
+    stripped = stdout.strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError as first_exc:
+        lines = stdout.splitlines()
+        for idx, line in enumerate(lines):
+            if not line.lstrip().startswith(("{", "[")):
+                continue
+            try:
+                return json.loads("\n".join(lines[idx:]).strip())
+            except json.JSONDecodeError:
+                continue
+        raise first_exc
+
+
+def _comfy_gen_error_message(data: Any) -> str | None:
+    if not isinstance(data, dict):
+        return None
+    output_data = data.get("output") if isinstance(data.get("output"), dict) else {}
+    if (
+        data.get("ok") is False
+        or output_data.get("ok") is False
+        or data.get("status") == "error"
+        or output_data.get("status") == "error"
+    ):
+        message = (
+            data.get("error_message")
+            or output_data.get("error_message")
+            or data.get("error")
+            or output_data.get("error")
+            or "comfy-gen list loras failed"
+        )
+        return str(message)
+    return None
+
+
 def _fetch_loras_from_comfygen(endpoint_id: str) -> list[str]:
     """Invoke `comfy-gen list loras` and return filenames.
 
     Cold-path: takes 50-90s on a cold CPU pod. Only called from explicit
     /sync, never from GET. Updates the shared cache file as a side effect.
 
-    `comfy-gen list` always emits JSON on stdout; the response shape is
-    {ok, model_type, files: [{filename, path, size_mb}], ...}.
+    The expected response shape is
+    {ok, model_type, files: [{filename, path, size_mb}], ...}. Some CLI
+    versions can also emit status text before the final JSON blob.
     """
     try:
         comfy_gen = comfy_gen_cli.resolve_comfy_gen()
@@ -231,15 +270,26 @@ def _fetch_loras_from_comfygen(endpoint_id: str) -> list[str]:
             capture_output=True, text=True, timeout=_SUBPROCESS_TIMEOUT_SEC,
             env=env,
         )
+    data: Any | None = None
+    parse_error: json.JSONDecodeError | None = None
+    if proc.stdout.strip():
+        try:
+            data = _loads_comfy_gen_stdout(proc.stdout)
+        except json.JSONDecodeError as exc:
+            parse_error = exc
+    if data is not None:
+        message = _comfy_gen_error_message(data)
+        if message is not None:
+            raise HTTPException(status_code=502, detail=f"comfy-gen list loras failed: {message}")
     if proc.returncode != 0:
         raise HTTPException(
             status_code=502,
             detail=f"comfy-gen list loras failed: {(proc.stderr or proc.stdout).strip()[:500]}",
         )
-    try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=502, detail=f"comfy-gen returned invalid JSON: {exc}") from exc
+    if data is None:
+        if parse_error is not None:
+            raise HTTPException(status_code=502, detail=f"comfy-gen returned invalid JSON: {parse_error}") from parse_error
+        raise HTTPException(status_code=502, detail="comfy-gen returned empty output")
     files = data.get("files") if isinstance(data, dict) else None
     if not isinstance(files, list):
         return []

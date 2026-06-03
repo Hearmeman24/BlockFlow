@@ -108,3 +108,23 @@ export function toDisplayUrls(input: unknown): string[] {
 export function toDisplayUrl(input: unknown): string | undefined {
   return toDisplayUrls(input)[0]
 }
+
+/**
+ * Coerces an unknown pipeline value to a flat list of non-empty, trimmed video
+ * URL strings. Mirrors the local `toVideoUrls` helpers in video_fx, video_viewer,
+ * and video_stitcher — use this shared version instead.
+ *
+ * - string  → [trimmed] if non-empty, else []
+ * - array   → filter strings, trim, drop empties
+ * - anything else (null, undefined, number, …) → []
+ */
+export function toVideoUrls(value: unknown): string[] {
+  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
+  if (Array.isArray(value)) {
+    return value
+      .filter((v): v is string => typeof v === 'string')
+      .map((v) => v.trim())
+      .filter(Boolean)
+  }
+  return []
+}

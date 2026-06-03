@@ -242,6 +242,49 @@ needed. Publishing uses the npm/GitHub release flow documented in
 - Prefer existing block and pipeline patterns over new abstractions unless the
   abstraction clearly reduces duplicated behavior or formalizes a real contract.
 
+## UI Design System (Tightening Contract)
+
+These rules keep the UI consistent and prevent re-introducing the divergence the
+UI Tightening Audit (`docs/ui-tightening-audit.md`) catalogued.
+
+**Primitive-first.** Do not hand-roll a control when a `components/ui/*` shadcn
+primitive exists. Specifically: no raw `<button>` where `Button` fits, no raw
+`<input>`/`<select>`/`<textarea>` where `Input`/`Select`/`Textarea` fit, no
+bespoke `fixed inset-0` overlay where `Dialog`/`AlertDialog` fits, no hand-rolled
+progress `<div>` where `Progress` fits. Native `confirm()`/`alert()`/`prompt()`
+are not allowed in UI flows — use `AlertDialog` or a `Dialog`.
+
+**Tokens, not ad-hoc utilities.**
+- Dense text uses the named `text-2xs` / `text-3xs` / `text-4xs` utilities, not
+  arbitrary `text-[11px]` / `text-[10px]` / `text-[9px]`.
+- Semantic state colors use the `--success` / `--warning` / `--info` / `--link`
+  tokens (e.g. `text-success`, `border-warning/40`, `text-link`), not raw
+  `emerald-*` / `amber-* `/ `blue-*` Tailwind colors. Destructive uses the
+  existing `destructive` token. Block-size category colors (see Block Sizes) are
+  a separate, decorative concern and stay as-is.
+
+**Shared atoms over copies.** Reuse the shared components/utilities rather than
+re-inlining: `StatusBadge`, `AlertPanel`, `EmptyState`, `PageHeader`,
+`FavoriteButton`, `DeleteIconButton`, `BlockField`, `pipeline/collapsible-section`,
+and `lib/` helpers (time formatting, tmpfiles upload, value coercers, the
+accumulated-URLs and block-health hooks). Add to a shared module before pasting a
+second copy.
+
+**Three-state contract.** Every data-driven surface must implement all three
+states before the happy path ships, in a form consistent with the rest of the app:
+- **Loading** — a `Skeleton` matching the shape of the expected content. Not a
+  bare "Loading…" string and not `Suspense fallback={null}`.
+- **Empty** — `EmptyState` with a headline and one actionable CTA.
+- **Error** — a human-readable message plus one recovery action; distinguishable
+  from empty. Transient feedback uses `sonner` toasts.
+
+**One primary action per view.** Exactly one element per screen carries the
+primary/filled treatment. Everything else is `outline`/`ghost`/`link`. The global
+**Run Pipeline** button is the canonical primary on `/generate`.
+
+**Layout.** Content pages use one of the two standard max-widths and the shared
+`PageHeader`; do not introduce new per-page width/header treatments.
+
 ## Completion
 
 Before handing off:

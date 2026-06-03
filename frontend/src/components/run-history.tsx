@@ -5,10 +5,13 @@ import { useRouter, useSearchParams, usePathname } from 'next/navigation'
 import { ChevronLeft, ChevronRight, EyeOff, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
 import { useRuns } from '@/lib/hooks'
 import type { MediaKindFilter } from '@/lib/api'
 import { RunCard, findPrimaryArtifact, looksLikeTrainedLora } from './run-card'
 import { EmptyState } from '@/components/empty-state'
+import { AlertPanel } from '@/components/alert-panel'
+import { PageHeader } from '@/components/page-header'
 import { DatasetCard } from './dataset-card'
 import { LoraCard } from './lora-card'
 import type { RunEntry } from '@/lib/types'
@@ -94,7 +97,7 @@ export function RunHistory() {
   }, [debouncedQuery]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const offset = (page - 1) * PAGE_SIZE
-  const { runs, total, isLoading, mutate } = useRuns(PAGE_SIZE, offset, favoritesOnly, mediaKind, debouncedQuery, hidePartial)
+  const { runs, total, isLoading, error, mutate } = useRuns(PAGE_SIZE, offset, favoritesOnly, mediaKind, debouncedQuery, hidePartial)
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / PAGE_SIZE)), [total])
   const startIndex = total === 0 ? 0 : offset + 1
@@ -199,23 +202,42 @@ export function RunHistory() {
     </div>
   )
 
+  const countDescription = `Showing ${startIndex}–${endIndex} of ${total} ${favoritesOnly ? 'favorites' : 'runs'} · Page ${page} of ${totalPages}`
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-1">
-          <p className="text-sm text-muted-foreground">
-            Showing {startIndex}-{endIndex} of {total} {favoritesOnly ? 'favorites' : 'runs'}
-          </p>
-          <p className="text-xs text-muted-foreground/70">Page {page} of {totalPages}</p>
-        </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-baseline sm:justify-between">
+        <PageHeader
+          title="Artifacts"
+          description={countDescription}
+        />
         {prevNextButtons}
       </div>
 
       {filterBar}
 
       {isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <p className="text-sm text-muted-foreground">Loading history…</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="rounded-lg border border-border/40 overflow-hidden">
+              <Skeleton className="aspect-video w-full" />
+              <div className="p-3 space-y-2">
+                <Skeleton className="h-3 w-3/4" />
+                <Skeleton className="h-3 w-1/2" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : error ? (
+        <div className="py-8 space-y-3">
+          <AlertPanel variant="error" title="Failed to load artifacts">
+            {error instanceof Error ? error.message : String(error)}
+          </AlertPanel>
+          <div className="flex justify-center">
+            <Button type="button" variant="outline" size="sm" onClick={() => mutate()}>
+              Retry
+            </Button>
+          </div>
         </div>
       ) : runs.length === 0 ? (
         <EmptyState

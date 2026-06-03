@@ -2,17 +2,12 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Sparkles, FolderOpen } from 'lucide-react'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-
-const SIDEBAR_ITEMS = [
-  { href: '/generate', label: 'Generate', icon: Sparkles },
-  { href: '/artifacts', label: 'Artifacts', icon: FolderOpen },
-]
+import { NAV_ITEMS } from '@/lib/nav-items'
 
 export function Sidebar() {
   const pathname = usePathname()
@@ -20,7 +15,7 @@ export function Sidebar() {
   return (
     <aside className="fixed left-4 top-1/2 -translate-y-1/2 z-50">
       <div className="flex flex-col gap-1 rounded-xl border border-border/50 bg-card/80 backdrop-blur-md p-1.5 shadow-lg">
-        {SIDEBAR_ITEMS.map((item) => {
+        {NAV_ITEMS.map((item) => {
           const active = pathname === item.href
           return (
             <Tooltip key={item.href}>

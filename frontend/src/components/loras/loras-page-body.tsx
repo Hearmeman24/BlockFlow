@@ -32,6 +32,7 @@ import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   Select,
   SelectContent,
@@ -283,7 +284,7 @@ export function LorasPageBody() {
   }
 
   return (
-    <main className="mx-auto max-w-5xl px-4 pt-20 pb-6 space-y-4">
+    <main className="mx-auto max-w-6xl px-4 pt-20 pb-6 space-y-4">
       <PageHeader
         title="LoRAs"
         description="Manage LoRAs on your ComfyGen endpoint."
@@ -394,7 +395,7 @@ export function LorasPageBody() {
       </div>
 
       {!data ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <LorasTableSkeleton />
       ) : data.loras.length === 0 ? (
         <EmptyState
           title="No LoRAs on the endpoint yet."
@@ -923,6 +924,50 @@ function SetSourceForm({
       </button>
       {err && <span className="text-destructive">{err}</span>}
     </div>
+  )
+}
+
+// ---- Loading skeletons ----
+
+function LorasTableSkeleton() {
+  return (
+    <div className="space-y-1.5" data-testid="loras-table-skeleton">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3 px-2 py-2.5 border-b border-border/20">
+          <Skeleton className="h-3 w-3 rounded" />
+          <Skeleton className="h-3 flex-1" />
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-3 w-24" />
+          <Skeleton className="h-3 w-14" />
+          <Skeleton className="h-3 w-20" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export function LorasPageSkeleton() {
+  return (
+    <main className="mx-auto max-w-6xl px-4 pt-20 pb-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-6 w-24" />
+        <div className="flex gap-2">
+          <Skeleton className="h-7 w-20" />
+          <Skeleton className="h-7 w-14" />
+        </div>
+      </div>
+      <div className="flex gap-2">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <Skeleton key={i} className="h-5 w-16 rounded-full" />
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <Skeleton className="h-7 w-48" />
+        <Skeleton className="h-7 w-32" />
+        <Skeleton className="h-7 w-28" />
+      </div>
+      <LorasTableSkeleton />
+    </main>
   )
 }
 

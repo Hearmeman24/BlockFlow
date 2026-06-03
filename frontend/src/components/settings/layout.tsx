@@ -2,6 +2,8 @@
 
 import type { ReactNode } from 'react'
 
+import { PageHeader } from '@/components/page-header'
+
 export type SettingsTabId = 'credentials' | 'endpoints' | 'storage' | 'app' | 'keyboard'
 
 type TabSpec = {
@@ -26,8 +28,8 @@ interface Props {
 
 export function SettingsLayout({ activeTab, onTabChange, children }: Props) {
   return (
-    <div className="max-w-5xl mx-auto px-6 py-10">
-      <h1 className="text-2xl font-semibold mb-6">Settings</h1>
+    <div className="max-w-4xl mx-auto px-6 py-10">
+      <PageHeader title="Settings" className="mb-6" />
 
       <div className="flex gap-6">
         <aside className="w-56 shrink-0">

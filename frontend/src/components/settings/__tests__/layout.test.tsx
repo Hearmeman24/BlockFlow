@@ -98,12 +98,37 @@ describe('SettingsLayout', () => {
     ] satisfies SettingsTabId[])
   })
 
-  test('renders the page heading "Settings"', () => {
+  test('renders the page heading "Settings" via PageHeader', () => {
     render(
       <SettingsLayout activeTab="credentials" onTabChange={() => {}}>
         <div />
       </SettingsLayout>,
     )
-    expect(screen.getByRole('heading', { name: /^settings$/i, level: 1 })).toBeInTheDocument()
+    // PageHeader renders an <h1> with the title text.
+    const heading = screen.getByRole('heading', { name: /^settings$/i, level: 1 })
+    expect(heading).toBeInTheDocument()
+    // PageHeader wraps the heading in a <header> element.
+    expect(heading.closest('header')).toBeInTheDocument()
+  })
+
+  test('uses max-w-4xl container class (standard form width)', () => {
+    const { container } = render(
+      <SettingsLayout activeTab="credentials" onTabChange={() => {}}>
+        <div />
+      </SettingsLayout>,
+    )
+    const outerDiv = container.firstChild as HTMLElement
+    expect(outerDiv.className).toContain('max-w-4xl')
+    expect(outerDiv.className).not.toContain('max-w-5xl')
+  })
+
+  test('two-column layout: aside nav and content section both render', () => {
+    render(
+      <SettingsLayout activeTab="credentials" onTabChange={() => {}}>
+        <div data-testid="tab-content">content</div>
+      </SettingsLayout>,
+    )
+    expect(screen.getByRole('navigation', { name: /settings sections/i })).toBeInTheDocument()
+    expect(screen.getByTestId('tab-content')).toBeInTheDocument()
   })
 })

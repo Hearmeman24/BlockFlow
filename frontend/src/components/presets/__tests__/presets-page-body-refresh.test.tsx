@@ -49,6 +49,43 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+describe('PresetsPageBody — loading skeleton (Phase 3)', () => {
+  test('renders skeleton cards while manifest is loading, not "Loading…" text', async () => {
+    // Never resolve so we stay in the loading state
+    mocks.getPresetManifest.mockReturnValue(new Promise(() => {}))
+
+    render(<PresetsPageBody />)
+
+    // Skeleton should appear immediately
+    expect(screen.getByTestId('presets-cards-skeleton')).toBeInTheDocument()
+    // No plain "Loading…" text
+    expect(screen.queryByText(/Loading…/i)).not.toBeInTheDocument()
+  })
+
+  test('skeleton disappears and cards render after manifest loads', async () => {
+    mocks.getPresetManifest.mockResolvedValue({
+      presets: [{
+        id: 'wan-animate',
+        name: 'WAN Animate',
+        description: 'Video preset',
+        comfygen_min_version: '0.1.0',
+        disk_size_estimate_gb: 40,
+        preset_url: 'https://example/preset.json',
+      }],
+      cache: 'fresh' as const,
+      fetched_at: '2026-06-03T00:00:00Z',
+    })
+
+    render(<PresetsPageBody />)
+
+    // Wait for the preset card
+    expect(await screen.findByText('WAN Animate')).toBeInTheDocument()
+
+    // Skeleton is gone
+    expect(screen.queryByTestId('presets-cards-skeleton')).not.toBeInTheDocument()
+  })
+})
+
 describe('PresetsPageBody Refresh button', () => {
   test('button disables and shows in-flight label while refresh is running', async () => {
     // Hold the resolution so we can assert mid-flight UI state.

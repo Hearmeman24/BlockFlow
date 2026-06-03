@@ -103,6 +103,34 @@ beforeEach(() => {
   vi.mocked(client.syncLoras).mockResolvedValue(_listResponse([]))
 })
 
+describe('LorasPageBody — loading skeleton (Phase 3)', () => {
+  test('renders skeleton rows while data is loading, not "Loading…" text', async () => {
+    // Never resolve so we stay in the loading state
+    vi.mocked(client.listLoras).mockReturnValue(new Promise(() => {}))
+
+    render(<LorasPageBody />)
+
+    // Skeleton should appear immediately
+    expect(screen.getByTestId('loras-table-skeleton')).toBeInTheDocument()
+    // No plain "Loading…" text
+    expect(screen.queryByText(/Loading…/i)).not.toBeInTheDocument()
+  })
+
+  test('skeleton disappears and table renders after data loads', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'a.safetensors' }),
+    ]))
+
+    render(<LorasPageBody />)
+
+    // Wait for data to arrive
+    await findRowFor('a.safetensors')
+
+    // Skeleton is gone
+    expect(screen.queryByTestId('loras-table-skeleton')).not.toBeInTheDocument()
+  })
+})
+
 describe('LorasPageBody — empty / endpoint states', () => {
   test('renders no-endpoint CTA when listLoras throws NoEndpointError', async () => {
     vi.mocked(client.listLoras).mockRejectedValue(new client.NoEndpointError())

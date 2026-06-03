@@ -34,6 +34,7 @@ import {
 import { AlertPanel } from '@/components/alert-panel'
 import { EmptyState } from '@/components/empty-state'
 import { PageHeader } from '@/components/page-header'
+import { Skeleton } from '@/components/ui/skeleton'
 
 export function PresetsPageBody() {
   const [manifest, setManifest] = useState<PresetManifest | null>(null)
@@ -249,7 +250,7 @@ export function PresetsPageBody() {
       <section className="space-y-3">
         <h2 className="text-base font-semibold">Available</h2>
         {!manifest ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <PresetsCardsSkeleton />
         ) : manifest.presets.length === 0 ? (
           <EmptyState title="No presets in the registry yet." />
         ) : (
@@ -289,6 +290,47 @@ export function PresetsPageBody() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </main>
+  )
+}
+
+// ---- Loading skeletons ----
+
+function PresetsCardsSkeleton() {
+  return (
+    <div className="space-y-2" data-testid="presets-cards-skeleton">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <div key={i} className="rounded border border-border/50 bg-card/40 p-4 space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="space-y-1.5 flex-1 min-w-0">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-3 w-full max-w-sm" />
+            </div>
+            <Skeleton className="h-5 w-16 rounded shrink-0" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <Skeleton className="h-8" />
+            <Skeleton className="h-8" />
+            <Skeleton className="h-8" />
+          </div>
+          <Skeleton className="h-7 w-20" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+export function PresetsPageSkeleton() {
+  return (
+    <main className="mx-auto max-w-4xl px-4 pt-20 pb-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-6 w-24" />
+        <Skeleton className="h-7 w-20" />
+      </div>
+      <section className="space-y-3">
+        <Skeleton className="h-5 w-20" />
+        <PresetsCardsSkeleton />
+      </section>
     </main>
   )
 }

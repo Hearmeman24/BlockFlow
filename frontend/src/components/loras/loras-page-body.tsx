@@ -26,9 +26,41 @@ import {
   type GroupedRow,
 } from '@/lib/loras/parse'
 
+import { AlertPanel } from '@/components/alert-panel'
+import { EmptyState } from '@/components/empty-state'
+import { PageHeader } from '@/components/page-header'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Progress } from '@/components/ui/progress'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
+  Dialog,
+  DialogContent,
+} from '@/components/ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+
 // Sentinel filter value: rows with neither metadata base_model nor a parsed
 // filename hint. Drives the "Unknown N" dashboard chip.
 const UNKNOWN_BASE_MODEL = '__unknown__'
+
+// Sentinel used as the "All" option in Select primitives (Radix disallows value="").
+const SELECT_ALL_BASE_MODELS = '__all_base_models__'
+const SELECT_ALL_SOURCES = '__all_sources__'
 
 type FilterState = {
   query: string
@@ -47,6 +79,15 @@ function rowMatchesBaseModel(row: LoraRow, filter: string): boolean {
   return effective === filter
 }
 
+/** State for the AlertDialog confirm replacement. */
+type ConfirmState = {
+  open: boolean
+  message: string
+  onConfirm: () => void
+}
+
+const CONFIRM_CLOSED: ConfirmState = { open: false, message: '', onConfirm: () => {} }
+
 export function LorasPageBody() {
   const [data, setData] = useState<LorasListResponse | null>(null)
   const [loadErr, setLoadErr] = useState<string | null>(null)
@@ -57,7 +98,28 @@ export function LorasPageBody() {
   const [showDownload, setShowDownload] = useState(false)
   const [actionErr, setActionErr] = useState<string | null>(null)
   const [busyAction, setBusyAction] = useState(false)
+  const [confirmState, setConfirmState] = useState<ConfirmState>(CONFIRM_CLOSED)
   const backgroundSyncTriggered = useRef(false)
+
+  /** Drop-in replacement for window.confirm() — opens the AlertDialog,
+   *  resolves when the user picks Confirm or Cancel. */
+  const showConfirm = useCallback((message: string): Promise<boolean> => {
+    return new Promise((resolve) => {
+      setConfirmState({
+        open: true,
+        message,
+        onConfirm: () => {
+          setConfirmState(CONFIRM_CLOSED)
+          resolve(true)
+        },
+      })
+    })
+  }, [])
+
+  const handleConfirmCancel = useCallback(() => {
+    setConfirmState(CONFIRM_CLOSED)
+    // resolve false is implicit — the pending action just never fires
+  }, [])
 
   const refresh = useCallback(async () => {
     setLoadErr(null)
@@ -119,7 +181,8 @@ export function LorasPageBody() {
     const what = filenames.length === 1
       ? `Delete ${filenames[0]}${sizeHint}?`
       : `Delete ${filenames.length} LoRAs${sizeHint}? This cannot be undone.`
-    if (!confirm(what)) return
+    const confirmed = await showConfirm(what)
+    if (!confirmed) return
 
     setActionErr(null)
     setBusyAction(true)
@@ -147,7 +210,7 @@ export function LorasPageBody() {
     } finally {
       setBusyAction(false)
     }
-  }, [data])
+  }, [data, showConfirm])
 
   const filtered = useMemo(() => {
     if (!data) return []
@@ -207,64 +270,57 @@ export function LorasPageBody() {
   if (noEndpoint) {
     return (
       <main className="mx-auto max-w-4xl px-4 pt-20 pb-6 space-y-6">
-        <header>
-          <h1 className="text-2xl font-semibold">LoRAs</h1>
-        </header>
-        <div className="border border-amber-500/40 bg-amber-500/10 rounded p-4 text-sm space-y-2">
+        <PageHeader title="LoRAs" />
+        <AlertPanel variant="warning">
           <p>No ComfyGen endpoint configured.</p>
           <a href="/settings"
-             className="inline-block px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground">
+             className="inline-block px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground mt-2">
             Configure endpoint
           </a>
-        </div>
+        </AlertPanel>
       </main>
     )
   }
 
   return (
     <main className="mx-auto max-w-5xl px-4 pt-20 pb-6 space-y-4">
-      <header className="flex items-baseline justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">LoRAs</h1>
-          <p className="text-sm text-muted-foreground">
-            Manage LoRAs on your ComfyGen endpoint.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setShowDownload(true)}
-            className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground"
-          >
-            Add LoRA
-          </button>
-          <button
-            type="button"
-            onClick={handleManualSync}
-            disabled={syncing}
-            className="px-3 py-1.5 text-xs rounded border border-border disabled:opacity-50"
-            title="Re-read the LoRA list from the ComfyGen endpoint. Takes ~50s on cold start."
-          >
-            {syncing ? 'Syncing…' : 'Sync'}
-          </button>
-        </div>
-      </header>
+      <PageHeader
+        title="LoRAs"
+        description="Manage LoRAs on your ComfyGen endpoint."
+        actions={
+          <>
+            <Button
+              size="sm"
+              onClick={() => setShowDownload(true)}
+            >
+              Add LoRA
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleManualSync}
+              disabled={syncing}
+              title="Re-read the LoRA list from the ComfyGen endpoint. Takes ~50s on cold start."
+            >
+              {syncing ? 'Syncing…' : 'Sync'}
+            </Button>
+          </>
+        }
+      />
 
       {data?.stale && (
-        <div className="border border-amber-500/40 bg-amber-500/10 rounded p-2 text-xs">
+        <AlertPanel variant="warning">
           Showing cached LoRA list. {syncing ? 'Background sync in progress…' : 'Click Sync to refresh from the endpoint.'}
-        </div>
+        </AlertPanel>
       )}
 
       {loadErr && (
-        <div className="border border-destructive/40 bg-destructive/10 rounded p-3 text-sm">
-          {loadErr}
-        </div>
+        <AlertPanel variant="error">{loadErr}</AlertPanel>
       )}
       {actionErr && (
-        <div className="border border-destructive/40 bg-destructive/10 rounded p-3 text-sm whitespace-pre-wrap">
-          {actionErr}
-        </div>
+        <AlertPanel variant="error">
+          <span className="whitespace-pre-wrap">{actionErr}</span>
+        </AlertPanel>
       )}
 
       <DashboardChipRow
@@ -277,59 +333,78 @@ export function LorasPageBody() {
       />
 
       <div className="flex flex-wrap gap-2 items-center">
-        <input
+        <Input
           type="text"
           placeholder="Search by name…"
           value={filters.query}
           onChange={(e) => setFilters((f) => ({ ...f, query: e.target.value }))}
-          className="px-2 py-1.5 text-xs rounded border border-border bg-background min-w-[200px]"
+          className="h-7 text-xs min-w-[200px]"
           aria-label="Search LoRAs"
         />
-        <select
-          value={filters.baseModel}
-          onChange={(e) => setFilters((f) => ({ ...f, baseModel: e.target.value }))}
-          className="px-2 py-1.5 text-xs rounded border border-border bg-background"
-          aria-label="Filter by base model"
+        <Select
+          value={filters.baseModel === '' ? SELECT_ALL_BASE_MODELS : filters.baseModel}
+          onValueChange={(v) => setFilters((f) => ({
+            ...f,
+            baseModel: v === SELECT_ALL_BASE_MODELS ? '' : v,
+          }))}
         >
-          <option value="">All base models</option>
-          {baseModels.map((b) => (
-            <option key={b} value={b}>{b}</option>
-          ))}
-          <option value={UNKNOWN_BASE_MODEL}>Unknown</option>
-        </select>
-        <select
-          value={filters.source}
-          onChange={(e) => setFilters((f) => ({ ...f, source: e.target.value as FilterState['source'] }))}
-          className="px-2 py-1.5 text-xs rounded border border-border bg-background"
-          aria-label="Filter by source"
+          <SelectTrigger size="xs" aria-label="Filter by base model">
+            <SelectValue placeholder="All base models" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={SELECT_ALL_BASE_MODELS}>All base models</SelectItem>
+            {baseModels.map((b) => (
+              <SelectItem key={b} value={b}>{b}</SelectItem>
+            ))}
+            <SelectItem value={UNKNOWN_BASE_MODEL}>Unknown</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select
+          value={filters.source === '' ? SELECT_ALL_SOURCES : filters.source}
+          onValueChange={(v) => setFilters((f) => ({
+            ...f,
+            source: v === SELECT_ALL_SOURCES ? '' : v as FilterState['source'],
+          }))}
         >
-          <option value="">All sources</option>
-          <option value="civitai">CivitAI</option>
-          <option value="hf">HuggingFace</option>
-          <option value="url">URL</option>
-          <option value="unknown">Unknown</option>
-        </select>
+          <SelectTrigger size="xs" aria-label="Filter by source">
+            <SelectValue placeholder="All sources" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={SELECT_ALL_SOURCES}>All sources</SelectItem>
+            <SelectItem value="civitai">CivitAI</SelectItem>
+            <SelectItem value="hf">HuggingFace</SelectItem>
+            <SelectItem value="url">URL</SelectItem>
+            <SelectItem value="unknown">Unknown</SelectItem>
+          </SelectContent>
+        </Select>
         <span className="text-xs text-muted-foreground ml-auto">
           {filtered.length} of {data?.loras.length ?? 0}
         </span>
         {selectedRows.length > 0 && (
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => handleDelete(selectedRows.map((l) => l.filename))}
             disabled={busyAction}
-            className="px-3 py-1.5 text-xs rounded border border-destructive/50 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            className="border-destructive/50 text-destructive hover:bg-destructive/10"
           >
             Delete {selectedRows.length} selected
-          </button>
+          </Button>
         )}
       </div>
 
       {!data ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : data.loras.length === 0 ? (
-        <p className="text-sm text-muted-foreground py-8 text-center">
-          No LoRAs on the endpoint yet. Click <em>Add LoRA</em> above or sync to refresh.
-        </p>
+        <EmptyState
+          title="No LoRAs on the endpoint yet."
+          description="Click Add LoRA above to download one, or use Sync to refresh from the endpoint."
+          action={
+            <Button size="sm" onClick={() => setShowDownload(true)}>
+              Add LoRA
+            </Button>
+          }
+        />
       ) : (
         <table className="w-full text-xs border-collapse">
           <thead>
@@ -370,15 +445,37 @@ export function LorasPageBody() {
         </table>
       )}
 
-      {showDownload && (
-        <DownloadDialog
-          onClose={() => setShowDownload(false)}
-          onDownloaded={async () => {
-            setShowDownload(false)
-            await refresh()
-          }}
-        />
-      )}
+      <Dialog open={showDownload} onOpenChange={(open) => { if (!open) setShowDownload(false) }}>
+        <DialogContent
+          aria-label="Download LoRA"
+          showCloseButton={false}
+          className="max-w-lg p-5 space-y-3"
+        >
+          <DownloadDialogContent
+            onClose={() => setShowDownload(false)}
+            onDownloaded={async () => {
+              setShowDownload(false)
+              await refresh()
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={confirmState.open}
+        onOpenChange={(open) => { if (!open) handleConfirmCancel() }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm</AlertDialogTitle>
+            <AlertDialogDescription>{confirmState.message}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={handleConfirmCancel}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmState.onConfirm}>Confirm</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </main>
   )
 }
@@ -561,7 +658,6 @@ function GroupedRowView({
           row={latest}
           disabled={disabled}
           deleteLabel={`Delete all ${group.members.length}`}
-          deleteConfirmHint={`Delete all ${group.members.length} epochs of ${group.stem}?`}
           onDelete={() => onDelete(memberFilenames)}
           onBackfilled={onBackfilled}
         />
@@ -648,14 +744,13 @@ function BaseModelChip({
 }
 
 function RowActions({
-  row, disabled, onDelete, onBackfilled, deleteLabel = 'Delete', deleteConfirmHint,
+  row, disabled, onDelete, onBackfilled, deleteLabel = 'Delete',
 }: {
   row: LoraRow
   disabled: boolean
   onDelete: () => void
   onBackfilled: (updated: LoraRow) => void
   deleteLabel?: string
-  deleteConfirmHint?: string
 }) {
   const [showBackfill, setShowBackfill] = useState(false)
   const [showOverflow, setShowOverflow] = useState(false)
@@ -691,8 +786,7 @@ function RowActions({
             role="menuitem"
             onClick={() => {
               setShowOverflow(false)
-              const prompt = deleteConfirmHint ?? `Delete ${row.filename}?`
-              if (confirm(prompt)) onDelete()
+              onDelete()
             }}
             disabled={disabled}
             className="w-full text-left px-3 py-1.5 text-[11px] text-destructive hover:bg-destructive/10 disabled:opacity-50"
@@ -832,7 +926,10 @@ function SetSourceForm({
   )
 }
 
-function DownloadDialog({
+// DownloadDialogContent is the inner content of the Dialog (no longer owns the
+// overlay — Dialog provides that). The outer Dialog open/close is controlled
+// by LorasPageBody.
+function DownloadDialogContent({
   onClose, onDownloaded,
 }: {
   onClose: () => void
@@ -909,43 +1006,40 @@ function DownloadDialog({
     onDownloaded()
   }
 
-  // Single outer dialog node — the inner panel swaps between input form
-  // and progress card based on state. Keeps the dialog DOM node stable so
-  // tests holding a reference don't go stale across the transition.
+  // Single inner panel — swaps between input form and progress card.
+  if (progress) {
+    return (
+      <>
+        <DownloadProgressCard progress={progress} />
+        <div className="flex justify-end gap-2 pt-1">
+          {(progress.state === 'completed' || progress.state === 'error') ? (
+            <Button size="sm" onClick={handleDoneClick}>
+              Done
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onClose}
+              title="Close the dialog. The download keeps running in the background."
+            >
+              Close (download continues)
+            </Button>
+          )}
+        </div>
+      </>
+    )
+  }
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
-         role="dialog" aria-label="Download LoRA">
-      <div className="bg-card border border-border rounded-lg max-w-lg w-full p-5 space-y-3">
-        {progress ? (
-          <>
-            <DownloadProgressCard progress={progress} />
-            <div className="flex justify-end gap-2 pt-1">
-              {(progress.state === 'completed' || progress.state === 'error') ? (
-                <button type="button" onClick={handleDoneClick}
-                        className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground">
-                  Done
-                </button>
-              ) : (
-                <button type="button" onClick={onClose}
-                        className="px-3 py-1.5 text-xs rounded border border-border"
-                        title="Close the dialog. The download keeps running in the background.">
-                  Close (download continues)
-                </button>
-              )}
-            </div>
-          </>
-        ) : (
-          <InputForm
-            input={input} setInput={setInput}
-            filename={filename} setFilename={setFilename}
-            trimmed={trimmed} detectedSource={detectedSource}
-            civitai={civitai} civitaiNeedsLatest={civitaiNeedsLatest}
-            canSubmit={canSubmit} busy={busy} err={err}
-            onCancel={onClose} onSubmit={handleSubmit}
-          />
-        )}
-      </div>
-    </div>
+    <InputForm
+      input={input} setInput={setInput}
+      filename={filename} setFilename={setFilename}
+      trimmed={trimmed} detectedSource={detectedSource}
+      civitai={civitai} civitaiNeedsLatest={civitaiNeedsLatest}
+      canSubmit={canSubmit} busy={busy} err={err}
+      onCancel={onClose} onSubmit={handleSubmit}
+    />
   )
 }
 
@@ -999,14 +1093,12 @@ function InputForm({
       />
       {err && <p className="text-xs text-destructive whitespace-pre-wrap">{err}</p>}
       <div className="flex justify-end gap-2 pt-1">
-        <button type="button" onClick={onCancel}
-                className="px-3 py-1.5 text-xs rounded border border-border">
+        <Button variant="outline" size="sm" onClick={onCancel}>
           Cancel
-        </button>
-        <button type="button" onClick={onSubmit} disabled={!canSubmit || busy}
-                className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50">
+        </Button>
+        <Button size="sm" onClick={onSubmit} disabled={!canSubmit || busy}>
           {busy ? 'Starting…' : 'Download'}
-        </button>
+        </Button>
       </div>
     </>
   )
@@ -1031,16 +1123,13 @@ function DownloadProgressCard({ progress }: { progress: DownloadProgress }) {
         </p>
       )}
       {isActive && (
-        <div className="h-1.5 w-full rounded bg-muted overflow-hidden">
-          <div
-            className="h-full bg-primary transition-all"
-            style={{ width: `${pct ?? 0}%` }}
-            role="progressbar"
-            aria-valuenow={pct ?? 0}
-            aria-valuemin={0}
-            aria-valuemax={100}
-          />
-        </div>
+        <Progress
+          value={pct ?? 0}
+          className="h-1.5"
+          aria-valuenow={pct ?? 0}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        />
       )}
       {isActive && pct !== null && (
         <p className="text-[11px] text-muted-foreground">{pct}%</p>

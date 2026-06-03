@@ -8,6 +8,7 @@ import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
+import { toVideoUrls } from '@/lib/video-ref'
 import {
   PORT_VIDEO,
   type BlockDef,
@@ -25,17 +26,6 @@ const UPLOAD_LUT_ENDPOINT =
   typeof window !== 'undefined'
     ? `http://${window.location.hostname}:8000/api/blocks/video_fx/upload-lut`
     : '/api/blocks/video_fx/upload-lut'
-
-function toVideoUrls(value: unknown): string[] {
-  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
-  if (Array.isArray(value)) {
-    return value
-      .filter((v): v is string => typeof v === 'string')
-      .map((v) => v.trim())
-      .filter(Boolean)
-  }
-  return []
-}
 
 interface FxPayload {
   videos: string[]

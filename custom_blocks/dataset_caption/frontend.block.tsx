@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Progress } from '@/components/ui/progress'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -328,9 +329,7 @@ function DatasetCaptionBlock({ blockId, inputs, setOutput, registerExecute, setS
                 </span>
                 <span className="font-mono text-muted-foreground">{pct}%</span>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded bg-muted/40">
-                <div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} />
-              </div>
+              <Progress value={pct} className="h-1.5" />
             </>
           )}
           {progress.error && <p className="text-[10px] text-red-400 break-words">{progress.error}</p>}

@@ -14,6 +14,8 @@ import { usePromptSourceSelector } from '@/lib/pipeline/prompt-source-selector'
 import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
+import { toText } from '@/lib/pipeline/block-utils'
+import { uploadToTmpfiles } from '@/lib/tmpfiles-upload'
 import { toBackendResolvableUrls as toBackendResolvableImageUrls } from '@/lib/image-ref'
 import {
   toBackendResolvableUrls as toBackendResolvableVideoUrls,
@@ -33,7 +35,7 @@ const HEALTH_ENDPOINT = '/api/blocks/seedance/health'
 const RUN_ENDPOINT = '/api/blocks/seedance/run'
 const STATUS_ENDPOINT = (id: string) => `/api/blocks/seedance/status/${id}`
 const CANCEL_ENDPOINT = (id: string) => `/api/blocks/seedance/cancel/${id}`
-const TMPFILES_UPLOAD_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload'
+
 
 type Mode = 'text_to_video' | 'first_last_frames' | 'omni_reference'
 type TaskType =
@@ -105,12 +107,6 @@ interface JobSnap {
   error?: string
   usage?: { consume?: number } | null
   remote_logs?: string[]
-}
-
-function toText(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return value.find((v) => typeof v === 'string' && v.trim()) ?? ''
-  return ''
 }
 
 function asUrlList(value: unknown): string[] {
@@ -229,22 +225,6 @@ function SeedanceBlock({
       .catch(() => setHealthy(false))
   }, [])
 
-  const uploadOne = useCallback(async (file: File): Promise<string> => {
-    const buf = await file.arrayBuffer()
-    const res = await fetch(TMPFILES_UPLOAD_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'X-Filename': file.name,
-        'X-Content-Type': file.type || 'application/octet-stream',
-      },
-      body: buf,
-    })
-    const data = await res.json()
-    if (!data.ok || !data.image_url) throw new Error(data.error || 'upload failed')
-    return data.image_url as string
-  }, [])
-
   const addFiles = useCallback(async (
     kind: 'image' | 'video' | 'audio',
     files: File[],
@@ -255,7 +235,7 @@ function SeedanceBlock({
     try {
       const urls: string[] = []
       for (const f of files) {
-        try { urls.push(await uploadOne(f)) }
+        try { urls.push(await uploadToTmpfiles(f)) }
         catch (e) { setUploadError(e instanceof Error ? e.message : String(e)) }
       }
       if (urls.length === 0) return
@@ -265,7 +245,7 @@ function SeedanceBlock({
     } finally {
       setUploading(null)
     }
-  }, [uploadOne, setLocalImageUrls, setLocalVideoUrls, setLocalAudioUrls])
+  }, [setLocalImageUrls, setLocalVideoUrls, setLocalAudioUrls])
 
   const pick = useCallback(async (kind: 'image' | 'video' | 'audio') => {
     const accept = kind === 'image' ? 'image/*' : kind === 'video' ? 'video/mp4,video/quicktime' : 'audio/mp3,audio/mpeg,audio/wav'

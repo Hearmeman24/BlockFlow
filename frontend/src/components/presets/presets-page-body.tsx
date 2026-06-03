@@ -19,6 +19,21 @@ import {
 } from '@/lib/settings/client'
 import { classifyInstallErrorKind, isInstallFallbackEligible } from '@/lib/install-error-kind'
 import { InstallMilestones } from './install-milestones'
+import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { AlertPanel } from '@/components/alert-panel'
+import { EmptyState } from '@/components/empty-state'
+import { PageHeader } from '@/components/page-header'
 
 export function PresetsPageBody() {
   const [manifest, setManifest] = useState<PresetManifest | null>(null)
@@ -36,6 +51,12 @@ export function PresetsPageBody() {
     | { kind: 'warning'; summary: RefreshInstalledSummary }
     | { kind: 'error'; message: string }
   const [refreshStatus, setRefreshStatus] = useState<RefreshStatus | null>(null)
+
+  // AlertDialog state for uninstall confirmation
+  const [uninstallTarget, setUninstallTarget] = useState<{
+    presetId: string
+    message: string
+  } | null>(null)
 
   const refresh = useCallback(async (opts?: { syncInstalled?: boolean }) => {
     setManifestErr(null)
@@ -132,7 +153,16 @@ export function PresetsPageBody() {
     const sizeHint = installedPreset?.disk_size_gb
       ? ` (~${installedPreset.disk_size_gb} GB on the ComfyGen volume)`
       : ''
-    if (!confirm(`Uninstall ${presetId}? Model files will be deleted from the ComfyGen volume${sizeHint}.`)) return
+    setUninstallTarget({
+      presetId,
+      message: `Uninstall ${presetId}? Model files will be deleted from the ComfyGen volume${sizeHint}.`,
+    })
+  }
+
+  const confirmUninstall = async () => {
+    if (!uninstallTarget) return
+    const { presetId } = uninstallTarget
+    setUninstallTarget(null)
     try {
       const result = await uninstallPreset(presetId)
       if (!result.ok && result.errors.length > 0) {
@@ -151,35 +181,33 @@ export function PresetsPageBody() {
 
   return (
     <main className="mx-auto max-w-4xl px-4 pt-20 pb-6 space-y-6">
-      <header className="flex items-baseline justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Presets</h1>
-          <p className="text-sm text-muted-foreground">
-            Install model + workflow bundles onto your ComfyGen endpoint.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => refresh({ syncInstalled: true })}
-          disabled={refreshing}
-          className="px-3 py-1.5 text-xs rounded border border-border disabled:opacity-50 disabled:cursor-wait"
-          title="Re-fetch the registry manifest AND re-sync every installed preset's metadata (workflows, settings, recommendations). Models aren't touched."
-        >
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
-      </header>
+      <PageHeader
+        title="Presets"
+        description="Install model + workflow bundles onto your ComfyGen endpoint."
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => refresh({ syncInstalled: true })}
+            disabled={refreshing}
+            title="Re-fetch the registry manifest AND re-sync every installed preset's metadata (workflows, settings, recommendations). Models aren't touched."
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </Button>
+        }
+      />
       {refreshStatus && <RefreshStatusBanner status={refreshStatus} onDismiss={() => setRefreshStatus(null)} /> }
 
       {manifestErr && (
-        <div className="border border-destructive/40 bg-destructive/10 rounded p-3 text-sm">
+        <AlertPanel variant="error">
           Couldn&apos;t reach the preset registry: <span className="font-mono text-xs">{manifestErr}</span>
-        </div>
+        </AlertPanel>
       )}
 
       {manifest?.cache === 'stale' && (
-        <div className="border border-amber-500/40 bg-amber-500/10 rounded p-3 text-xs">
+        <AlertPanel variant="warning" className="text-xs">
           Showing offline copy of the registry. Last fetch error: <span className="font-mono">{manifest.fetch_error}</span>
-        </div>
+        </AlertPanel>
       )}
 
       {progress && progress.state !== 'idle' && (
@@ -194,8 +222,9 @@ export function PresetsPageBody() {
       )}
 
       {refused && (
-        <div
-          className="border border-amber-500/40 bg-amber-500/10 rounded p-3 text-sm space-y-1.5"
+        <AlertPanel
+          variant="warning"
+          className="space-y-1.5"
           data-testid="install-refused-banner"
         >
           <p className="font-semibold text-amber-200">Missing credential</p>
@@ -209,12 +238,12 @@ export function PresetsPageBody() {
               <span className="font-mono">{refused.credential}</span>
             </a>
           </p>
-        </div>
+        </AlertPanel>
       )}
       {actionErr && (
-        <div className="border border-destructive/40 bg-destructive/10 rounded p-3 text-sm">
+        <AlertPanel variant="error">
           {actionErr}
-        </div>
+        </AlertPanel>
       )}
 
       <section className="space-y-3">
@@ -222,7 +251,7 @@ export function PresetsPageBody() {
         {!manifest ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : manifest.presets.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No presets in the registry yet.</p>
+          <EmptyState title="No presets in the registry yet." />
         ) : (
           <div className="space-y-2">
             {manifest.presets.map((p) => (
@@ -239,6 +268,27 @@ export function PresetsPageBody() {
           </div>
         )}
       </section>
+
+      {/* Uninstall confirmation dialog */}
+      <AlertDialog
+        open={!!uninstallTarget}
+        onOpenChange={(open) => { if (!open) setUninstallTarget(null) }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Uninstall preset?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {uninstallTarget?.message}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmUninstall}>
+              Uninstall
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </main>
   )
 }
@@ -283,13 +333,14 @@ function InstallProgressCard({
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">{headline}</h2>
         {isActive && (
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="sm"
             onClick={onCancel}
-            className="rounded border border-destructive/50 px-2 py-0.5 text-[10px] font-mono uppercase text-destructive hover:bg-destructive/10"
+            className="rounded border-destructive/50 px-2 py-0.5 text-[10px] font-mono uppercase text-destructive hover:bg-destructive/10 h-auto"
           >
             cancel
-          </button>
+          </Button>
         )}
       </div>
       {/* sgs-ui-5k7: milestone narration + bytes-based progress bar. */}
@@ -322,12 +373,10 @@ function InstallProgressCard({
                   </span>
                 </div>
                 {!f.cached && f.status !== 'pending' && (
-                  <div className="h-1 w-full overflow-hidden rounded bg-muted">
-                    <div
-                      className="h-full bg-primary transition-all"
-                      style={{ width: `${Math.min(100, Math.max(0, f.percent))}%` }}
-                    />
-                  </div>
+                  <Progress
+                    value={Math.min(100, Math.max(0, f.percent))}
+                    className="h-1"
+                  />
                 )}
               </li>
             ))}
@@ -347,21 +396,20 @@ function InstallProgressCard({
               : 'The CPU installer pod failed before downloads started. You can retry CPU, or download through the GPU endpoint instead.'}
           </p>
           <div className="flex gap-2">
-            <button
-              type="button"
+            <Button
+              size="sm"
               onClick={onRetryCpu}
-              className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground"
             >
               Retry on CPU
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={onUseGpu}
               title="Spawns a GPU serverless worker for download — slower and costs ~$1.50 per wan-animate-sized install (~40 GB). Use when CPU pod capacity is exhausted."
-              className="px-3 py-1.5 text-xs rounded border border-border text-foreground hover:bg-muted/40"
             >
               Use GPU instead
-            </button>
+            </Button>
           </div>
           <details className="text-[10px]">
             <summary className="cursor-pointer text-muted-foreground">Show raw error</summary>
@@ -443,23 +491,23 @@ function PresetCard({
       )}
       <div className="flex gap-2 pt-1">
         {installed ? (
-          <button
-            type="button"
+          <Button
+            variant="outline"
+            size="sm"
             onClick={onUninstall}
             disabled={disableAction}
-            className="px-3 py-1.5 text-xs rounded border border-destructive/50 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            className="border-destructive/50 text-destructive hover:bg-destructive/10"
           >
             Uninstall
-          </button>
+          </Button>
         ) : (
-          <button
-            type="button"
+          <Button
+            size="sm"
             onClick={onInstall}
             disabled={disableAction}
-            className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50"
           >
             {installing ? 'Installing…' : 'Install'}
-          </button>
+          </Button>
         )}
       </div>
     </article>
@@ -490,13 +538,11 @@ function RefreshStatusBanner({
 }: { status: _RefreshStatus; onDismiss: () => void }) {
   if (status.kind === 'error') {
     return (
-      <div
-        data-testid="refresh-status-banner"
-        data-tone="error"
-        className="border border-destructive/40 bg-destructive/10 rounded p-3 text-sm flex justify-between gap-3"
-      >
-        <span>Refresh failed: {status.message}</span>
-        <button type="button" onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">dismiss</button>
+      <div data-testid="refresh-status-banner" data-tone="error">
+        <AlertPanel variant="error" className="flex justify-between gap-3">
+          <span>Refresh failed: {status.message}</span>
+          <button type="button" onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">dismiss</button>
+        </AlertPanel>
       </div>
     )
   }
@@ -504,21 +550,19 @@ function RefreshStatusBanner({
   const ok = summary.refreshed.length
   const skip = summary.skipped.length
   const errs = summary.errors.length
-  const cls = status.kind === 'warning'
-    ? 'border-amber-500/40 bg-amber-500/10'
-    : 'border-emerald-500/40 bg-emerald-500/10'
   return (
-    <div
-      data-testid="refresh-status-banner"
-      data-tone={status.kind}
-      className={`border ${cls} rounded p-3 text-sm flex justify-between gap-3`}
-    >
-      <span>
-        ✓ Refreshed {ok} preset{ok === 1 ? '' : 's'}
-        {skip > 0 && ` · ${skip} skipped`}
-        {errs > 0 && ` · ${errs} error${errs === 1 ? '' : 's'}`}
-      </span>
-      <button type="button" onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">dismiss</button>
+    <div data-testid="refresh-status-banner" data-tone={status.kind}>
+      <AlertPanel
+        variant={status.kind === 'warning' ? 'warning' : 'info'}
+        className={`flex justify-between gap-3 ${status.kind === 'success' ? 'border-emerald-500/40 bg-emerald-500/10' : ''}`}
+      >
+        <span>
+          ✓ Refreshed {ok} preset{ok === 1 ? '' : 's'}
+          {skip > 0 && ` · ${skip} skipped`}
+          {errs > 0 && ` · ${errs} error${errs === 1 ? '' : 's'}`}
+        </span>
+        <button type="button" onClick={onDismiss} className="text-xs text-muted-foreground hover:text-foreground">dismiss</button>
+      </AlertPanel>
     </div>
   )
 }

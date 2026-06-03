@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { Progress } from '@/components/ui/progress'
 import { Slider } from '@/components/ui/slider'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -530,12 +531,10 @@ function DatasetCreateBlock({
             </span>
             <span className="text-[10px] font-mono text-muted-foreground">{progress.status}</span>
           </div>
-          <div className="h-1.5 w-full overflow-hidden rounded bg-muted/40">
-            <div
-              className="h-full bg-primary transition-all"
-              style={{ width: `${Math.min(100, ((progress.completed + progress.failed) / Math.max(1, progress.total)) * 100)}%` }}
-            />
-          </div>
+          <Progress
+            value={Math.min(100, ((progress.completed + progress.failed) / Math.max(1, progress.total)) * 100)}
+            className="h-1.5"
+          />
           {progress.partial_images.some((p) => p) && (
             <div className="grid grid-cols-6 gap-1 max-h-[120px] overflow-y-auto">
               {progress.partial_images.filter((p): p is NonNullable<typeof p> => !!p).slice(-24).map((p) => (

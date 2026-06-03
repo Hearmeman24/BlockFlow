@@ -9,6 +9,10 @@ import {
   type ValidationResult,
 } from '@/lib/settings/client'
 
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+
 interface Props {
   name: string
   label: string
@@ -88,44 +92,44 @@ export function CredentialInput({ name, label, validator, hint }: Props) {
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={inputId} className="text-sm font-medium">
-        {label}
-      </label>
+      <Label htmlFor={inputId}>{label}</Label>
       <div className="flex gap-2">
-        <input
+        <Input
           id={inputId}
           type={showSecret ? 'text' : 'password'}
           value={draftValue}
           onChange={(e) => setDraftValue(e.target.value)}
-          className="flex-1 rounded border border-border bg-background px-3 py-1.5 text-sm font-mono"
+          className="flex-1 font-mono"
           spellCheck={false}
           autoComplete="off"
         />
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
           aria-label={showSecret ? 'Hide secret' : 'Show secret'}
           onClick={() => setShowSecret((s) => !s)}
-          className="px-3 py-1.5 text-xs rounded border border-border hover:bg-accent/50"
         >
           {showSecret ? 'Hide' : 'Show'}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          size="sm"
           onClick={handleSave}
           disabled={!isDirty || saveState.kind === 'pending'}
-          className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {saveState.kind === 'pending' ? 'Saving…' : 'Save'}
-        </button>
+        </Button>
         {validator && (
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={handleValidate}
             disabled={validateState.kind === 'pending'}
-            className="px-3 py-1.5 text-xs rounded border border-border hover:bg-accent/50 disabled:opacity-50"
           >
             {validateState.kind === 'pending' ? 'Validating…' : 'Validate'}
-          </button>
+          </Button>
         )}
       </div>
 

@@ -3,9 +3,20 @@
 import { useEffect, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { deleteRun, toggleRunFavorite } from '@/lib/api'
-import { formatRelativeTime } from './run-card'
+import { formatRelativeTime } from '@/lib/format-time'
+import { FavoriteButton } from '@/components/favorite-button'
+import { DeleteIconButton } from '@/components/delete-icon-button'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import type { RunEntry } from '@/lib/types'
 
 interface DatasetValue {
@@ -45,6 +56,8 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
   const [fav, setFav] = useState(run.favorited ?? false)
   const [status, setStatus] = useState<CaptionStatus | null>(null)
   const [captionsOpen, setCaptionsOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
 
   const images = Array.isArray(value.images) ? value.images.filter((v): v is string => typeof v === 'string') : []
   const thumbs = images.slice(0, 4)
@@ -74,12 +87,9 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
     return () => { cancelled = true }
   }, [dsId])
 
-  const handleDelete = async () => {
-    if (!confirm(
-      `Delete dataset "${dsName}" permanently?\n\nThis removes the run record AND the on-disk folder ` +
-      `(images, captions, manifest). It cannot be undone. Any pipeline that referenced this dataset will fail.`
-    )) return
+  const handleDeleteConfirmed = async () => {
     setDeleting(true)
+    setDeleteError(null)
     try {
       // 1) Delete the folder first — if this fails, keep the run so the user
       //    can retry; better than orphaning a run that points to nothing.
@@ -89,7 +99,8 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
         })
         const d = await res.json().catch(() => null)
         if (!res.ok && res.status !== 404) {
-          alert(`Failed to delete dataset folder: ${d?.error || `HTTP ${res.status}`}`)
+          setDeleteError(`Failed to delete dataset folder: ${d?.error || `HTTP ${res.status}`}`)
+          setDeleting(false)
           return
         }
       }
@@ -97,7 +108,7 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
       await deleteRun(run.id)
       onDeleted?.()
     } catch (e) {
-      alert(`Delete failed: ${e instanceof Error ? e.message : String(e)}`)
+      setDeleteError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setDeleting(false)
     }
@@ -193,29 +204,35 @@ export function DatasetCard({ run, value, onDeleted, onFavoriteToggled }: Datase
 
         <div className="flex items-center gap-1.5 pt-1">
           <div className="flex-1" />
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`size-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
-            onClick={handleToggleFavorite}
-          >
-            <svg className="size-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-            </svg>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 text-muted-foreground hover:text-red-400"
-            onClick={handleDelete}
-            disabled={deleting}
-          >
-            <svg className="size-3" viewBox="0 0 12 12" fill="currentColor">
-              <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" />
-            </svg>
-          </Button>
+          <FavoriteButton active={fav} onToggle={handleToggleFavorite} />
+          <DeleteIconButton onClick={() => setDeleteOpen(true)} />
         </div>
       </CardContent>
+
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete dataset permanently?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes the run record AND the on-disk folder (images, captions, manifest).
+              It cannot be undone. Any pipeline that referenced this dataset will fail.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteError && (
+            <p className="text-sm text-destructive">{deleteError}</p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              disabled={deleting}
+              onClick={(e) => { e.preventDefault(); handleDeleteConfirmed() }}
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   )
 }

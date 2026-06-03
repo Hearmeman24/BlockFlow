@@ -13,6 +13,9 @@ import {
   type ValidationStatus,
 } from '@/lib/settings/client'
 
+import { Button } from '@/components/ui/button'
+import { AlertPanel } from '@/components/alert-panel'
+
 const OPTIONS: Array<{
   value: AssetStorageMode
   label: string
@@ -171,14 +174,13 @@ export function StorageTab() {
       )}
 
       <div className="flex items-center gap-3">
-        <button
+        <Button
           type="button"
           onClick={() => void handleSave()}
           disabled={!canSave}
-          className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Save
-        </button>
+        </Button>
         {saving && <span className="text-xs text-muted-foreground">Saving…</span>}
         {!saving && dirty && r2BlocksSave && (
           <span className="text-xs text-muted-foreground">Validate R2 to enable saving this mode.</span>
@@ -240,18 +242,19 @@ function R2Gate({
 }) {
   if (status === 'credentials_missing') {
     return (
-      <div className="space-y-3 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
-        <p className="text-xs leading-5 text-muted-foreground">
+      <AlertPanel variant="warning" className="space-y-3">
+        <p className="text-xs leading-5">
           R2 credentials aren&apos;t configured yet. Add and validate them before assets can upload in this mode.
         </p>
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
           onClick={onConfigure}
-          className="rounded border border-border px-3 py-1.5 text-xs hover:bg-accent/50"
         >
           Configure R2 credentials →
-        </button>
-      </div>
+        </Button>
+      </AlertPanel>
     )
   }
 
@@ -273,14 +276,15 @@ function R2Gate({
 
       {!isVerifiedR2Status(status) && (
         <div className="flex items-center gap-3">
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={onValidate}
             disabled={validating}
-            className="rounded border border-border px-3 py-1.5 text-xs hover:bg-accent/50 disabled:opacity-50"
           >
             {validating ? 'Validating R2…' : 'Validate R2'}
-          </button>
+          </Button>
           {validateError && <span className="text-xs text-destructive">{validateError}</span>}
         </div>
       )}

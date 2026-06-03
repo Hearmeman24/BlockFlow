@@ -7,6 +7,7 @@ import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
+import { toText } from '@/lib/pipeline/block-utils'
 import { useSessionState } from '@/lib/use-session-state'
 import {
   PORT_TEXT,
@@ -32,12 +33,6 @@ interface ModelInfo {
   model_id: string
   name: string
   can_do_text_to_speech?: boolean
-}
-
-function toText(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return value.find((v) => typeof v === 'string' && v.trim()) ?? ''
-  return ''
 }
 
 function ElevenLabsTtsBlock({

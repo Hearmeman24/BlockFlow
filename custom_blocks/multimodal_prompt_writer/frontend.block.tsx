@@ -23,6 +23,8 @@ import { SourceModeControl } from '@/components/pipeline/source-mode-control'
 import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
+import { toText } from '@/lib/pipeline/block-utils'
+import { uploadToTmpfiles } from '@/lib/tmpfiles-upload'
 import { toBackendResolvableUrls as toBackendResolvableImageUrls } from '@/lib/image-ref'
 import { toBackendResolvableUrls as toBackendResolvableVideoUrls } from '@/lib/video-ref'
 import {
@@ -38,8 +40,6 @@ const PORT_AUDIO = 'audio'
 const SETTINGS_ENDPOINT = '/api/blocks/multimodal_prompt_writer/settings'
 const MODELS_ENDPOINT = '/api/blocks/multimodal_prompt_writer/models'
 const GENERATE_ENDPOINT = '/api/blocks/multimodal_prompt_writer/generate'
-const TMPFILES_UPLOAD_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload'
-
 const DEFAULT_SYSTEM_PROMPT = `You are a multi-modal director.
 
 You receive a mix of images, optionally a video clip, optionally an audio clip,
@@ -96,12 +96,6 @@ function asAudioUrls(value: unknown): string[] {
 
 function asVideoUrls(value: unknown): string[] {
   return asAudioUrls(value)
-}
-
-function toText(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return value.find((v) => typeof v === 'string' && v.trim()) ?? ''
-  return ''
 }
 
 function MultimodalPromptWriterBlock({
@@ -178,22 +172,6 @@ function MultimodalPromptWriterBlock({
   }, [requireImage, requireVideo, requireAudio])
 
   // Inline uploaders (same pattern as Seedance block)
-  const uploadOne = useCallback(async (file: File): Promise<string> => {
-    const buf = await file.arrayBuffer()
-    const res = await fetch(TMPFILES_UPLOAD_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'X-Filename': file.name,
-        'X-Content-Type': file.type || 'application/octet-stream',
-      },
-      body: buf,
-    })
-    const data = await res.json()
-    if (!data.ok || !data.image_url) throw new Error(data.error || 'upload failed')
-    return data.image_url as string
-  }, [])
-
   const addFiles = useCallback(async (kind: 'image' | 'video' | 'audio', files: File[]) => {
     if (files.length === 0) return
     setUploadError('')
@@ -201,7 +179,7 @@ function MultimodalPromptWriterBlock({
     try {
       const urls: string[] = []
       for (const f of files) {
-        try { urls.push(await uploadOne(f)) }
+        try { urls.push(await uploadToTmpfiles(f)) }
         catch (e) { setUploadError(e instanceof Error ? e.message : String(e)) }
       }
       if (urls.length === 0) return
@@ -211,7 +189,7 @@ function MultimodalPromptWriterBlock({
     } finally {
       setUploading(null)
     }
-  }, [uploadOne, setLocalImageUrls, setLocalVideoUrls, setLocalAudioUrls])
+  }, [setLocalImageUrls, setLocalVideoUrls, setLocalAudioUrls])
 
   const pick = useCallback(async (kind: 'image' | 'video' | 'audio') => {
     const accept = kind === 'image' ? 'image/*'

@@ -2,10 +2,11 @@
 
 import { useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
 import { AdaptiveImageFrame } from '@/components/adaptive-media'
 import { deleteRun, toggleRunFavorite } from '@/lib/api'
-import { formatRelativeTime } from './run-card'
+import { formatRelativeTime, fmtDurationSeconds } from '@/lib/format-time'
+import { FavoriteButton } from '@/components/favorite-button'
+import { DeleteIconButton } from '@/components/delete-icon-button'
 import type { RunEntry } from '@/lib/types'
 
 interface LoraFile {
@@ -22,11 +23,6 @@ interface LoraCardProps {
   onFavoriteToggled?: () => void
 }
 
-function formatElapsed(s: number): string {
-  if (s < 60) return `${s}s`
-  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`
-  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
-}
 
 export function LoraCard({ run, loras, siblings, onDeleted, onFavoriteToggled }: LoraCardProps) {
   const [deleting, setDeleting] = useState(false)
@@ -62,7 +58,7 @@ export function LoraCard({ run, loras, siblings, onDeleted, onFavoriteToggled }:
   if (epDone != null && epTotal != null) statRows.push({ label: 'Epochs', value: `${epDone} / ${epTotal}` })
   if (stDone != null && stTotal != null) statRows.push({ label: 'Steps', value: `${stDone} / ${stTotal}` })
   if (loss != null) statRows.push({ label: 'Final loss', value: loss.toFixed(4) })
-  if (elapsed != null) statRows.push({ label: 'Elapsed', value: formatElapsed(elapsed) })
+  if (elapsed != null) statRows.push({ label: 'Elapsed', value: fmtDurationSeconds(elapsed) })
 
   return (
     <Card className="overflow-hidden">
@@ -140,27 +136,8 @@ export function LoraCard({ run, loras, siblings, onDeleted, onFavoriteToggled }:
 
         <div className="flex items-center gap-1.5 pt-1">
           <div className="flex-1" />
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`size-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
-            onClick={handleToggleFavorite}
-          >
-            <svg className="size-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-            </svg>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 text-muted-foreground hover:text-red-400"
-            onClick={handleDelete}
-            disabled={deleting}
-          >
-            <svg className="size-3" viewBox="0 0 12 12" fill="currentColor">
-              <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" />
-            </svg>
-          </Button>
+          <FavoriteButton active={fav} onToggle={handleToggleFavorite} />
+          <DeleteIconButton onClick={handleDelete} disabled={deleting} />
         </div>
       </CardContent>
     </Card>

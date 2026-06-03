@@ -113,7 +113,10 @@ describe('<InstallMilestones> rendering', () => {
     })} />)
     const bar = screen.getByTestId('install-progress-bar')
     expect(bar).not.toBeNull()
-    expect(screen.getByTestId('install-progress-bar-fill').style.width).toBe('25%')
+    // Progress primitive renders an indicator with transform: translateX(-75%) for 25%
+    const indicator = bar.querySelector('[data-slot="progress-indicator"]') as HTMLElement
+    expect(indicator).not.toBeNull()
+    expect(indicator.style.transform).toBe('translateX(-75%)')
   })
 
   test('progress bar hidden when total_download_bytes is 0', () => {

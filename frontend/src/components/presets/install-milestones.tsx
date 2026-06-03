@@ -6,6 +6,7 @@
 // bytes-based progress bar during the download phase.
 
 import type { InstallProgress } from '@/lib/settings/client'
+import { Progress } from '@/components/ui/progress'
 
 type MilestoneState = 'pending' | 'active' | 'done' | 'error'
 
@@ -148,13 +149,11 @@ export function InstallMilestones({ progress }: { progress: InstallProgress }) {
       </ol>
       {showBar && (
         <div className="space-y-1" data-testid="install-progress-bar">
-          <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
-            <div
-              className="h-full bg-primary transition-all"
-              style={{ width: `${pct}%` }}
-              data-testid="install-progress-bar-fill"
-            />
-          </div>
+          <Progress
+            value={pct}
+            className="h-1.5"
+            data-testid="install-progress-bar-fill"
+          />
           <p className="text-[10px] font-mono text-muted-foreground tabular-nums">
             {pct.toFixed(0)}% · {formatBytes(done)} / {formatBytes(total)}
           </p>

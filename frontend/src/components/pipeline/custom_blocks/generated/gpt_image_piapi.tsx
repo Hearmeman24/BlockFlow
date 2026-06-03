@@ -16,6 +16,8 @@ import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { usePromptLibrary } from '@/lib/use-prompt-library'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
+import { toText } from '@/lib/pipeline/block-utils'
+import { uploadToTmpfiles } from '@/lib/tmpfiles-upload'
 import { toBackendResolvableUrls, toDisplayUrls } from '@/lib/image-ref'
 import {
   PORT_IMAGE,
@@ -28,8 +30,6 @@ const HEALTH_ENDPOINT = '/api/blocks/gpt_image_piapi/health'
 const RUN_ENDPOINT = '/api/blocks/gpt_image_piapi/run'
 const STATUS_ENDPOINT = (id: string) => `/api/blocks/gpt_image_piapi/status/${id}`
 const CANCEL_ENDPOINT = (id: string) => `/api/blocks/gpt_image_piapi/cancel/${id}`
-const TMPFILES_UPLOAD_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload'
-
 const MODEL_OPTIONS = [
   { value: 'gpt-image-2-preview', label: 'GPT Image 2 Preview' },
   { value: 'gpt-image-2', label: 'GPT Image 2' },
@@ -61,12 +61,6 @@ interface JobSnap {
   remote_url?: string | null
   usage?: unknown
   error?: string
-}
-
-function toText(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return value.find((v) => typeof v === 'string' && v.trim()) ?? ''
-  return ''
 }
 
 function GptImagePiapiBlock({
@@ -110,21 +104,6 @@ function GptImagePiapiBlock({
       .catch(() => setHealthy(false))
   }, [])
 
-  const uploadOne = useCallback(async (file: File): Promise<string> => {
-    const res = await fetch(TMPFILES_UPLOAD_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'X-Filename': file.name,
-        'X-Content-Type': file.type || 'image/png',
-      },
-      body: await file.arrayBuffer(),
-    })
-    const data = await res.json()
-    if (!data.ok || !data.image_url) throw new Error(data.error || 'upload failed')
-    return data.image_url as string
-  }, [])
-
   const addFiles = useCallback(async (files: File[]) => {
     const imageFiles = files.filter((file) => file.type.startsWith('image/'))
     if (imageFiles.length === 0) return
@@ -134,7 +113,7 @@ function GptImagePiapiBlock({
       const uploaded: string[] = []
       for (const file of imageFiles) {
         try {
-          uploaded.push(await uploadOne(file))
+          uploaded.push(await uploadToTmpfiles(file))
         } catch (error) {
           setUploadError(error instanceof Error ? error.message : String(error))
         }
@@ -145,7 +124,7 @@ function GptImagePiapiBlock({
     } finally {
       setUploading(false)
     }
-  }, [setLocalRefs, uploadOne])
+  }, [setLocalRefs])
 
   const onPick = useCallback(async () => {
     const picked = await pickFiles({

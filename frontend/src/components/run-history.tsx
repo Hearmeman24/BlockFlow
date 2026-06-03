@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { useRuns } from '@/lib/hooks'
 import type { MediaKindFilter } from '@/lib/api'
 import { RunCard, findPrimaryArtifact, looksLikeTrainedLora } from './run-card'
+import { EmptyState } from '@/components/empty-state'
 import { DatasetCard } from './dataset-card'
 import { LoraCard } from './lora-card'
 import type { RunEntry } from '@/lib/types'
@@ -217,16 +218,15 @@ export function RunHistory() {
           <p className="text-sm text-muted-foreground">Loading history…</p>
         </div>
       ) : runs.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 space-y-2">
-          <p className="text-muted-foreground">
-            {hasFilters ? 'No runs match these filters.' : 'No pipeline runs yet.'}
-          </p>
-          <p className="text-sm text-muted-foreground/70">
-            {hasFilters
-              ? <button type="button" className="underline hover:text-foreground" onClick={clearAll}>Clear filters</button>
-              : 'Run a pipeline from the Generate page to see results here.'}
-          </p>
-        </div>
+        <EmptyState
+          title={hasFilters ? 'No runs match these filters.' : 'No pipeline runs yet.'}
+          description={hasFilters ? undefined : 'Run a pipeline from the Generate page to see results here.'}
+          action={hasFilters ? (
+            <button type="button" className="text-sm underline hover:text-foreground text-muted-foreground/70" onClick={clearAll}>
+              Clear filters
+            </button>
+          ) : undefined}
+        />
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">

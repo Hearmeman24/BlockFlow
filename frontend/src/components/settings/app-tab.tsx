@@ -4,6 +4,9 @@ import { useEffect, useId, useState } from 'react'
 
 import { getAppPref, setAppPref } from '@/lib/settings/client'
 
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+
 const DEFAULT_OUTPUT_DIR = './output'
 const DEFAULT_RETENTION = '90'
 
@@ -82,7 +85,7 @@ export function AppTab({ version }: Props) {
           Where image/video outputs land when a block saves locally. Relative paths are resolved against the BlockFlow root.
         </p>
         <div className="flex gap-2">
-          <input
+          <Input
             id={outputDirId}
             aria-label="Default output directory"
             value={outputDir}
@@ -90,16 +93,16 @@ export function AppTab({ version }: Props) {
               setOutputDir(e.target.value)
               setDirSaved(false)
             }}
-            className="flex-1 rounded border border-border bg-background px-3 py-1.5 text-sm font-mono"
+            className="flex-1 font-mono"
           />
-          <button
+          <Button
             type="button"
+            size="sm"
             onClick={handleSaveDir}
             disabled={savingDir}
-            className="px-3 py-1.5 text-xs rounded bg-primary text-primary-foreground disabled:opacity-50"
           >
             {savingDir ? 'Saving…' : 'Save output dir'}
-          </button>
+          </Button>
         </div>
         {dirSaved && <p className="text-xs text-emerald-400">Saved</p>}
       </section>

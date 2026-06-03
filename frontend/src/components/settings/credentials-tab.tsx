@@ -4,6 +4,7 @@ import { useState } from 'react'
 
 import { validateService, type ValidationResult } from '@/lib/settings/client'
 
+import { Button } from '@/components/ui/button'
 import { CredentialInput } from './credential-input'
 
 export function CredentialsTab() {
@@ -124,14 +125,15 @@ function R2Group() {
       <CredentialInput name="r2_bucket" label="R2 Bucket" />
 
       <div className="flex items-center gap-3">
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="sm"
           onClick={handleValidate}
           disabled={validating}
-          className="px-3 py-1.5 text-xs rounded border border-border hover:bg-accent/50 disabled:opacity-50"
         >
           {validating ? 'Validating R2…' : 'Validate R2'}
-        </button>
+        </Button>
 
         {result && result.ok && <span className="text-xs text-emerald-400">✓ R2 valid</span>}
         {result && !result.ok && (

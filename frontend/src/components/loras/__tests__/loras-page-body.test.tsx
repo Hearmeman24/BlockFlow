@@ -1,8 +1,8 @@
 /**
  * Component tests for <LorasPageBody> (sgs-ui-eqc.2).
  *
- * Mocks the loras client at the module boundary. confirm() is stubbed
- * to auto-accept for bulk-delete + delete-single paths.
+ * Mocks the loras client at the module boundary. confirm() is no longer used
+ * in LorasPageBody — all destructive confirmations go through AlertDialog.
  */
 import { describe, expect, test, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
@@ -76,9 +76,28 @@ async function findRowFor(filename: string): Promise<HTMLElement> {
   return tr as HTMLElement
 }
 
+/** Drive the AlertDialog: wait for it, click the Confirm button. */
+async function confirmAlertDialog() {
+  const dialog = await screen.findByRole('alertdialog')
+  await userEvent.click(within(dialog).getByRole('button', { name: /Confirm/i }))
+}
+
+/** Drive the AlertDialog: wait for it, click the Cancel button. */
+async function cancelAlertDialog() {
+  const dialog = await screen.findByRole('alertdialog')
+  await userEvent.click(within(dialog).getByRole('button', { name: /Cancel/i }))
+}
+
+/** Click the "Add LoRA" button in the page header (not the EmptyState CTA). */
+async function clickAddLoraHeader() {
+  // When the list is empty, EmptyState also renders an "Add LoRA" button.
+  // The header button is always first.
+  const buttons = screen.getAllByRole('button', { name: /Add LoRA/i })
+  await userEvent.click(buttons[0])
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.spyOn(window, 'confirm').mockReturnValue(true)
   // syncLoras is invoked as the background-sync fallback when stale=true;
   // default to a passthrough so it never throws in tests that don't care.
   vi.mocked(client.syncLoras).mockResolvedValue(_listResponse([]))
@@ -154,7 +173,11 @@ describe('LorasPageBody — filtering', () => {
     expect(rowFor('style_anime.safetensors')).toBeInTheDocument()
   })
 
-  test('base_model filter combines with search', async () => {
+  test('base_model filter combobox is rendered with correct aria-label', async () => {
+    // Radix Select portals do not open in JSDOM — functional filtering via the
+    // dropdown is covered by the chip-row filter tests below. Here we verify
+    // the combobox is accessible (correct label + role), and that filtering via
+    // the dashboard chip (same underlying state) correctly hides rows.
     vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
       _row({ filename: 'flux_a.safetensors', base_model: 'Flux.1 D' }),
       _row({ filename: 'sdxl_a.safetensors', base_model: 'SDXL' }),
@@ -164,7 +187,12 @@ describe('LorasPageBody — filtering', () => {
     render(<LorasPageBody />)
     await findRowFor('flux_a.safetensors')
 
-    await userEvent.selectOptions(screen.getByLabelText(/Filter by base model/i), 'SDXL')
+    // The SelectTrigger renders with role="combobox" and our aria-label.
+    expect(screen.getByLabelText(/Filter by base model/i)).toHaveAttribute('role', 'combobox')
+    expect(screen.getByLabelText(/Filter by source/i)).toHaveAttribute('role', 'combobox')
+
+    // Filtering via the chip uses the same state, exercising the same filter logic.
+    await userEvent.click(screen.getByRole('button', { name: /SDXL.*1/i }))
 
     await waitFor(() => {
       expect(screen.queryByRole('checkbox', { name: /Select flux_a/i })).not.toBeInTheDocument()
@@ -173,8 +201,8 @@ describe('LorasPageBody — filtering', () => {
   })
 })
 
-describe('LorasPageBody — bulk delete', () => {
-  test('confirm dialog shows summed size for selected rows', async () => {
+describe('LorasPageBody — bulk delete (AlertDialog)', () => {
+  test('AlertDialog shows the delete message with summed size for selected rows', async () => {
     vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
       _row({ filename: 'a.safetensors', size_bytes: 100 * 1024 * 1024 }),
       _row({ filename: 'b.safetensors', size_bytes: 200 * 1024 * 1024 }),
@@ -185,7 +213,6 @@ describe('LorasPageBody — bulk delete', () => {
         { filename: 'b.safetensors', deleted: true, error: null },
       ],
     })
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     render(<LorasPageBody />)
     await findRowFor('a.safetensors')
@@ -194,10 +221,55 @@ describe('LorasPageBody — bulk delete', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: /Select b\.safetensors/i }))
     await userEvent.click(screen.getByRole('button', { name: /Delete 2 selected/i }))
 
-    expect(confirmSpy).toHaveBeenCalledOnce()
-    const prompt = confirmSpy.mock.calls[0][0]
-    expect(prompt).toMatch(/Delete 2 LoRAs/)
-    expect(prompt).toMatch(/300\.0 MB/)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/Delete 2 LoRAs/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/300\.0 MB/)).toBeInTheDocument()
+  })
+
+  test('confirming delete fires deleteLoras and removes rows from UI', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'a.safetensors', size_bytes: 100 }),
+      _row({ filename: 'b.safetensors', size_bytes: 100 }),
+    ]))
+    vi.mocked(client.deleteLoras).mockResolvedValue({
+      results: [
+        { filename: 'a.safetensors', deleted: true, error: null },
+        { filename: 'b.safetensors', deleted: true, error: null },
+      ],
+    })
+
+    render(<LorasPageBody />)
+    await findRowFor('a.safetensors')
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /Select a\.safetensors/i }))
+    await userEvent.click(screen.getByRole('checkbox', { name: /Select b\.safetensors/i }))
+    await userEvent.click(screen.getByRole('button', { name: /Delete 2 selected/i }))
+
+    await confirmAlertDialog()
+
+    expect(client.deleteLoras).toHaveBeenCalledOnce()
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: /Select a\.safetensors/i })).not.toBeInTheDocument()
+      expect(screen.queryByRole('checkbox', { name: /Select b\.safetensors/i })).not.toBeInTheDocument()
+    })
+  })
+
+  test('cancelling delete does NOT call deleteLoras', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'a.safetensors', size_bytes: 100 }),
+    ]))
+
+    render(<LorasPageBody />)
+    await findRowFor('a.safetensors')
+
+    await userEvent.click(screen.getByRole('checkbox', { name: /Select a\.safetensors/i }))
+    await userEvent.click(screen.getByRole('button', { name: /Delete 1 selected/i }))
+
+    await cancelAlertDialog()
+
+    expect(client.deleteLoras).not.toHaveBeenCalled()
+    // Row should still be present
+    expect(rowFor('a.safetensors')).toBeInTheDocument()
   })
 
   test('partial failure surfaces the failed row in error banner; succeeded rows leave UI', async () => {
@@ -211,7 +283,6 @@ describe('LorasPageBody — bulk delete', () => {
         { filename: 'b.safetensors', deleted: false, error: 'in use' },
       ],
     })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
 
     render(<LorasPageBody />)
     await findRowFor('a.safetensors')
@@ -219,6 +290,8 @@ describe('LorasPageBody — bulk delete', () => {
     await userEvent.click(screen.getByRole('checkbox', { name: /Select a\.safetensors/i }))
     await userEvent.click(screen.getByRole('checkbox', { name: /Select b\.safetensors/i }))
     await userEvent.click(screen.getByRole('button', { name: /Delete 2 selected/i }))
+
+    await confirmAlertDialog()
 
     await waitFor(() => {
       expect(screen.queryByRole('checkbox', { name: /Select a\.safetensors/i })).not.toBeInTheDocument()
@@ -229,6 +302,74 @@ describe('LorasPageBody — bulk delete', () => {
   })
 })
 
+describe('LorasPageBody — per-row delete via overflow menu (AlertDialog)', () => {
+  test('confirm in overflow menu fires delete; cancel does not', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([
+      _row({ filename: 'x.safetensors', source: 'civitai' }),
+    ]))
+    vi.mocked(client.deleteLoras).mockResolvedValue({
+      results: [{ filename: 'x.safetensors', deleted: true, error: null }],
+    })
+
+    render(<LorasPageBody />)
+    await findRowFor('x.safetensors')
+
+    // Open overflow, click Delete
+    await userEvent.click(screen.getByRole('button', { name: /More actions for x\.safetensors/i }))
+    await userEvent.click(screen.getByRole('menuitem', { name: /Delete/i }))
+
+    // AlertDialog should appear
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/Delete x\.safetensors/i)).toBeInTheDocument()
+
+    // Cancel — no deletion
+    await userEvent.click(within(dialog).getByRole('button', { name: /Cancel/i }))
+    expect(client.deleteLoras).not.toHaveBeenCalled()
+    expect(rowFor('x.safetensors')).toBeInTheDocument()
+
+    // Open overflow again, click Delete, confirm this time
+    await userEvent.click(screen.getByRole('button', { name: /More actions for x\.safetensors/i }))
+    await userEvent.click(screen.getByRole('menuitem', { name: /Delete/i }))
+    await confirmAlertDialog()
+
+    expect(client.deleteLoras).toHaveBeenCalledOnce()
+    await waitFor(() => {
+      expect(screen.queryByRole('checkbox', { name: /Select x\.safetensors/i })).not.toBeInTheDocument()
+    })
+  })
+})
+
+describe('LorasPageBody — Add LoRA / Sync buttons', () => {
+  test('Add LoRA button opens the Download dialog', async () => {
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
+
+    render(<LorasPageBody />)
+    await screen.findByText(/No LoRAs/i)
+
+    await clickAddLoraHeader()
+
+    expect(await screen.findByRole('dialog', { name: /Download LoRA/i })).toBeInTheDocument()
+  })
+
+  test('Sync button calls syncLoras and is disabled while syncing', async () => {
+    let resolveSync: (v: client.LorasListResponse) => void = () => {}
+    vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
+    vi.mocked(client.syncLoras).mockReturnValue(
+      new Promise((resolve) => { resolveSync = resolve }),
+    )
+
+    render(<LorasPageBody />)
+    await screen.findByText(/No LoRAs/i)
+
+    const syncBtn = screen.getByRole('button', { name: /Sync/i })
+    await userEvent.click(syncBtn)
+
+    expect(await screen.findByRole('button', { name: /Syncing/i })).toBeDisabled()
+    resolveSync(_listResponse([]))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Sync$/i })).not.toBeDisabled())
+  })
+})
+
 describe('LorasPageBody — download dialog', () => {
   test('rejects empty/unrecognized input', async () => {
     vi.mocked(client.listLoras).mockResolvedValue(_listResponse([]))
@@ -236,7 +377,7 @@ describe('LorasPageBody — download dialog', () => {
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
 
-    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    await clickAddLoraHeader()
 
     const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
     const input = within(dialog).getByLabelText(/LoRA source/i)
@@ -255,7 +396,7 @@ describe('LorasPageBody — download dialog', () => {
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
 
-    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    await clickAddLoraHeader()
     const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
 
     await userEvent.type(
@@ -280,7 +421,7 @@ describe('LorasPageBody — download dialog', () => {
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
 
-    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    await clickAddLoraHeader()
     const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
     await userEvent.type(
       within(dialog).getByLabelText(/LoRA source/i),
@@ -300,7 +441,7 @@ describe('LorasPageBody — download dialog', () => {
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
 
-    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    await clickAddLoraHeader()
     const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
     await userEvent.type(
       within(dialog).getByLabelText(/LoRA source/i),
@@ -354,7 +495,7 @@ describe('LorasPageBody — async download progress (sgs-ui-eqc.5)', () => {
 
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
-    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    await clickAddLoraHeader()
     const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
 
     await userEvent.type(within(dialog).getByLabelText(/LoRA source/i), '67890')
@@ -375,7 +516,7 @@ describe('LorasPageBody — async download progress (sgs-ui-eqc.5)', () => {
 
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
-    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    await clickAddLoraHeader()
     const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
 
     await userEvent.type(within(dialog).getByLabelText(/LoRA source/i),
@@ -397,7 +538,7 @@ describe('LorasPageBody — async download progress (sgs-ui-eqc.5)', () => {
 
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
-    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    await clickAddLoraHeader()
     const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
 
     await userEvent.type(within(dialog).getByLabelText(/LoRA source/i),
@@ -417,7 +558,7 @@ describe('LorasPageBody — async download progress (sgs-ui-eqc.5)', () => {
 
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
-    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    await clickAddLoraHeader()
     const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
 
     await userEvent.type(within(dialog).getByLabelText(/LoRA source/i), '12345')
@@ -437,7 +578,7 @@ describe('LorasPageBody — async download progress (sgs-ui-eqc.5)', () => {
 
     render(<LorasPageBody />)
     await screen.findByText(/No LoRAs/i)
-    await userEvent.click(screen.getByRole('button', { name: /Add LoRA/i }))
+    await clickAddLoraHeader()
     const dialog = await screen.findByRole('dialog', { name: /Download LoRA/i })
 
     await userEvent.type(within(dialog).getByLabelText(/LoRA source/i),

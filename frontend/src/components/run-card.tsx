@@ -12,43 +12,22 @@ import type { RunEntry, BlockResult } from '@/lib/types'
 import { extractComfyGenPresetLabels } from '@/lib/runs/preset-labels'
 import { SubmitToCivitaiModal } from '@/components/civitai/submit-modal'
 import { extractShareableArtifact } from '@/components/civitai/extract-shareable'
+import { FavoriteButton } from '@/components/favorite-button'
+import { DeleteIconButton } from '@/components/delete-icon-button'
+import { StatusBadge } from '@/components/status-badge'
+import { formatDurationMs, formatRelativeTime } from '@/lib/format-time'
 
 const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mov', '.m4v', '.mkv', '.avi']
 const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.aac', '.m4a', '.ogg', '.flac']
 const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp']
 
-function statusBadgeClass(status: RunEntry['status']): string {
+function statusBadgeVariant(status: RunEntry['status']): 'success' | 'warning' | 'error' | 'neutral' {
   switch (status) {
-    case 'completed':
-      return 'bg-green-600 text-white border-0'
-    case 'partial':
-      return 'bg-yellow-600 text-white border-0'
-    case 'failed':
-      return 'bg-red-600 text-white border-0'
-    default:
-      return 'bg-gray-500 text-white border-0'
+    case 'completed': return 'success'
+    case 'partial': return 'warning'
+    case 'failed': return 'error'
+    default: return 'neutral'
   }
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  const s = Math.round(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  const rem = s % 60
-  return `${m}m ${rem}s`
-}
-
-export function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime()
-  const mins = Math.floor(diff / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  const hours = Math.floor(mins / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d ago`
-  return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
 function isHttpOrLocalPath(value: string): boolean {
@@ -609,12 +588,12 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
             <p className="text-sm font-medium truncate">{run.name}</p>
             <p className="text-[10px] text-muted-foreground">
               {formatRelativeTime(run.created_at)}
-              {run.duration_ms != null ? ` \u00b7 ${formatDuration(run.duration_ms)}` : ''}
+              {run.duration_ms != null ? ` \u00b7 ${formatDurationMs(run.duration_ms)}` : ''}
             </p>
           </div>
-          <Badge className={`shrink-0 text-[10px] ${statusBadgeClass(run.status)}`}>
+          <StatusBadge variant={statusBadgeVariant(run.status)} className="shrink-0 text-[10px]">
             {run.status}
-          </Badge>
+          </StatusBadge>
         </div>
 
         {/* Block summary chips */}
@@ -736,27 +715,8 @@ export function RunCard({ run, onDeleted, onFavoriteToggled }: RunCardProps) {
           >
             {expanded ? 'Less' : 'Details'}
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`size-7 ${fav ? 'text-amber-400' : 'text-muted-foreground hover:text-amber-400'}`}
-            onClick={handleToggleFavorite}
-          >
-            <svg className="size-3.5" viewBox="0 0 24 24" fill={fav ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-            </svg>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 text-muted-foreground hover:text-red-400"
-            onClick={handleDelete}
-            disabled={deleting}
-          >
-            <svg className="size-3" viewBox="0 0 12 12" fill="currentColor">
-              <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" />
-            </svg>
-          </Button>
+          <FavoriteButton active={fav} onToggle={handleToggleFavorite} />
+          <DeleteIconButton onClick={handleDelete} disabled={deleting} />
         </div>
       </CardContent>
       {canSubmitToCivitai && (

@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useMemo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Progress } from '@/components/ui/progress'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ProviderMissingCard } from '@/components/pipeline/provider-missing-card'
 import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
@@ -527,9 +528,7 @@ function LoRATrainBlock({ blockId, inputs, setOutput, registerExecute, setStatus
                   )}
                 </span>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded bg-muted/40">
-                <div className="h-full bg-primary transition-all" style={{ width: `${epochPct}%` }} />
-              </div>
+              <Progress value={epochPct} className="h-1.5" />
             </>
           )}
           {(progress.stage || progress.last_progress) && (

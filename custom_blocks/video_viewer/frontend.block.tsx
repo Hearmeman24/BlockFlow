@@ -8,17 +8,7 @@ import {
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
-
-function toVideoUrls(value: unknown): string[] {
-  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
-  if (Array.isArray(value)) {
-    return value
-      .filter((item): item is string => typeof item === 'string')
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0)
-  }
-  return []
-}
+import { toVideoUrls } from '@/lib/video-ref'
 
 function VideoViewerBlock({ blockId, inputs, registerExecute }: BlockComponentProps) {
   const { blockStates, isLooping } = usePipeline()

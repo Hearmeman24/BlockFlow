@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useSessionState } from '@/lib/use-session-state'
+import { toVideoUrls } from '@/lib/video-ref'
 import {
   PORT_VIDEO,
   type BlockDef,
@@ -30,17 +31,6 @@ const TRANSITIONS = [
   { value: 'circle', label: 'Circle' },
   { value: 'pixelize', label: 'Pixelize' },
 ] as const
-
-function toVideoUrls(value: unknown): string[] {
-  if (typeof value === 'string') return value.trim() ? [value.trim()] : []
-  if (Array.isArray(value)) {
-    return value
-      .filter((v): v is string => typeof v === 'string')
-      .map((v) => v.trim())
-      .filter(Boolean)
-  }
-  return []
-}
 
 async function callStitch(payload: { videos: string[]; transition: string; duration: number }) {
   const res = await fetch(RUN_ENDPOINT, {

@@ -15,6 +15,8 @@ import { PROVIDER_REFERRALS } from '@/lib/provider-referrals'
 import { usePromptLibrary } from '@/lib/use-prompt-library'
 import { useSessionState } from '@/lib/use-session-state'
 import { pickFiles } from '@/lib/file-picker'
+import { toText } from '@/lib/pipeline/block-utils'
+import { uploadToTmpfiles } from '@/lib/tmpfiles-upload'
 import { toBackendResolvableUrls } from '@/lib/image-ref'
 import {
   PORT_IMAGE,
@@ -38,12 +40,6 @@ interface JobSnap {
   remote_status?: string | null
   image_url?: string | null
   error?: string
-}
-
-function toText(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (Array.isArray(value)) return value.find((v) => typeof v === 'string' && v.trim()) ?? ''
-  return ''
 }
 
 function NanoBanana2Block({
@@ -83,22 +79,6 @@ function NanoBanana2Block({
       .catch(() => setHealthy(false))
   }, [])
 
-  const uploadOne = useCallback(async (file: File): Promise<string> => {
-    const buf = await file.arrayBuffer()
-    const res = await fetch('/api/blocks/upload_image_to_tmpfiles/upload', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'X-Filename': file.name,
-        'X-Content-Type': file.type || 'image/png',
-      },
-      body: buf,
-    })
-    const data = await res.json()
-    if (!data.ok || !data.image_url) throw new Error(data.error || 'upload failed')
-    return data.image_url as string
-  }, [])
-
   const addFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return
     setUploadError('')
@@ -108,7 +88,7 @@ function NanoBanana2Block({
       for (const f of files) {
         if (!f.type.startsWith('image/')) continue
         try {
-          const url = await uploadOne(f)
+          const url = await uploadToTmpfiles(f)
           results.push(url)
         } catch (e) {
           setUploadError(e instanceof Error ? e.message : String(e))
@@ -120,7 +100,7 @@ function NanoBanana2Block({
     } finally {
       setUploading(false)
     }
-  }, [uploadOne, setLocalRefs])
+  }, [setLocalRefs])
 
   const onPick = useCallback(async () => {
     const picked = await pickFiles({ slug: 'nano_banana_2', accept: 'image/*', multiple: true, description: 'Reference images' })

@@ -5,6 +5,7 @@ CivitAI API calls mocked via the civitai_client._requests handle.
 """
 from __future__ import annotations
 
+import ast
 import json
 import sys
 from pathlib import Path
@@ -73,6 +74,34 @@ def _resp(status: int, body: dict) -> MagicMock:
     return m
 
 
+def test_settings_mutating_tests_use_isolated_client_fixture() -> None:
+    """Guard against leaking test endpoint/key fixtures into the live Settings DB."""
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    offenders: list[str] = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("test_"):
+            continue
+        params = {arg.arg for arg in node.args.args}
+        mutates_settings = False
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            func = child.func
+            if isinstance(func, ast.Name) and func.id == "_configure_endpoint":
+                mutates_settings = True
+            elif (
+                isinstance(func, ast.Attribute)
+                and func.attr in {"set_credential", "set_endpoint"}
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "settings_store"
+            ):
+                mutates_settings = True
+        if mutates_settings and "client" not in params:
+            offenders.append(node.name)
+
+    assert offenders == []
+
+
 # ---- GET /api/loras ----
 
 def test_list_returns_409_when_no_endpoint(client) -> None:
@@ -131,7 +160,7 @@ def test_sync_shells_out_and_refreshes_cache(client, monkeypatch, tmp_path) -> N
     assert data["stale"] is False
 
 
-def test_fetch_loras_uses_resolved_sidecar_command(monkeypatch, tmp_path) -> None:
+def test_fetch_loras_uses_resolved_sidecar_command(client, monkeypatch, tmp_path) -> None:
     _configure_endpoint()
     settings_store.set_credential("runpod_api_key", "rpa_sidecar")
     sidecar = tmp_path / "venv" / "bin" / "comfy-gen"

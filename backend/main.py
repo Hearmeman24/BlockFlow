@@ -15,6 +15,7 @@ from backend import (
     installer_pod_sweeper,
     lora_metadata,
     lora_routes,
+    model_routes,
     preset_routes,
     routes,
     settings_routes,
@@ -38,6 +39,7 @@ app.include_router(routes.router)
 app.include_router(settings_routes.router)
 app.include_router(wizard_routes.router)
 app.include_router(preset_routes.router)
+app.include_router(model_routes.router)
 app.include_router(lora_routes.router)
 
 # sgs-ui-5ni: migrate user data out of ROOT_DIR on first launch. Must run

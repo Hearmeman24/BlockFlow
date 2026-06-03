@@ -78,8 +78,10 @@ describe('PresetsPageBody — loading skeleton (Phase 3)', () => {
 
     render(<PresetsPageBody />)
 
-    // Wait for the preset card
-    expect(await screen.findByText('WAN Animate')).toBeInTheDocument()
+    // The catalog row renders the preset name as a select button.
+    // The detail panel aside also shows the name. Wait for the row button
+    // specifically (the select button inside PresetCatalogRow).
+    expect(await screen.findByRole('button', { name: 'WAN Animate' })).toBeInTheDocument()
 
     // Skeleton is gone
     expect(screen.queryByTestId('presets-cards-skeleton')).not.toBeInTheDocument()
@@ -160,6 +162,96 @@ describe('PresetsPageBody Refresh button', () => {
     const banner = await screen.findByTestId('refresh-status-banner')
     expect(banner.textContent).toMatch(/1 error/)
     expect(banner.dataset.tone).toBe('warning')
+  })
+})
+
+describe('PresetsPageBody catalog redesign', () => {
+  test('renders summary counts, catalog filters, and installed workflow detail', async () => {
+    mocks.getPresetManifest.mockResolvedValue({
+      presets: [
+        {
+          id: 'wan-animate',
+          name: 'Wan 2.2 Animate 14B',
+          description: 'Character-driven video animation workflows.',
+          comfygen_min_version: '0.2.0',
+          disk_size_estimate_gb: 50,
+          preset_url: 'https://example/wan.json',
+          tags: ['i2v', 'character-swap'],
+          gpu_tier_hint: 'recommended',
+        },
+        {
+          id: 'hidream-o1',
+          name: 'HiDream O1 Image',
+          description: 'Single-file image model bundle.',
+          comfygen_min_version: '0.2.0',
+          disk_size_estimate_gb: 18,
+          preset_url: 'https://example/hidream.json',
+          tags: ['image'],
+        },
+      ],
+      cache: 'fresh' as const,
+      fetched_at: '2026-05-31T00:00:00Z',
+    })
+    mocks.listInstalledPresets.mockResolvedValue([{
+      preset_id: 'wan-animate',
+      version: '1.0.0',
+      disk_size_gb: 50,
+      installed_at: '2026-06-01T00:00:00Z',
+      updated_at: '2026-06-02T00:00:00Z',
+      workflows: [{ name: 'Replace Character' }, { name: 'Replace Face' }],
+    }])
+    const user = userEvent.setup()
+
+    render(<PresetsPageBody />)
+
+    expect(await screen.findByText('2 presets')).toBeInTheDocument()
+    expect(screen.getByText('1 installed')).toBeInTheDocument()
+    expect(screen.getByText('68 GB total')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Installed 1$/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^Available 1$/i })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: /Preset details/i })).toHaveTextContent('2 workflows')
+
+    await user.click(screen.getByRole('button', { name: /^Available 1$/i }))
+
+    expect(screen.queryByRole('button', { name: /Wan 2\.2 Animate 14B/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /HiDream O1 Image/i })).toBeInTheDocument()
+  })
+
+  test('search filters the catalog by name, description, id, and tags', async () => {
+    mocks.getPresetManifest.mockResolvedValue({
+      presets: [
+        {
+          id: 'wan-animate',
+          name: 'Wan 2.2 Animate 14B',
+          description: 'Character-driven video animation workflows.',
+          comfygen_min_version: '0.2.0',
+          disk_size_estimate_gb: 50,
+          preset_url: 'https://example/wan.json',
+          tags: ['i2v', 'character-swap'],
+        },
+        {
+          id: 'hidream-o1',
+          name: 'HiDream O1 Image',
+          description: 'Single-file image model bundle.',
+          comfygen_min_version: '0.2.0',
+          disk_size_estimate_gb: 18,
+          preset_url: 'https://example/hidream.json',
+          tags: ['image'],
+        },
+      ],
+      cache: 'fresh' as const,
+      fetched_at: '2026-05-31T00:00:00Z',
+    })
+    const user = userEvent.setup()
+
+    render(<PresetsPageBody />)
+    await screen.findByRole('button', { name: /Wan 2\.2 Animate 14B/i })
+
+    await user.type(screen.getByLabelText(/Search presets/i), 'hidream')
+
+    expect(screen.queryByRole('button', { name: /Wan 2\.2 Animate 14B/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /HiDream O1 Image/i })).toBeInTheDocument()
+    expect(screen.getByText('1 of 2')).toBeInTheDocument()
   })
 })
 

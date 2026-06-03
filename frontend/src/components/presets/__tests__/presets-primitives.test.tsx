@@ -10,7 +10,7 @@
  * - PageHeader (shared atom) renders title and actions via PresetsPageBody
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const mocks = vi.hoisted(() => ({
@@ -144,7 +144,7 @@ describe('Install button', () => {
 describe('Uninstall AlertDialog', () => {
   beforeEach(() => {
     mocks.listInstalledPresets.mockResolvedValue([
-      { preset_id: 'wan-animate', disk_size_gb: 40 },
+      { preset_id: 'wan-animate', disk_size_gb: 40, workflows: [] },
     ])
     mocks.getPresetManifest.mockResolvedValue(singlePresetManifest())
   })
@@ -153,7 +153,9 @@ describe('Uninstall AlertDialog', () => {
     const user = userEvent.setup()
     render(<PresetsPageBody />)
 
-    const btn = await screen.findByRole('button', { name: /Uninstall/i })
+    // The catalog row renders an "Uninstall" button (exact label, no "preset" suffix).
+    // The detail panel renders "Uninstall preset" — use exact name to avoid ambiguity.
+    const [btn] = await screen.findAllByRole('button', { name: 'Uninstall' })
     await user.click(btn)
 
     // Dialog should appear
@@ -167,13 +169,15 @@ describe('Uninstall AlertDialog', () => {
     const user = userEvent.setup()
     render(<PresetsPageBody />)
 
-    await user.click(await screen.findByRole('button', { name: /Uninstall/i }))
+    const [btn] = await screen.findAllByRole('button', { name: 'Uninstall' })
+    await user.click(btn)
     // Wait for dialog
     const dialog = await screen.findByRole('alertdialog')
     expect(dialog).toBeInTheDocument()
 
-    // Click the confirm action button (labeled "Uninstall" inside the dialog footer)
-    const confirmBtn = screen.getByRole('button', { name: /^Uninstall$/i })
+    // Click the confirm action button (labeled "Uninstall" inside the dialog footer).
+    // Scope to the dialog to avoid matching the row-level "Uninstall" button.
+    const confirmBtn = within(dialog).getByRole('button', { name: 'Uninstall' })
     await user.click(confirmBtn)
 
     await waitFor(() => {
@@ -185,10 +189,11 @@ describe('Uninstall AlertDialog', () => {
     const user = userEvent.setup()
     render(<PresetsPageBody />)
 
-    await user.click(await screen.findByRole('button', { name: /Uninstall/i }))
-    await screen.findByRole('alertdialog')
+    const [btn] = await screen.findAllByRole('button', { name: 'Uninstall' })
+    await user.click(btn)
+    const dialog = await screen.findByRole('alertdialog')
 
-    await user.click(screen.getByRole('button', { name: /Cancel/i }))
+    await user.click(within(dialog).getByRole('button', { name: /Cancel/i }))
 
     // Dialog should close and uninstall not called
     await waitFor(() => {
@@ -201,7 +206,8 @@ describe('Uninstall AlertDialog', () => {
     const user = userEvent.setup()
     render(<PresetsPageBody />)
 
-    await user.click(await screen.findByRole('button', { name: /Uninstall/i }))
+    const [btn] = await screen.findAllByRole('button', { name: 'Uninstall' })
+    await user.click(btn)
     const dialog = await screen.findByRole('alertdialog')
 
     expect(dialog.textContent).toContain('wan-animate')
@@ -255,16 +261,17 @@ describe('AlertPanel usage in PresetsPageBody', () => {
   })
 
   test('actionErr banner renders after failed uninstall', async () => {
-    mocks.listInstalledPresets.mockResolvedValue([{ preset_id: 'wan-animate' }])
+    mocks.listInstalledPresets.mockResolvedValue([{ preset_id: 'wan-animate', workflows: [] }])
     mocks.getPresetManifest.mockResolvedValue(singlePresetManifest())
     mocks.uninstallPreset.mockRejectedValue(new Error('volume not mounted'))
 
     const user = userEvent.setup()
     render(<PresetsPageBody />)
 
-    await user.click(await screen.findByRole('button', { name: /Uninstall/i }))
-    await screen.findByRole('alertdialog')
-    await user.click(screen.getByRole('button', { name: /^Uninstall$/i }))
+    const [btn] = await screen.findAllByRole('button', { name: 'Uninstall' })
+    await user.click(btn)
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Uninstall' }))
 
     await waitFor(() => {
       expect(screen.getByText(/volume not mounted/)).toBeInTheDocument()

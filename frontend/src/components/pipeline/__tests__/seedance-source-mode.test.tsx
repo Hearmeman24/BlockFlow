@@ -74,7 +74,7 @@ describe('Seedance source mode UI', () => {
   })
 
   it('submits a local upstream image path instead of treating it as absent', async () => {
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
       if (url === '/api/blocks/seedance/health') {
         return Promise.resolve(new Response(JSON.stringify({ piapi_key_present: true }), { status: 200 }))
@@ -108,6 +108,13 @@ describe('Seedance source mode UI', () => {
     await expect(execute!({ image: '/outputs/gpt_image_piapi/frame.png' }, new AbortController().signal))
       .rejects.toThrow('stop after submit')
 
+    const runCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/blocks/seedance/run')
+    expect(runCall).toBeDefined()
+    const runInit = (runCall as unknown as [RequestInfo | URL, RequestInit])[1]
+    const submittedBody = JSON.parse(String(runInit.body))
+    expect(submittedBody.task_type).toBe('seedance-2-fast-less-restriction')
+    expect(submittedBody.resolution).toBe('720p')
+    expect(submittedBody).not.toHaveProperty('mode')
     expect(fetchMock).toHaveBeenCalledWith('/api/blocks/seedance/run', expect.objectContaining({
       method: 'POST',
       body: expect.stringContaining('"/outputs/gpt_image_piapi/frame.png"'),

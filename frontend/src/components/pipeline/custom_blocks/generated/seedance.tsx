@@ -39,15 +39,13 @@ const CANCEL_ENDPOINT = (id: string) => `/api/blocks/seedance/cancel/${id}`
 
 type Mode = 'text_to_video' | 'first_last_frames' | 'omni_reference'
 type TaskType =
-  | 'seedance-2'
-  | 'seedance-2-fast'
-  | 'seedance-2-preview-vip'
-  | 'seedance-2-fast-preview-vip'
+  | 'seedance-2-less-restriction'
+  | 'seedance-2-fast-less-restriction'
 
 interface TaskTypeInfo {
   value: TaskType
   label: string
-  family: 'seedance2' | 'vip'
+  family: 'less_restriction'
   resolutions: string[]
   aspects: string[]
   durations: number[] | 'continuous'
@@ -56,40 +54,22 @@ interface TaskTypeInfo {
 
 const TASK_TYPE_OPTIONS: TaskTypeInfo[] = [
   {
-    value: 'seedance-2-fast',
-    label: 'Seedance 2 Fast',
-    family: 'seedance2',
-    resolutions: ['480p', '720p'],
-    aspects: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
-    durations: 'continuous',
-    hint: 'Cheap, mode-driven. Real and non-real faces blocked at upstream — silent degradation possible.',
-  },
-  {
-    value: 'seedance-2',
-    label: 'Seedance 2 (Pro)',
-    family: 'seedance2',
-    resolutions: ['480p', '720p', '1080p'],
-    aspects: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
-    durations: 'continuous',
-    hint: 'Mode-driven. Real and non-real faces blocked at upstream — silent degradation possible.',
-  },
-  {
-    value: 'seedance-2-fast-preview-vip',
-    label: 'Seedance 2 Fast (VIP)',
-    family: 'vip',
+    value: 'seedance-2-fast-less-restriction',
+    label: 'Seedance 2 Fast Less Restriction',
+    family: 'less_restriction',
     resolutions: ['720p'],
     aspects: ['16:9', '9:16', '4:3', '3:4'],
     durations: [5, 10, 15],
-    hint: 'AI/non-real faces allowed. Pre-submission moderation refunds blocked requests. Preview-VIP duration is limited to 5/10/15.',
+    hint: 'Fast lower-cost less-restriction model. Duration is limited to 5/10/15.',
   },
   {
-    value: 'seedance-2-preview-vip',
-    label: 'Seedance 2 (VIP)',
-    family: 'vip',
+    value: 'seedance-2-less-restriction',
+    label: 'Seedance 2 Less Restriction',
+    family: 'less_restriction',
     resolutions: ['720p', '1080p'],
     aspects: ['16:9', '9:16', '4:3', '3:4'],
     durations: [5, 10, 15],
-    hint: 'AI/non-real faces allowed. Pre-submission moderation refunds blocked requests. Preview-VIP duration is limited to 5/10/15.',
+    hint: 'Pro higher-quality less-restriction model. Duration is limited to 5/10/15.',
   },
 ]
 
@@ -127,9 +107,9 @@ function SeedanceBlock({
   registerExecute,
   setStatusMessage,
 }: BlockComponentProps) {
-  const [taskType, setTaskType] = useSessionState<TaskType>(`block_${blockId}_task_type`, 'seedance-2-fast')
+  const [taskType, setTaskType] = useSessionState<TaskType>(`block_${blockId}_task_type`, 'seedance-2-fast-less-restriction')
   const [mode, setMode] = useSessionState<Mode>(`block_${blockId}_mode`, 'text_to_video')
-  const [resolution, setResolution] = useSessionState<string>(`block_${blockId}_resolution`, '480p')
+  const [resolution, setResolution] = useSessionState<string>(`block_${blockId}_resolution`, '720p')
   const [aspect, setAspect] = useSessionState<string>(`block_${blockId}_aspect`, '16:9')
   const [duration, setDuration] = useSessionState<number>(`block_${blockId}_duration`, 5)
   const [prompt, setPrompt] = useSessionState<string>(`block_${blockId}_prompt`, '')
@@ -199,9 +179,9 @@ function SeedanceBlock({
   const taskTypeInfo = TASK_TYPE_OPTIONS.find((o) => o.value === taskType) ?? TASK_TYPE_OPTIONS[0]
   const availableResolutions = taskTypeInfo.resolutions
   const availableAspects = taskTypeInfo.aspects
-  const isVip = taskTypeInfo.family === 'vip'
-  // VIP family ignores `mode` — refs are implicit from which arrays you fill.
-  const effectiveMode: Mode = isVip
+  const isLessRestriction = taskTypeInfo.family === 'less_restriction'
+  // Less-restriction family ignores `mode` — refs are implicit from which arrays you fill.
+  const effectiveMode: Mode = isLessRestriction
     ? (allVideoUrls.length > 0 || allAudioUrls.length > 0 || allImageUrls.length > 0
         ? 'omni_reference'
         : 'text_to_video')
@@ -215,8 +195,8 @@ function SeedanceBlock({
   }, [taskType, availableAspects, aspect, setAspect])
 
   useEffect(() => {
-    if (isVip && ![5, 10, 15].includes(duration)) setDuration(5)
-  }, [isVip, duration, setDuration])
+    if (isLessRestriction && ![5, 10, 15].includes(duration)) setDuration(5)
+  }, [isLessRestriction, duration, setDuration])
 
   useEffect(() => {
     fetch(HEALTH_ENDPOINT)
@@ -276,8 +256,8 @@ function SeedanceBlock({
         resolution,
         aspect_ratio: aspect,
       }
-      if (isVip) {
-        // VIP: no `mode`. Refs are implicit. Audio-only is still illegal.
+      if (isLessRestriction) {
+        // Less-restriction: no `mode`. Refs are implicit. Audio-only is still illegal.
         if (audioUrls.length > 0 && imageUrls.length === 0 && videoUrls.length === 0) {
           throw new Error('Audio-only is not allowed — pair with at least one image or video.')
         }
@@ -356,10 +336,10 @@ function SeedanceBlock({
     else setLocalAudioUrls((p) => p.filter((u) => u !== url))
   }
 
-  // Ref visibility: VIP always supports all three; seedance-2 depends on mode.
-  const showImageRefs = isVip || mode === 'first_last_frames' || mode === 'omni_reference'
-  const showVideoRefs = isVip || mode === 'omni_reference'
-  const showAudioRefs = isVip || mode === 'omni_reference'
+  // Ref visibility: less-restriction always supports all three.
+  const showImageRefs = isLessRestriction || mode === 'first_last_frames' || mode === 'omni_reference'
+  const showVideoRefs = isLessRestriction || mode === 'omni_reference'
+  const showAudioRefs = isLessRestriction || mode === 'omni_reference'
 
   return (
     <div className="space-y-3">
@@ -377,8 +357,8 @@ function SeedanceBlock({
         <p className="text-[10px] text-muted-foreground">{taskTypeInfo.hint}</p>
       </div>
 
-      {/* Mode — seedance-2 family only */}
-      {!isVip && (
+      {/* Mode controls are hidden for less-restriction models. */}
+      {!isLessRestriction && (
         <div className="space-y-1">
           <Label className="text-[11px]">Mode</Label>
           <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
@@ -414,10 +394,10 @@ function SeedanceBlock({
               {availableAspects.map((a) => (
                 <SelectItem key={a} value={a}>{a}</SelectItem>
               ))}
-              {!isVip && mode === 'first_last_frames' && <SelectItem value="auto">auto (detect)</SelectItem>}
+              {!isLessRestriction && mode === 'first_last_frames' && <SelectItem value="auto">auto (detect)</SelectItem>}
             </SelectContent>
           </Select>
-          {!isVip && mode === 'first_last_frames' && (
+          {!isLessRestriction && mode === 'first_last_frames' && (
             <p className="text-[10px] text-muted-foreground italic">Ignored upstream in this mode.</p>
           )}
         </div>
@@ -429,7 +409,7 @@ function SeedanceBlock({
           <Label className="text-[11px]">Duration</Label>
           <span className="text-[11px] font-mono">{duration}s</span>
         </div>
-        {isVip ? (
+        {isLessRestriction ? (
           <Select
             value={String(duration)}
             onValueChange={(v) => setDuration(Number(v))}
@@ -444,9 +424,9 @@ function SeedanceBlock({
         ) : (
           <Slider min={4} max={15} step={1} value={[duration]} onValueChange={(v) => setDuration(v[0])} />
         )}
-        {isVip && allVideoUrls.length > 0 && (
+        {isLessRestriction && allVideoUrls.length > 0 && (
           <p className="text-[10px] text-muted-foreground italic">
-            Preview-VIP video references still use the selected 5/10/15s duration.
+            Less-restriction video references still use the selected 5/10/15s duration.
           </p>
         )}
       </div>
@@ -466,7 +446,7 @@ function SeedanceBlock({
           onSourceChange={promptSource.setSelectedSourceValue}
           textareaClassName="min-h-[70px]"
         />
-        {(isVip || mode === 'omni_reference') && (allImageUrls.length + allVideoUrls.length + allAudioUrls.length > 0) && (
+        {(isLessRestriction || mode === 'omni_reference') && (allImageUrls.length + allVideoUrls.length + allAudioUrls.length > 0) && (
           <TagBadges
             imageUrls={allImageUrls}
             videoUrls={allVideoUrls}

@@ -5,9 +5,7 @@ import { usePathname } from 'next/navigation'
 import { Package as PackageIcon } from 'lucide-react'
 
 /**
- * "Presets & Models" nav entry — shows both icon and label so new users
- * can find the model-bundle installer without hovering for the tooltip
- * (sgs-ui-eqc.3).
+ * Presets nav entry for curated model + workflow bundles.
  */
 export function PresetsNavIcon() {
   const pathname = usePathname()
@@ -24,7 +22,7 @@ export function PresetsNavIcon() {
       }`}
     >
       <PackageIcon className="w-3.5 h-3.5" />
-      <span>Presets &amp; Models</span>
+      <span>Presets</span>
     </Link>
   )
 }

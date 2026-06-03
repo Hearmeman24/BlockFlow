@@ -1,8 +1,8 @@
 /**
  * Nav-icon tests (sgs-ui-eqc.3).
  *
- * - Presets entry renders the new "Presets & Models" label (was icon-only)
- * - LoRAs entry exists, links to /loras, active state highlights on /loras
+ * - Presets entry renders a clear bundle-catalog label
+ * - Models entry replaces the old LoRAs entry while keeping /loras active as an alias
  */
 import { describe, expect, test, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
@@ -20,10 +20,10 @@ beforeEach(() => {
 })
 
 describe('PresetsNavIcon — new text+icon style', () => {
-  test('renders the "Presets & Models" label (no longer icon-only)', () => {
+  test('renders the "Presets" label (no longer icon-only)', () => {
     mockPathname.mockReturnValue('/')
     render(<PresetsNavIcon />)
-    expect(screen.getByText('Presets & Models')).toBeInTheDocument()
+    expect(screen.getByText('Presets')).toBeInTheDocument()
     expect(screen.getByRole('link')).toHaveAttribute('href', '/presets')
   })
 
@@ -46,15 +46,20 @@ describe('PresetsNavIcon — new text+icon style', () => {
   })
 })
 
-describe('LorasNavIcon', () => {
-  test('renders label and links to /loras', () => {
+describe('LorasNavIcon compatibility wrapper', () => {
+  test('renders Models label and links to /models', () => {
     mockPathname.mockReturnValue('/')
     render(<LorasNavIcon />)
-    expect(screen.getByText('LoRAs')).toBeInTheDocument()
-    expect(screen.getByRole('link')).toHaveAttribute('href', '/loras')
+    expect(screen.getByText('Models')).toBeInTheDocument()
+    expect(screen.getByRole('link')).toHaveAttribute('href', '/models')
   })
 
-  test('active on /loras', () => {
+  test('active on /models and compatibility /loras', () => {
+    mockPathname.mockReturnValue('/models')
+    const { unmount } = render(<LorasNavIcon />)
+    expect(screen.getByRole('link')).toHaveAttribute('aria-current', 'page')
+    unmount()
+
     mockPathname.mockReturnValue('/loras')
     render(<LorasNavIcon />)
     expect(screen.getByRole('link')).toHaveAttribute('aria-current', 'page')

@@ -1,8 +1,18 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { DownloadIcon, MoreHorizontalIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react'
+import { DownloadIcon, FolderOpenIcon, MoreHorizontalIcon, RefreshCwIcon, Trash2Icon } from 'lucide-react'
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -16,8 +26,18 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { AlertPanel } from '@/components/alert-panel'
+import { EmptyState } from '@/components/empty-state'
+import { PageHeader } from '@/components/page-header'
 import {
   ALLOWED_MODEL_FOLDERS,
   clearDownloadState,
@@ -60,6 +80,11 @@ const FOLDER_LABELS: Record<ModelFolder, string> = {
   checkpoints: 'Checkpoints',
 }
 
+type DeleteTarget = {
+  rows: ModelRow[]
+  prompt: string
+}
+
 export function ModelsPageBody() {
   const [data, setData] = useState<ModelsListResponse | null>(null)
   const [noEndpoint, setNoEndpoint] = useState(false)
@@ -70,6 +95,7 @@ export function ModelsPageBody() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [showDownload, setShowDownload] = useState(false)
   const [busyAction, setBusyAction] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null)
   const backgroundSyncTriggered = useRef(false)
 
   const refresh = useCallback(async () => {
@@ -155,7 +181,8 @@ export function ModelsPageBody() {
     [data, selected],
   )
 
-  const handleDelete = useCallback(async (rows: ModelRow[]) => {
+  // Opens the AlertDialog with the prompt; actual deletion runs on confirm.
+  const requestDelete = useCallback((rows: ModelRow[]) => {
     if (rows.length === 0) return
     const byFolder = new Map<ModelFolder, number>()
     for (const row of rows) byFolder.set(row.folder, (byFolder.get(row.folder) ?? 0) + 1)
@@ -164,7 +191,13 @@ export function ModelsPageBody() {
     const prompt = rows.length === 1
       ? `Delete ${rows[0].folder}/${rows[0].filename}${size ? ` (${formatBytes(size)})` : ''}?`
       : `Delete ${rows.length} model files (${folderSummary})${size ? `, ${formatBytes(size)}` : ''}? This cannot be undone.`
-    if (!confirm(prompt)) return
+    setDeleteTarget({ rows, prompt })
+  }, [])
+
+  const handleDeleteConfirmed = useCallback(async () => {
+    if (!deleteTarget) return
+    const rows = deleteTarget.rows
+    setDeleteTarget(null)
     setActionErr(null)
     setBusyAction(true)
     try {
@@ -192,7 +225,7 @@ export function ModelsPageBody() {
     } finally {
       setBusyAction(false)
     }
-  }, [])
+  }, [deleteTarget])
 
   const toggleOne = (row: ModelRow) => {
     const key = modelKey(row)
@@ -208,38 +241,37 @@ export function ModelsPageBody() {
     return (
       <main className="mx-auto max-w-5xl px-6 pt-24 pb-8">
         <h1 className="text-2xl font-semibold">Models</h1>
-        <div className="mt-6 rounded-md border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
+        <AlertPanel variant="warning" className="mt-6">
           No ComfyGen endpoint configured. <a href="/settings" className="underline">Configure endpoint</a>
-        </div>
+        </AlertPanel>
       </main>
     )
   }
 
   return (
     <main className="mx-auto max-w-7xl px-6 pt-24 pb-8 text-sm">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-normal">Models</h1>
-          <p className="text-muted-foreground">
-            Endpoint inventory across ComfyUI model folders.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button type="button" size="sm" onClick={() => setShowDownload(true)}>
-            <DownloadIcon className="size-4" />
-            Add model
-          </Button>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button type="button" size="sm" variant="outline" onClick={handleManualSync} disabled={syncing}>
-                <RefreshCwIcon className={syncing ? 'size-4 animate-spin' : 'size-4'} />
-                {syncing ? 'Syncing' : 'Sync all'}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Re-read every allowed model folder from the endpoint.</TooltipContent>
-          </Tooltip>
-        </div>
-      </header>
+      <PageHeader
+        title="Models"
+        description="Endpoint inventory across ComfyUI model folders."
+        actions={
+          <>
+            <Button type="button" size="sm" onClick={() => setShowDownload(true)}>
+              <DownloadIcon className="size-4" />
+              Add model
+            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button type="button" size="sm" variant="outline" onClick={handleManualSync} disabled={syncing}>
+                  <RefreshCwIcon className={syncing ? 'size-4 animate-spin' : 'size-4'} />
+                  {syncing ? 'Syncing' : 'Sync all'}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Re-read every allowed model folder from the endpoint.</TooltipContent>
+            </Tooltip>
+          </>
+        }
+        className="flex-wrap gap-4 items-start"
+      />
 
       <section className="mt-5 grid gap-3 sm:grid-cols-3">
         <Metric label="Inventory" value={`${data?.models.length ?? 0} files`} />
@@ -248,12 +280,12 @@ export function ModelsPageBody() {
       </section>
 
       {data?.stale && (
-        <div className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">
+        <AlertPanel variant="warning" className="mt-4">
           Showing cached model inventory. {syncing ? 'Background sync in progress.' : 'Click Sync all to refresh from the endpoint.'}
-        </div>
+        </AlertPanel>
       )}
-      {loadErr && <ErrorBanner message={loadErr} />}
-      {actionErr && <ErrorBanner message={actionErr} />}
+      {loadErr && <AlertPanel variant="error" className="mt-4 whitespace-pre-wrap">{loadErr}</AlertPanel>}
+      {actionErr && <AlertPanel variant="error" className="mt-4 whitespace-pre-wrap">{actionErr}</AlertPanel>}
 
       <section className="sticky top-20 z-20 mt-4 space-y-3 border-y border-border/60 bg-background/95 py-3 backdrop-blur">
         <div className="flex flex-wrap gap-2">
@@ -285,18 +317,21 @@ export function ModelsPageBody() {
             aria-label="Search models"
             className="h-9 min-w-[280px] flex-1"
           />
-          <select
-            aria-label="Filter by source"
-            value={filters.source}
-            onChange={(event) => setFilters((cur) => ({ ...cur, source: event.target.value as FilterState['source'] }))}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+          <Select
+            value={filters.source === '' ? '__all__' : filters.source}
+            onValueChange={(val) => setFilters((cur) => ({ ...cur, source: (val === '__all__' ? '' : val) as FilterState['source'] }))}
           >
-            <option value="">All sources</option>
-            <option value="civitai">CivitAI</option>
-            <option value="hf">Hugging Face</option>
-            <option value="url">URL</option>
-            <option value="unknown">Unknown</option>
-          </select>
+            <SelectTrigger aria-label="Filter by source" size="sm" className="w-[160px]">
+              <SelectValue placeholder="All sources" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all__">All sources</SelectItem>
+              <SelectItem value="civitai">CivitAI</SelectItem>
+              <SelectItem value="hf">Hugging Face</SelectItem>
+              <SelectItem value="url">URL</SelectItem>
+              <SelectItem value="unknown">Unknown</SelectItem>
+            </SelectContent>
+          </Select>
           <span className="ml-auto text-muted-foreground">{filtered.length} of {data?.models.length ?? 0}</span>
           {selectedRows.length > 0 && (
             <Button
@@ -304,7 +339,7 @@ export function ModelsPageBody() {
               size="sm"
               variant="destructive"
               disabled={busyAction}
-              onClick={() => void handleDelete(selectedRows)}
+              onClick={() => requestDelete(selectedRows)}
             >
               <Trash2Icon className="size-4" />
               Delete {selectedRows.length} selected
@@ -319,17 +354,25 @@ export function ModelsPageBody() {
             {Array.from({ length: 6 }).map((_, idx) => <Skeleton key={idx} className="h-10 w-full" />)}
           </div>
         ) : data.models.length === 0 ? (
-          <div className="p-10 text-center text-muted-foreground">
-            No models on the endpoint yet. Add a model or sync the endpoint inventory.
-          </div>
+          <EmptyState
+            icon={FolderOpenIcon}
+            title="No models on the endpoint yet"
+            description="Add a model or sync the endpoint inventory."
+            action={
+              <Button type="button" size="sm" onClick={() => setShowDownload(true)}>
+                <DownloadIcon className="size-4" />
+                Add model
+              </Button>
+            }
+          />
         ) : filtered.length === 0 ? (
-          <div className="p-10 text-center text-muted-foreground">No models match the current filters.</div>
+          <EmptyState title="No models match the current filters." />
         ) : (
           <InventoryTable
             rows={filtered}
             selected={selected}
             onToggle={toggleOne}
-            onDelete={(rows) => void handleDelete(rows)}
+            onDelete={(rows) => requestDelete(rows)}
             disabled={busyAction}
           />
         )}
@@ -343,6 +386,24 @@ export function ModelsPageBody() {
           await refresh()
         }}
       />
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) setDeleteTarget(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm deletion</AlertDialogTitle>
+            <AlertDialogDescription>{deleteTarget?.prompt}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => void handleDeleteConfirmed()}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </main>
   )
 }
@@ -354,10 +415,6 @@ function Metric({ label, value }: { label: string; value: string }) {
       <div className="mt-1 text-lg font-semibold">{value}</div>
     </div>
   )
-}
-
-function ErrorBanner({ message }: { message: string }) {
-  return <div className="mt-4 whitespace-pre-wrap rounded-md border border-destructive/40 bg-destructive/10 p-3">{message}</div>
 }
 
 function InventoryTable({
@@ -446,16 +503,18 @@ function FamilyRow({
           />
         </td>
         <td className="px-3 py-2">
-          <button
+          <Button
             type="button"
-            className="font-mono text-left"
+            variant="ghost"
+            size="sm"
+            className="h-auto p-0 font-mono text-left font-normal hover:bg-transparent"
             onClick={() => setExpanded((cur) => !cur)}
             aria-expanded={expanded}
             aria-label={`${expanded ? 'Collapse' : 'Expand'} ${item.members.length} files in ${item.stem}`}
           >
             {expanded ? '▾' : '▸'} {item.stem}
             <span className="ml-2 font-sans text-xs text-muted-foreground">{item.members.length} files</span>
-          </button>
+          </Button>
         </td>
         <td className="px-3 py-2"><FolderBadge folder={item.folder} /></td>
         <td className="px-3 py-2"><SourceBadge source={item.latest.source} /></td>
@@ -684,19 +743,24 @@ function DownloadDialog({
           </div>
         ) : (
           <div className="space-y-3">
-            <label className="block text-sm font-medium">
-              Destination folder
-              <select
-                aria-label="Destination folder"
+            <div className="space-y-1">
+              <label className="block text-sm font-medium" htmlFor="download-folder">
+                Destination folder
+              </label>
+              <Select
                 value={folder}
-                onChange={(event) => setFolder(parseModelFolder(event.target.value) ?? 'loras')}
-                className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3"
+                onValueChange={(val) => setFolder(parseModelFolder(val) ?? 'loras')}
               >
-                {ALLOWED_MODEL_FOLDERS.map((value) => (
-                  <option key={value} value={value}>{value}</option>
-                ))}
-              </select>
-            </label>
+                <SelectTrigger id="download-folder" aria-label="Destination folder">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ALLOWED_MODEL_FOLDERS.map((value) => (
+                    <SelectItem key={value} value={value}>{value}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <label className="block text-sm font-medium">
               Model source
               <Input
@@ -717,7 +781,7 @@ function DownloadDialog({
                 className="mt-1 font-mono"
               />
             </label>
-            {needsLatest && <p className="text-sm text-amber-400">CivitAI model URL has no version ID. Pick a version first.</p>}
+            {needsLatest && <p className="text-sm text-warning">CivitAI model URL has no version ID. Pick a version first.</p>}
             {err && <p className="text-sm text-destructive">{err}</p>}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

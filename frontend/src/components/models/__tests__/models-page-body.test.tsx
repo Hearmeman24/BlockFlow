@@ -69,7 +69,6 @@ const progress = (overrides: Partial<ModelDownloadProgress> = {}): ModelDownload
 beforeEach(() => {
   vi.clearAllMocks()
   window.history.pushState({}, '', '/')
-  vi.spyOn(window, 'confirm').mockReturnValue(true)
   vi.mocked(client.syncModels).mockResolvedValue(listResponse([]))
 })
 
@@ -163,7 +162,32 @@ describe('ModelsPageBody', () => {
     expect(await screen.findByText('fresh.safetensors')).toBeInTheDocument()
   })
 
-  test('bulk delete sends selected folder and filename items', async () => {
+  test('shows skeleton placeholders while data is loading', async () => {
+    // Never resolve so loading state persists
+    vi.mocked(client.listModels).mockReturnValue(new Promise(() => {}))
+
+    renderPage()
+
+    // Skeleton components render as plain <div> elements — find the container by class
+    const main = screen.getByRole('main')
+    // Wait a tick for initial render
+    await waitFor(() => {
+      const skeletonContainer = main.querySelector('.space-y-2')
+      expect(skeletonContainer).not.toBeNull()
+      const skeletonDivs = skeletonContainer?.querySelectorAll('[class*="animate-pulse"]')
+      expect(skeletonDivs?.length).toBeGreaterThanOrEqual(6)
+    })
+  })
+
+  test('shows empty state when endpoint has no models', async () => {
+    vi.mocked(client.listModels).mockResolvedValue(listResponse([]))
+
+    renderPage()
+
+    expect(await screen.findByText(/No models on the endpoint yet/i)).toBeInTheDocument()
+  })
+
+  test('bulk delete shows AlertDialog and sends selected items on confirm', async () => {
     vi.mocked(client.listModels).mockResolvedValue(listResponse([
       row({ folder: 'checkpoints', filename: 'base.safetensors' }),
       row({ folder: 'vae', filename: 'vae.safetensors' }),
@@ -183,18 +207,78 @@ describe('ModelsPageBody', () => {
     await user.click(screen.getByRole('checkbox', { name: /Select vae\/vae\.safetensors/i }))
     await user.click(screen.getByRole('button', { name: /Delete 2 selected/i }))
 
-    expect(client.deleteModels).toHaveBeenCalledWith([
-      { folder: 'checkpoints', filename: 'base.safetensors' },
-      { folder: 'vae', filename: 'vae.safetensors' },
-    ])
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('checkpoints: 1'))
+    // AlertDialog should appear before deletion occurs
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/checkpoints: 1/i)).toBeInTheDocument()
+    expect(client.deleteModels).not.toHaveBeenCalled()
+
+    // Confirm
+    await user.click(within(dialog).getByRole('button', { name: /^Delete$/i }))
+
+    await waitFor(() => {
+      expect(client.deleteModels).toHaveBeenCalledWith([
+        { folder: 'checkpoints', filename: 'base.safetensors' },
+        { folder: 'vae', filename: 'vae.safetensors' },
+      ])
+    })
   })
 
-  test('add model dialog requires destination folder and starts download', async () => {
+  test('AlertDialog cancel does not trigger deletion', async () => {
+    vi.mocked(client.listModels).mockResolvedValue(listResponse([
+      row({ folder: 'checkpoints', filename: 'base.safetensors' }),
+    ]))
+    const user = userEvent.setup()
+
+    renderPage()
+    await screen.findByText('base.safetensors')
+
+    await user.click(screen.getByRole('checkbox', { name: /Select checkpoints\/base\.safetensors/i }))
+    await user.click(screen.getByRole('button', { name: /Delete 1 selected/i }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    await user.click(within(dialog).getByRole('button', { name: /Cancel/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    })
+    expect(client.deleteModels).not.toHaveBeenCalled()
+  })
+
+  test('row menu delete button opens AlertDialog for single row', async () => {
+    vi.mocked(client.listModels).mockResolvedValue(listResponse([
+      row({ folder: 'checkpoints', filename: 'base.safetensors' }),
+    ]))
+    vi.mocked(client.deleteModels).mockResolvedValue({
+      results: [{ folder: 'checkpoints', filename: 'base.safetensors', path: '/p', deleted: true, error: null }],
+    })
+    const user = userEvent.setup()
+
+    renderPage()
+    await screen.findByText('base.safetensors')
+
+    await user.click(screen.getByRole('button', { name: /More actions/i }))
+    await user.click(screen.getByRole('menuitem', { name: /Delete/i }))
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(/base\.safetensors/i)).toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole('button', { name: /^Delete$/i }))
+    await waitFor(() => {
+      expect(client.deleteModels).toHaveBeenCalledWith([
+        { folder: 'checkpoints', filename: 'base.safetensors' },
+      ])
+    })
+  })
+
+  test('add model dialog shows folder combobox and starts download with default folder', async () => {
+    // Note: Radix Select portals do not open in JSDOM, so folder selection via the
+    // dropdown cannot be exercised in unit tests. We verify: (a) the combobox is
+    // accessible, (b) the form submits with the default folder (loras), and (c) the
+    // progress state displays correctly.
     vi.mocked(client.listModels).mockResolvedValue(listResponse([]))
     vi.mocked(client.downloadModel).mockResolvedValue(progress({
       state: 'completed',
-      folder: 'vae',
+      folder: 'loras',
       filename: 'new.safetensors',
       progress_percent: 100,
     }))
@@ -202,17 +286,21 @@ describe('ModelsPageBody', () => {
 
     renderPage()
     await screen.findByText(/No models on the endpoint yet/i)
-    await user.click(screen.getByRole('button', { name: /Add model/i }))
+    // Two "Add model" buttons appear (header + empty-state CTA); click the first
+    await user.click(screen.getAllByRole('button', { name: /Add model/i })[0])
 
     const dialog = await screen.findByRole('dialog', { name: /Add model/i })
-    await user.selectOptions(within(dialog).getByLabelText(/Destination folder/i), 'vae')
+
+    // The folder selector renders as a combobox with the correct aria-label
+    expect(within(dialog).getByRole('combobox', { name: /Destination folder/i })).toBeInTheDocument()
+
     await user.type(within(dialog).getByLabelText(/Model source/i), 'https://example.com/new.safetensors')
     await user.click(within(dialog).getByRole('button', { name: /^Download$/i }))
 
     expect(client.downloadModel).toHaveBeenCalledWith({
       source: 'url',
       url: 'https://example.com/new.safetensors',
-      folder: 'vae',
+      folder: 'loras',
       filename: undefined,
     })
     expect(await within(dialog).findByText(/Download complete/i)).toBeInTheDocument()

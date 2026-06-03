@@ -80,11 +80,11 @@ async def test_pending_poll_with_output_video_completes_local_job(tmp_path: Path
         "started_at": 0,
         "ended_at": None,
         "cancel_requested": False,
-        "task_type": "seedance-2-preview-vip",
+        "task_type": "seedance-2-less-restriction",
         "mode": None,
     }
 
-    await mod._run_job(job_id, "key", "seedance-2-preview-vip", {"prompt": "x"})
+    await mod._run_job(job_id, "key", "seedance-2-less-restriction", {"prompt": "x"})
 
     rec = mod.JOBS[job_id]
     assert rec["status"] == "COMPLETED"

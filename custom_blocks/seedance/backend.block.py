@@ -42,27 +42,19 @@ SEEDANCE_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_MODES = {"text_to_video", "first_last_frames", "omni_reference"}
 
-# seedance-2 family — `mode`-driven, 4-15 continuous duration, 6 ARs + auto,
-#   ALL face references blocked at upstream visual review (no pre-submission).
-# *-preview-vip family — `mode`-less, 5/10/15 duration enum, 4 ARs only,
-#   non-real faces allowed (tightening), pre-submission moderation +
-#   refund on block. Live tasks still enforce the 5/10/15 enum when
-#   `video_urls` is set.
+# PiAPI Seedance less-restriction family only. These are mode-less, use the
+# 5/10/15 duration enum, and are the only allowed models for local UGC jobs.
 ALLOWED_TASK_TYPES = {
-    "seedance-2",
-    "seedance-2-fast",
-    "seedance-2-preview-vip",
-    "seedance-2-fast-preview-vip",
+    "seedance-2-less-restriction",
+    "seedance-2-fast-less-restriction",
 }
-VIP_TASK_TYPES = {"seedance-2-preview-vip", "seedance-2-fast-preview-vip"}
+LESS_RESTRICTION_TASK_TYPES = {"seedance-2-less-restriction", "seedance-2-fast-less-restriction"}
 
-VIP_ALLOWED_DURATIONS = {5, 10, 15}
-VIP_ALLOWED_ASPECTS = {"16:9", "9:16", "4:3", "3:4"}
+LESS_RESTRICTION_ALLOWED_DURATIONS = {5, 10, 15}
+LESS_RESTRICTION_ALLOWED_ASPECTS = {"16:9", "9:16", "4:3", "3:4"}
 TASK_TYPE_RESOLUTIONS: dict[str, set[str]] = {
-    "seedance-2": {"480p", "720p", "1080p"},
-    "seedance-2-fast": {"480p", "720p"},
-    "seedance-2-preview-vip": {"720p", "1080p"},
-    "seedance-2-fast-preview-vip": {"720p"},
+    "seedance-2-less-restriction": {"720p", "1080p"},
+    "seedance-2-fast-less-restriction": {"720p"},
 }
 
 ALLOWED_RESOLUTIONS = {"480p", "720p", "1080p"}
@@ -138,9 +130,9 @@ def health() -> JSONResponse:
         "piapi_key_present": bool(_api_key()),
         "modes": sorted(ALLOWED_MODES),
         "task_types": sorted(ALLOWED_TASK_TYPES),
-        "vip_task_types": sorted(VIP_TASK_TYPES),
-        "vip_allowed_durations": sorted(VIP_ALLOWED_DURATIONS),
-        "vip_allowed_aspects": sorted(VIP_ALLOWED_ASPECTS),
+        "less_restriction_task_types": sorted(LESS_RESTRICTION_TASK_TYPES),
+        "less_restriction_allowed_durations": sorted(LESS_RESTRICTION_ALLOWED_DURATIONS),
+        "less_restriction_allowed_aspects": sorted(LESS_RESTRICTION_ALLOWED_ASPECTS),
         "task_type_resolutions": {k: sorted(v) for k, v in TASK_TYPE_RESOLUTIONS.items()},
     })
 
@@ -148,12 +140,13 @@ def health() -> JSONResponse:
 def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str, Any]:
     """Build the `input` payload for PiAPI. Schema branches by task_type family:
 
-    - seedance-2 / seedance-2-fast: `mode` enum, 4-15 continuous duration,
-      6 ARs + auto, 480p/720p/1080p (480p Fast caps at 720p).
-    - *-preview-vip: no `mode` field, 5/10/15 duration enum (ignored when
-      `video_urls` present), 4 ARs only, 720p/1080p (Fast VIP is 720p-only).
+    - less-restriction models: no `mode` field, 5/10/15 duration enum,
+      4 ARs only, 720p/1080p (Fast less-restriction is 720p-only).
     """
-    is_vip = task_type in VIP_TASK_TYPES
+    if task_type not in ALLOWED_TASK_TYPES:
+        raise ValueError(f"task_type must be one of {sorted(ALLOWED_TASK_TYPES)}")
+
+    is_less_restriction = task_type in LESS_RESTRICTION_TASK_TYPES
 
     prompt = str(body.get("prompt") or "").strip()
     if not prompt:
@@ -181,18 +174,18 @@ def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str,
 
     aspect_ratio = str(body.get("aspect_ratio") or "16:9")
 
-    # === VIP family: mode-less, restricted enums ===
-    if is_vip:
-        allowed_aspects = VIP_ALLOWED_ASPECTS
+    # === less-restriction family: mode-less, restricted enums ===
+    if is_less_restriction:
+        allowed_aspects = LESS_RESTRICTION_ALLOWED_ASPECTS
         if aspect_ratio not in allowed_aspects:
             raise ValueError(f"aspect_ratio for {task_type} must be one of {sorted(allowed_aspects)}")
 
         if images and len(images) > MAX_IMAGE_REFS:
-            raise ValueError(f"VIP accepts at most {MAX_IMAGE_REFS} images (got {len(images)})")
+            raise ValueError(f"less-restriction accepts at most {MAX_IMAGE_REFS} images (got {len(images)})")
         if videos and len(videos) > MAX_VIDEO_REFS:
-            raise ValueError(f"VIP accepts at most {MAX_VIDEO_REFS} videos (got {len(videos)})")
+            raise ValueError(f"less-restriction accepts at most {MAX_VIDEO_REFS} videos (got {len(videos)})")
         if audios and len(audios) > MAX_AUDIO_REFS:
-            raise ValueError(f"VIP accepts at most {MAX_AUDIO_REFS} audios (got {len(audios)})")
+            raise ValueError(f"less-restriction accepts at most {MAX_AUDIO_REFS} audios (got {len(audios)})")
         if audios and not (images or videos):
             raise ValueError("audio-only is not allowed; pair with image or video")
 
@@ -208,20 +201,20 @@ def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str,
         if audios:
             payload["audio_urls"] = audios
 
-        # Preview-VIP accepts only 5/10/15. Live PiAPI tasks reject duration=0
+        # Less-restriction accepts only 5/10/15. Live PiAPI tasks reject duration=0
         # with "invalid duration" and default to 5s, even with video refs.
         duration_raw = body.get("duration", 5)
         try:
             duration = int(duration_raw)
         except (TypeError, ValueError):
             duration = 5
-        if duration not in VIP_ALLOWED_DURATIONS:
-            raise ValueError(f"duration for {task_type} must be one of {sorted(VIP_ALLOWED_DURATIONS)}")
+        if duration not in LESS_RESTRICTION_ALLOWED_DURATIONS:
+            raise ValueError(f"duration for {task_type} must be one of {sorted(LESS_RESTRICTION_ALLOWED_DURATIONS)}")
         payload["duration"] = duration
 
         return payload
 
-    # === seedance-2 family: mode-driven ===
+    # === legacy mode-driven branch, unreachable while strict models are disallowed ===
     mode = str(body.get("mode") or "").strip()
     if mode not in ALLOWED_MODES:
         raise ValueError(f"mode must be one of {sorted(ALLOWED_MODES)}")
@@ -395,7 +388,7 @@ async def run(request: Request) -> JSONResponse:
     if not api_key:
         return JSONResponse({"ok": False, "error": "PiAPI key required (set in Settings)"}, status_code=400)
 
-    task_type = str(body.get("task_type") or "seedance-2-fast")
+    task_type = str(body.get("task_type") or "seedance-2-fast-less-restriction")
     if task_type not in ALLOWED_TASK_TYPES:
         return JSONResponse({"ok": False, "error": f"task_type must be one of {sorted(ALLOWED_TASK_TYPES)}"}, status_code=400)
 

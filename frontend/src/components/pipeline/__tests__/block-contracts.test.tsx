@@ -325,15 +325,17 @@ describe('custom block contracts', () => {
       setup: () => {
         setSession('execute-seedance', 'prompt', 'seedance prompt')
         setSession('execute-seedance', 'mode', 'omni_reference')
+        setSession('execute-seedance', 'resolution', '720p')
       },
       assertPayload: (body: Record<string, unknown>) => {
         expect(body).toMatchObject({
+          task_type: 'seedance-2-fast-less-restriction',
           prompt: 'seedance prompt',
-          mode: 'omni_reference',
           image_urls: ['/outputs/contract/image.png'],
           video_urls: ['/outputs/contract/video.mp4'],
           audio_urls: ['/outputs/contract/audio.mp3'],
         })
+        expect(body).not.toHaveProperty('mode')
       },
     },
     {

@@ -120,4 +120,49 @@ describe('Seedance source mode UI', () => {
       body: expect.stringContaining('"/outputs/gpt_image_piapi/frame.png"'),
     }))
   })
+
+  it('keeps mode in the submit payload for strict Seedance models', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === '/api/blocks/seedance/health') {
+        return Promise.resolve(new Response(JSON.stringify({ piapi_key_present: true }), { status: 200 }))
+      }
+      if (url === '/api/blocks/seedance/run') {
+        return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'stop after submit' }), { status: 200 }))
+      }
+      return Promise.reject(new Error(`Unhandled fetch: ${url}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    sessionStorage.setItem('block_seedance-strict_task_type', JSON.stringify('seedance-2-fast'))
+    sessionStorage.setItem('block_seedance-strict_mode', JSON.stringify('omni_reference'))
+    sessionStorage.setItem('block_seedance-strict_prompt', JSON.stringify('make this move'))
+    sessionStorage.setItem('block_seedance-strict_resolution', JSON.stringify('720p'))
+    let execute: ExecuteFn | null = null
+    const Seedance = seedanceBlockDef.component
+
+    render(
+      <PipelineTabsProvider>
+        <PipelineProvider tabId="seedance-strict-ref-test">
+          <Seedance
+            blockId="seedance-strict"
+            inputs={{ image: '/outputs/gpt_image_piapi/frame.png' }}
+            setOutput={() => {}}
+            registerExecute={(fn) => { execute = fn as ExecuteFn }}
+            setStatusMessage={() => {}}
+          />
+        </PipelineProvider>
+      </PipelineTabsProvider>,
+    )
+    await waitFor(() => expect(execute).toBeTruthy())
+
+    await expect(execute!({ image: '/outputs/gpt_image_piapi/frame.png' }, new AbortController().signal))
+      .rejects.toThrow('stop after submit')
+
+    const runCall = fetchMock.mock.calls.find(([input]) => String(input) === '/api/blocks/seedance/run')
+    expect(runCall).toBeDefined()
+    const runInit = (runCall as unknown as [RequestInfo | URL, RequestInit])[1]
+    const submittedBody = JSON.parse(String(runInit.body))
+    expect(submittedBody.task_type).toBe('seedance-2-fast')
+    expect(submittedBody.mode).toBe('omni_reference')
+  })
 })

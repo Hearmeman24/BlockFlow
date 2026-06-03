@@ -42,17 +42,23 @@ SEEDANCE_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_MODES = {"text_to_video", "first_last_frames", "omni_reference"}
 
-# PiAPI Seedance less-restriction family only. These are mode-less, use the
-# 5/10/15 duration enum, and are the only allowed models for local UGC jobs.
+# PiAPI Seedance model families:
+# - standard full models are mode-driven (`omni_reference`, `text_to_video`, ...)
+# - less-restriction models are mode-less and use the 5/10/15 duration enum.
 ALLOWED_TASK_TYPES = {
+    "seedance-2",
+    "seedance-2-fast",
     "seedance-2-less-restriction",
     "seedance-2-fast-less-restriction",
 }
+STANDARD_TASK_TYPES = {"seedance-2", "seedance-2-fast"}
 LESS_RESTRICTION_TASK_TYPES = {"seedance-2-less-restriction", "seedance-2-fast-less-restriction"}
 
 LESS_RESTRICTION_ALLOWED_DURATIONS = {5, 10, 15}
 LESS_RESTRICTION_ALLOWED_ASPECTS = {"16:9", "9:16", "4:3", "3:4"}
 TASK_TYPE_RESOLUTIONS: dict[str, set[str]] = {
+    "seedance-2": {"480p", "720p", "1080p"},
+    "seedance-2-fast": {"480p", "720p"},
     "seedance-2-less-restriction": {"720p", "1080p"},
     "seedance-2-fast-less-restriction": {"720p"},
 }
@@ -130,6 +136,7 @@ def health() -> JSONResponse:
         "piapi_key_present": bool(_api_key()),
         "modes": sorted(ALLOWED_MODES),
         "task_types": sorted(ALLOWED_TASK_TYPES),
+        "standard_task_types": sorted(STANDARD_TASK_TYPES),
         "less_restriction_task_types": sorted(LESS_RESTRICTION_TASK_TYPES),
         "less_restriction_allowed_durations": sorted(LESS_RESTRICTION_ALLOWED_DURATIONS),
         "less_restriction_allowed_aspects": sorted(LESS_RESTRICTION_ALLOWED_ASPECTS),
@@ -140,6 +147,8 @@ def health() -> JSONResponse:
 def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str, Any]:
     """Build the `input` payload for PiAPI. Schema branches by task_type family:
 
+    - seedance-2 / seedance-2-fast: `mode` enum, 4-15 continuous duration,
+      6 ARs + auto, 480p/720p/1080p (480p Fast caps at 720p).
     - less-restriction models: no `mode` field, 5/10/15 duration enum,
       4 ARs only, 720p/1080p (Fast less-restriction is 720p-only).
     """
@@ -214,7 +223,7 @@ def _validate_and_build_input(body: dict[str, Any], task_type: str) -> dict[str,
 
         return payload
 
-    # === legacy mode-driven branch, unreachable while strict models are disallowed ===
+    # === standard family: mode-driven ===
     mode = str(body.get("mode") or "").strip()
     if mode not in ALLOWED_MODES:
         raise ValueError(f"mode must be one of {sorted(ALLOWED_MODES)}")

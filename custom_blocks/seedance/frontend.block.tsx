@@ -35,13 +35,15 @@ const TMPFILES_UPLOAD_ENDPOINT = '/api/blocks/upload_image_to_tmpfiles/upload'
 
 type Mode = 'text_to_video' | 'first_last_frames' | 'omni_reference'
 type TaskType =
+  | 'seedance-2'
+  | 'seedance-2-fast'
   | 'seedance-2-less-restriction'
   | 'seedance-2-fast-less-restriction'
 
 interface TaskTypeInfo {
   value: TaskType
   label: string
-  family: 'less_restriction'
+  family: 'standard' | 'less_restriction'
   resolutions: string[]
   aspects: string[]
   durations: number[] | 'continuous'
@@ -49,6 +51,24 @@ interface TaskTypeInfo {
 }
 
 const TASK_TYPE_OPTIONS: TaskTypeInfo[] = [
+  {
+    value: 'seedance-2',
+    label: 'Seedance 2',
+    family: 'standard',
+    resolutions: ['480p', '720p', '1080p'],
+    aspects: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
+    durations: 'continuous',
+    hint: 'Pro higher-quality model with strict moderation.',
+  },
+  {
+    value: 'seedance-2-fast',
+    label: 'Seedance 2 Fast',
+    family: 'standard',
+    resolutions: ['480p', '720p'],
+    aspects: ['21:9', '16:9', '4:3', '1:1', '3:4', '9:16'],
+    durations: 'continuous',
+    hint: 'Fast lower-cost model with strict moderation.',
+  },
   {
     value: 'seedance-2-fast-less-restriction',
     label: 'Seedance 2 Fast Less Restriction',

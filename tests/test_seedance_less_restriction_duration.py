@@ -106,19 +106,31 @@ def test_less_restriction_with_video_rejects_invalid_duration(task_type):
         }, task_type)
 
 
-@pytest.mark.parametrize("strict_type", ["seedance-2", "seedance-2-fast"])
-def test_strict_seedance_models_are_rejected(strict_type):
-    with pytest.raises(ValueError, match="task_type"):
-        mod._validate_and_build_input(
-            {
-                "prompt": "x",
-                "duration": 5,
-                "resolution": "720p",
-                "aspect_ratio": "9:16",
-                "image_urls": ["https://tmpfiles.org/dl/abc/frame.png"],
-            },
-            strict_type,
-        )
+@pytest.mark.parametrize(
+    ("task_type", "resolution"),
+    [("seedance-2", "1080p"), ("seedance-2-fast", "480p")],
+)
+def test_standard_seedance_models_keep_mode_driven_payload(task_type, resolution):
+    payload = mod._validate_and_build_input(
+        {
+            "prompt": "x",
+            "mode": "omni_reference",
+            "duration": 7,
+            "resolution": resolution,
+            "aspect_ratio": "9:16",
+            "image_urls": ["https://tmpfiles.org/dl/abc/frame.png"],
+        },
+        task_type,
+    )
+
+    assert payload == {
+        "prompt": "x",
+        "mode": "omni_reference",
+        "duration": 7,
+        "resolution": resolution,
+        "aspect_ratio": "9:16",
+        "image_urls": ["https://tmpfiles.org/dl/abc/frame.png"],
+    }
 
 
 def test_run_route_passes_selected_duration_to_job(monkeypatch):

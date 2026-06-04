@@ -1,6 +1,6 @@
 [project]
 name = "blockflow"
-version = "0.1.8"
+version = "0.1.9"
 description = "Local-only visual pipeline UI for AI image/video generation via RunPod serverless"
 requires-python = ">=3.12"
 dependencies = [

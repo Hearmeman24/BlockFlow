@@ -1,6 +1,6 @@
 {
   "name": "@hearmeman24/blockflow",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Local visual pipeline UI for AI image/video generation via RunPod serverless",
   "license": "MIT",
   "type": "module",

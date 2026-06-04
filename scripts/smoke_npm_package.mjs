@@ -123,6 +123,10 @@ async function main() {
   const home = path.join(tmp, 'blockflow-home')
   const backendPort = process.env.BLOCKFLOW_SMOKE_BACKEND_PORT || '48180'
   const frontendPort = process.env.BLOCKFLOW_SMOKE_FRONTEND_PORT || '48181'
+  const startupTimeoutMs = Number(
+    process.env.SMOKE_STARTUP_TIMEOUT_MS
+      || (process.platform === 'win32' ? 420_000 : 180_000),
+  )
   const env = {
     ...process.env,
     BLOCKFLOW_HOME: home,
@@ -157,9 +161,13 @@ async function main() {
   try {
     const backend = `http://127.0.0.1:${backendPort}`
     const frontend = `http://127.0.0.1:${frontendPort}`
-    await waitForJson(`${backend}/api/runs?limit=1`, { expect: (body) => Array.isArray(body.runs) })
-    await waitForOk(frontend)
+    await waitForJson(`${backend}/api/runs?limit=1`, {
+      timeoutMs: startupTimeoutMs,
+      expect: (body) => Array.isArray(body.runs),
+    })
+    await waitForOk(frontend, { timeoutMs: startupTimeoutMs })
     const health = await waitForJson(`${backend}/api/blocks/comfy_gen/health`, {
+      timeoutMs: startupTimeoutMs,
       expect: (body) => body.ok === true,
     })
     if (health.mode !== 'sidecar') {

@@ -9,13 +9,13 @@ export { directBackendUrl } from '@/lib/backend-url'
 
 /**
  * Description appended to every CivitAI post we create. Acts as a credit
- * + advertisement for the open-source tools used to produce the media.
+ * + advertisement for the source-available tools used to produce the media.
  * Updated to keep this in lockstep with the README in both repos when
  * URLs / wording change.
  */
 export const BLOCKFLOW_DESCRIPTION =
   'Generated with BlockFlow (https://github.com/Hearmeman24/BlockFlow) — ' +
-  'an open-source visual pipeline editor for AI image/video generation.'
+  'a source-available visual pipeline editor for AI image/video generation.'
 
 export const CIVITAI_TOKEN_KEY = 'civitai_api_key'
 

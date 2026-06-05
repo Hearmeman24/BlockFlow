@@ -106,7 +106,7 @@ All HTTP goes through `curl_cffi.requests` (matches the existing pattern in `top
 
 ## Where things will change
 
-The current state of the OSS push is tracked in the `sgs-ui-wisp-las` bead epic. A few in-flight pieces are documented in their own bead notes:
+The current state of the public-release push is tracked in the `sgs-ui-wisp-las` bead epic. A few in-flight pieces are documented in their own bead notes:
 
 - Tear-down + Recreate actions on the Endpoints tab (Stage 5.5 — RunPod API plumbing is built but UI isn't wired yet).
 - Storage tab (deferred until the preset installer ships).

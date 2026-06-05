@@ -5,9 +5,9 @@
 [![npm](https://img.shields.io/npm/v/@hearmeman24/blockflow?color=CB3837&label=npm)](https://www.npmjs.com/package/@hearmeman24/blockflow)
 [![CI](https://github.com/Hearmeman24/BlockFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Hearmeman24/BlockFlow/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Hearmeman24/BlockFlow?display_name=tag)](https://github.com/Hearmeman24/BlockFlow/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
 
-Open-source visual pipelines for AI image and video generation.
+Source-available visual pipelines for AI image and video generation.
 
 BlockFlow's main path runs ComfyUI workflows through ComfyGen on your own
 RunPod serverless endpoint. Provider-specific blocks let you mix in models from
@@ -180,4 +180,14 @@ npm --prefix frontend run build
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+BlockFlow is source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE).
+
+You may use, study, modify, and share BlockFlow for non-commercial purposes under
+that license.
+
+Commercial use is not permitted without a separate written commercial license.
+This includes using BlockFlow in a revenue-generating product, service, website,
+client project, SaaS offering, hosted service, or internal business workflow.
+
+For commercial licensing, contact: hearmeman@hearmemanai.xyz.

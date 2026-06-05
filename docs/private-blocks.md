@@ -1,6 +1,6 @@
 # Private Blocks Overlay
 
-BlockFlow supports a gitignored `private_blocks/` directory at the repo root that mirrors `custom_blocks/`. Blocks placed there are loaded the same way as public blocks but never enter the public OSS build.
+BlockFlow supports a gitignored `private_blocks/` directory at the repo root that mirrors `custom_blocks/`. Blocks placed there are loaded the same way as public blocks but never enter the public source-available build.
 
 ## When to use it
 
@@ -12,7 +12,7 @@ If your block could ship publicly with sensible defaults, put it in `custom_bloc
 
 ```
 sgs-ui/
-├── custom_blocks/          ← public blocks; ship in OSS
+├── custom_blocks/          <- public blocks; ship in the source-available build
 │   └── <slug>/
 │       ├── frontend.block.tsx
 │       └── backend.block.py  (optional)

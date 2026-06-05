@@ -301,7 +301,7 @@ describe('generateRegistrySource (regression with new block shape)', () => {
 
     // Public block imports from generated/; private block imports from
     // generated_private/ (sgs-ui-wisp-las.9 — keeps private-source-derived
-    // outputs out of the public OSS forbidden-token gate).
+    // outputs out of the public forbidden-token gate).
     expect(source).toContain("import { blockDef as aBlockBlockDef } from './generated/a_block'")
     expect(source).toContain("import { blockDef as bBlockBlockDef } from './generated_private/b_block'")
     expect(source).toContain('registerBlockDef(aBlockBlockDef)')

@@ -5,7 +5,7 @@
 // Discovers blocks from two dirs:
 //   - `custom_blocks/` (always, public blocks)
 //   - `private_blocks/` (optional overlay; gitignored; for blocks that ship
-//      privately and never enter the public OSS build)
+//      privately and never enter the public build)
 //
 // Both dirs follow the same layout: `<slug>/frontend.block.tsx` (+ optional
 // `backend.block.py`). Slug collisions across the two dirs are an error.

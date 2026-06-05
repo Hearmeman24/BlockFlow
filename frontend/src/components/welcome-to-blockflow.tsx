@@ -6,6 +6,7 @@ import { Cloud, HardDrive, Server, ShieldCheck } from 'lucide-react'
 import {
   setAssetStorageMode,
   setCredential,
+  validateService,
   type AssetStorageMode,
 } from '@/lib/settings/client'
 
@@ -97,6 +98,10 @@ export function WelcomeToBlockFlow({
       await setCredential('r2_access_key_id', fields[1])
       await setCredential('r2_secret_access_key', fields[2])
       await setCredential('r2_bucket', fields[3])
+      const validation = await validateService('r2')
+      if (!validation.ok) {
+        throw new Error(validation.error ?? 'R2 validation failed')
+      }
       await setAssetStorageMode('r2_signed')
       setStep('comfygen')
     } catch (err) {
@@ -185,7 +190,7 @@ export function WelcomeToBlockFlow({
                   disabled={saving}
                   className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
                 >
-                  {saving ? 'Saving...' : 'Save R2 and continue'}
+                  {saving ? 'Saving and validating...' : 'Save R2 and continue'}
                 </button>
                 <button
                   type="button"

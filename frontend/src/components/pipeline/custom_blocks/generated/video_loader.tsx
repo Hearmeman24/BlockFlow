@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { pickFiles } from '@/lib/file-picker'
+import { postFile } from '@/lib/post-file'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -19,19 +20,6 @@ import type { VideoRef } from '@/lib/video-ref'
 const UPLOAD_ENDPOINT = '/api/blocks/video_loader/upload'
 const SAVE_LOCAL_ENDPOINT = '/api/blocks/video_loader/save-local'
 const FILE_META_ENDPOINT = '/api/file-metadata'
-
-async function postFile(endpoint: string, file: File) {
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      'X-Filename': file.name,
-      'X-Content-Type': file.type || 'application/octet-stream',
-    },
-    body: await file.arrayBuffer(),
-  })
-  return res.json()
-}
 
 async function fingerprintFile(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer())

@@ -47,6 +47,7 @@ interface UpscalePayload {
   resolution_preset?: string
   video_encoder?: string
   compression?: string
+  creativity?: number | null
 }
 
 async function submitUpscale(payload: UpscalePayload) {
@@ -79,6 +80,12 @@ const ENHANCEMENT_MODELS = [
   { value: 'gcg-5', label: 'Gaia CG - animation / CG' },
   { value: 'rhea-1', label: 'Rhea - advanced 4x upscale' },
   { value: 'thm-2', label: 'Themis - motion deblur' },
+  { value: 'ast-2', label: 'Astra 2 - generative upscale for AI video' },
+  { value: 'slp-2.5', label: 'Starlight Precise 2.5 - AI footage realism' },
+  { value: 'slhq-1', label: 'Starlight HQ - max quality, modern sources' },
+  { value: 'slf-2', label: 'Starlight Fast 2 - faster diffusion enhance' },
+  { value: 'slm-1', label: 'Starlight Mini - archival / SD restore' },
+  { value: 'wonder-1', label: 'Starlight Sharp - deblur + small faces' },
 ]
 
 const INTERPOLATION_MODELS = [
@@ -261,6 +268,9 @@ function UpscaleBlock({
   }, [])
 
   const [model, setModel] = useSessionState(`block_${blockId}_model`, 'ahq-12')
+  // Astra (ast-*) requires `creativity` 0-1; hidden for every other model.
+  const [creativity, setCreativity] = useSessionState(`block_${blockId}_creativity`, '0.5')
+  const isAstra = model.startsWith('ast-')
   const [interpolationModel, setInterpolationModel] = useSessionState(`block_${blockId}_interpolation_model`, 'apo-8')
   const [outputFps, setOutputFps] = useSessionState(`block_${blockId}_output_fps`, FPS_ORIGINAL)
   const [resolution, setResolution] = useSessionState(`block_${blockId}_resolution`, '4k')
@@ -398,6 +408,7 @@ function UpscaleBlock({
         resolution_preset: resolution,
         video_encoder: encoder,
         compression,
+        creativity: isAstra && Number.isFinite(Number(creativity)) ? Number(creativity) : null,
       })
 
       if (!res.ok) throw new Error(res.error ?? 'Upscale submit failed')
@@ -477,6 +488,21 @@ function UpscaleBlock({
             </SelectContent>
           </Select>
         </div>
+
+        {isAstra && (
+          <div className="space-y-1.5">
+            <Label className="text-xs">Creativity</Label>
+            <Input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              value={creativity}
+              onChange={(e) => setCreativity(e.target.value)}
+              className="h-7 text-xs"
+            />
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <Label className="text-xs">Interpolation</Label>

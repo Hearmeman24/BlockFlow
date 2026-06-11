@@ -182,6 +182,33 @@ def _calculate_output_resolution(
     return (out_w, out_h)
 
 
+ASTRA_DEFAULT_CREATIVITY = 0.5
+
+
+def _build_filters(
+    enhancement_model: str,
+    interpolation_model: str | None,
+    creativity: object = None,
+) -> list[dict[str, Any]]:
+    """Build the /video/ create-request filters array.
+
+    Astra models (ast-*) require `creativity` (0.0-1.0) inside the filter
+    object; all other models reject unknown parameters, so it is only sent
+    for Astra.
+    """
+    enhancement: dict[str, Any] = {"model": enhancement_model}
+    if enhancement_model.startswith("ast-"):
+        try:
+            value = float(creativity)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            value = ASTRA_DEFAULT_CREATIVITY
+        enhancement["creativity"] = min(1.0, max(0.0, value))
+    filters = [enhancement]
+    if interpolation_model:
+        filters.append({"model": interpolation_model})
+    return filters
+
+
 class TopazProgress:
     """Structured progress data from the Topaz polling loop."""
 
@@ -211,6 +238,7 @@ def upscale_video(
     resolution_preset: str = "4k",
     video_encoder: str = "H265",
     compression: str = "Mid",
+    creativity: object = None,
     log: Callable[[str], None] | None = None,
     on_progress: Callable[[TopazProgress], None] | None = None,
 ) -> Path:
@@ -230,9 +258,7 @@ def upscale_video(
     profile = ENCODER_PROFILES.get(video_encoder, "Main")
     target_fps = int(output_fps) if output_fps else round(meta["fps"])
     target_fps = max(1, target_fps)
-    filters = [{"model": enhancement_model}]
-    if interpolation_model:
-        filters.append({"model": interpolation_model})
+    filters = _build_filters(enhancement_model, interpolation_model, creativity)
 
     _log(f"Source: {meta['width']}x{meta['height']} @ {meta['fps']}fps, {meta['frame_count']} frames")
     interp_label = interpolation_model if interpolation_model else "none"

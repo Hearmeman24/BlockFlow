@@ -46,6 +46,7 @@ def _run_upscale_job(
     resolution_preset: str,
     video_encoder: str,
     compression: str,
+    creativity: object = None,
 ) -> None:
     t0 = time.time()
     try:
@@ -106,6 +107,7 @@ def _run_upscale_job(
             resolution_preset=resolution_preset,
             video_encoder=video_encoder,
             compression=compression,
+            creativity=creativity,
             log=_log,
             on_progress=_on_progress,
         )
@@ -163,6 +165,7 @@ async def upscale(request: Request) -> JSONResponse:
     resolution_preset = str(payload.get("resolution_preset", "4k"))
     video_encoder = str(payload.get("video_encoder", "H265"))
     compression = str(payload.get("compression", "Mid"))
+    creativity = payload.get("creativity")
 
     if not source_videos:
         return JSONResponse({"ok": False, "error": "source_videos is required"}, status_code=400)
@@ -203,6 +206,7 @@ async def upscale(request: Request) -> JSONResponse:
             enhancement_model, interpolation_model,
             int(output_fps) if output_fps else None,
             resolution_preset, video_encoder, compression,
+            creativity,
         )
         job_ids.append(job_id)
 

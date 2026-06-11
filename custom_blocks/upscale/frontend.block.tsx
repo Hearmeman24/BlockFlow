@@ -80,7 +80,10 @@ const ENHANCEMENT_MODELS = [
   { value: 'gcg-5', label: 'Gaia CG - animation / CG' },
   { value: 'rhea-1', label: 'Rhea - advanced 4x upscale' },
   { value: 'thm-2', label: 'Themis - motion deblur' },
-  { value: 'ast-2', label: 'Astra 2 - generative upscale for AI video' },
+  // Astra 2 (ast-2) is documented at developer.topazlabs.com but the live API
+  // rejects it — not in GET /video/status supportedModels as of 2026-06-11.
+  // Re-add { value: 'ast-2', ... } here once Topaz serves it; the creativity
+  // plumbing (isAstra below + backend _build_filters) is already in place.
   { value: 'slp-2.5', label: 'Starlight Precise 2.5 - AI footage realism' },
   { value: 'slhq-1', label: 'Starlight HQ - max quality, modern sources' },
   { value: 'slf-2', label: 'Starlight Fast 2 - faster diffusion enhance' },

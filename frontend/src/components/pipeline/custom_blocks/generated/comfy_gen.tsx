@@ -473,7 +473,7 @@ function ComfyGenBlock({
   setOutputHint,
   setHeaderActions,
 }: BlockComponentProps) {
-  const { pipeline, addBlock, resetRuntimeFromBlock } = usePipeline()
+  const { pipeline, addBlock, resetRuntimeFromBlock, setBlockSource } = usePipeline()
 
   // Endpoint ID resolution (sgs-ui-wisp-las.1 follow-up):
   //   1. localStorage override (user typed something into the field) wins
@@ -849,6 +849,25 @@ function ComfyGenBlock({
     })
   }, [promptBinding?.sourceOptions, pipeline.blocks])
   const hasUpstreamPrompt = promptSourceOptions.some((o) => o.value !== MANUAL_SOURCE)
+  // sgs-ui-ee0: the prompt input is a single block-level port, so block.sources['prompt']
+  // selects which upstream writer feeds every upstream-bound text field. The per-field
+  // dropdown must therefore expose each writer as a distinct option (its blockId) and
+  // write that choice through setBlockSource — not collapse them all to one boolean flag.
+  const upstreamPromptOptions = useMemo(
+    () => promptSourceOptions.filter((o) => o.value !== MANUAL_SOURCE),
+    [promptSourceOptions],
+  )
+  const myPromptBlock = useMemo(() => findBlockById(pipeline.blocks, blockId), [pipeline.blocks, blockId])
+  const resolvedPromptSourceValue = useMemo(() => {
+    const explicit = myPromptBlock?.sources?.['prompt']
+    if (explicit && upstreamPromptOptions.some((o) => o.value === explicit)) return explicit
+    // Mirror the runtime default (pipeline-context resolveInput): last producer wins.
+    return upstreamPromptOptions[upstreamPromptOptions.length - 1]?.value
+  }, [myPromptBlock, upstreamPromptOptions])
+  const resolvedPromptSourceLabel = useMemo(
+    () => upstreamPromptOptions.find((o) => o.value === resolvedPromptSourceValue)?.label,
+    [upstreamPromptOptions, resolvedPromptSourceValue],
+  )
   const upstreamPromptText = typeof inputs.prompt === 'string' ? inputs.prompt.trim()
     : Array.isArray(inputs.prompt) ? (inputs.prompt as string[]).filter(Boolean).join('\n\n')
     : ''
@@ -2665,16 +2684,23 @@ function ComfyGenBlock({
                 </Label>
                 {hasUpstreamPrompt && (
                   <Select
-                    value={usesUpstream ? '__upstream__' : MANUAL_SOURCE}
-                    onValueChange={(v) => setTextUpstreamFlags((prev) => ({ ...prev, [key]: v === '__upstream__' }))}
+                    value={usesUpstream ? (resolvedPromptSourceValue ?? MANUAL_SOURCE) : MANUAL_SOURCE}
+                    onValueChange={(v) => {
+                      if (v === MANUAL_SOURCE) {
+                        setTextUpstreamFlags((prev) => ({ ...prev, [key]: false }))
+                        return
+                      }
+                      setTextUpstreamFlags((prev) => ({ ...prev, [key]: true }))
+                      setBlockSource(blockId, 'prompt', v)
+                    }}
                   >
                     <SelectTrigger className="h-6 w-auto max-w-[140px] text-[10px] shrink-0">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value={MANUAL_SOURCE}>Manual</SelectItem>
-                      {promptSourceOptions.filter((o) => o.value !== MANUAL_SOURCE).map((option) => (
-                        <SelectItem key={option.value} value="__upstream__">{option.label}</SelectItem>
+                      {upstreamPromptOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -2687,7 +2713,7 @@ function ComfyGenBlock({
                       <path d="M2 6h8M7 3l3 3-3 3" />
                     </svg>
                     <span className="text-[10px] text-blue-400 font-medium">
-                      From {promptSourceOptions.find((o) => o.value !== MANUAL_SOURCE)?.label || 'pipeline'}
+                      From {resolvedPromptSourceLabel || 'pipeline'}
                     </span>
                   </div>
                   {upstreamPromptText ? (

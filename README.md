@@ -6,6 +6,7 @@
 [![CI](https://github.com/Hearmeman24/BlockFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/Hearmeman24/BlockFlow/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Hearmeman24/BlockFlow?display_name=tag)](https://github.com/Hearmeman24/BlockFlow/releases)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](LICENSE)
+[![Sponsor](https://readme.cash/i/9dg9c5wcbr.svg)](https://readme.cash/c/9dg9c5wcbr)
 
 Source-available visual pipelines for AI image and video generation.
 

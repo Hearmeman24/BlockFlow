@@ -31,7 +31,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from backend import comfy_gen_cli, config, lora_metadata, settings_store
+from backend import civitai_client, comfy_gen_cli, config, lora_metadata, settings_store
 from backend.lora_routes import (
     CACHE_STALE_AFTER_SEC,
     _comfy_gen_error_message,
@@ -421,9 +421,23 @@ def _run_download_streaming(entries: list[dict[str, Any]], endpoint_id: str) -> 
             pass
 
 
+# Extensions the worker/ComfyUI recognize as model weights. A URL whose final
+# path segment carries none of these is almost certainly a name-only ref (e.g.
+# a CivitAI-style ".../gonzalomo-xlfluxpony"); default it to .safetensors so the
+# file lands with a usable extension instead of an extensionless blob.
+_MODEL_EXTENSIONS = (
+    ".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".sft", ".onnx",
+)
+
+
 def _filename_from_url(url: str) -> str:
     path = urlparse(url).path
-    return path.rsplit("/", 1)[-1] or "download.safetensors"
+    name = path.rsplit("/", 1)[-1]
+    if not name:
+        return "download.safetensors"
+    if not name.lower().endswith(_MODEL_EXTENSIONS):
+        name = f"{name}.safetensors"
+    return name
 
 
 def _append_to_cache(folder: str, filename: str) -> None:
@@ -546,7 +560,23 @@ def download_model_route(body: ModelDownloadRequest) -> JSONResponse:
         if body.source == "civitai":
             if body.version_id is None:
                 raise HTTPException(status_code=400, detail="civitai source requires version_id")
-            filename = _validate_filename(body.filename or f"civitai_{body.version_id}.safetensors")
+            # Resolve the model's real primary file name so the cached/displayed
+            # name matches the file on disk. lora_routes lets the worker name the
+            # file; the models surface instead pins the worker entry filename so
+            # disk == cache, so we must resolve it up front. Graceful: a metadata
+            # miss keeps the synthetic fallback rather than failing the download.
+            resolved_name: str | None = None
+            if not body.filename:
+                try:
+                    meta = civitai_client.fetch_version_metadata(
+                        body.version_id, api_key=config.CIVITAI_API_KEY,
+                    )
+                    resolved_name = meta.primary_file_name
+                except Exception:
+                    resolved_name = None
+            filename = _validate_filename(
+                body.filename or resolved_name or f"civitai_{body.version_id}.safetensors"
+            )
             entry: dict[str, Any] = {
                 "source": "civitai",
                 "version_id": body.version_id,

@@ -256,16 +256,32 @@ def test_civitai_download_uses_selected_destination_folder(client, monkeypatch) 
     }]
 
 
-def test_civitai_download_without_filename_passes_fallback_filename_to_worker(client, monkeypatch) -> None:
-    """If BlockFlow records a fallback filename in state/cache, it must pass
-    the same filename to comfy-gen so the endpoint writes the file we cache."""
-    _configure_endpoint()
-    model_routes._inline_threads_for_tests(monkeypatch)
+def _stub_streaming(monkeypatch) -> list[tuple[list[dict], str]]:
     captured: list[tuple[list[dict], str]] = []
     monkeypatch.setattr(
         model_routes,
         "_run_download_streaming",
         lambda entries, eid: (captured.append((entries, eid)), (True, {"ok": True}))[1],
+    )
+    return captured
+
+
+def test_civitai_download_without_filename_resolves_real_name_from_metadata(client, monkeypatch) -> None:
+    """A bare version_id (no filename) must resolve the model's real primary
+    file name from CivitAI — not fall back to civitai_<id>.safetensors. The
+    resolved name is what we cache, display, AND pass to the worker so disk,
+    cache, and UI stay in sync."""
+    _configure_endpoint()
+    model_routes._inline_threads_for_tests(monkeypatch)
+    captured = _stub_streaming(monkeypatch)
+    monkeypatch.setattr(
+        model_routes.civitai_client,
+        "fetch_version_metadata",
+        lambda version_id, api_key="": model_routes.civitai_client.CivitAIVersionMetadata(
+            version_id=version_id, model_id=1, name="v1", base_model="SDXL",
+            trigger_words=[], primary_file_name="gonzalomo-xlfluxpony.safetensors",
+            primary_file_size_kb=None, download_url=None,
+        ),
     )
 
     r = client.post("/api/models/download", json={
@@ -275,13 +291,73 @@ def test_civitai_download_without_filename_passes_fallback_filename_to_worker(cl
     })
 
     assert r.status_code == 202
-    assert r.json()["filename"] == "civitai_67890.safetensors"
+    assert r.json()["filename"] == "gonzalomo-xlfluxpony.safetensors"
     assert captured[0][0] == [{
         "source": "civitai",
         "version_id": 67890,
         "dest": "checkpoints",
-        "filename": "civitai_67890.safetensors",
+        "filename": "gonzalomo-xlfluxpony.safetensors",
     }]
+
+
+def test_civitai_download_falls_back_when_metadata_lookup_fails(client, monkeypatch) -> None:
+    """If CivitAI metadata can't be fetched, keep the safe synthetic fallback
+    so the download still proceeds (degraded display name, not a hard failure)."""
+    _configure_endpoint()
+    model_routes._inline_threads_for_tests(monkeypatch)
+    captured = _stub_streaming(monkeypatch)
+
+    def _boom(version_id, api_key=""):
+        raise RuntimeError("civitai unreachable")
+
+    monkeypatch.setattr(model_routes.civitai_client, "fetch_version_metadata", _boom)
+
+    r = client.post("/api/models/download", json={
+        "source": "civitai",
+        "version_id": 67890,
+        "folder": "checkpoints",
+    })
+
+    assert r.status_code == 202
+    assert r.json()["filename"] == "civitai_67890.safetensors"
+    assert captured[0][0][0]["filename"] == "civitai_67890.safetensors"
+
+
+def test_civitai_download_explicit_filename_skips_metadata_lookup(client, monkeypatch) -> None:
+    """An explicit filename wins and must not trigger a network lookup."""
+    _configure_endpoint()
+    model_routes._inline_threads_for_tests(monkeypatch)
+    captured = _stub_streaming(monkeypatch)
+
+    def _should_not_call(version_id, api_key=""):
+        raise AssertionError("metadata must not be fetched when filename is explicit")
+
+    monkeypatch.setattr(model_routes.civitai_client, "fetch_version_metadata", _should_not_call)
+
+    r = client.post("/api/models/download", json={
+        "source": "civitai",
+        "version_id": 12345,
+        "folder": "checkpoints",
+        "filename": "model.safetensors",
+    })
+
+    assert r.status_code == 202
+    assert captured[0][0][0]["filename"] == "model.safetensors"
+
+
+def test_filename_from_url_appends_safetensors_when_extensionless() -> None:
+    # gonzalomo-xlfluxpony case: URL path segment with no model extension.
+    assert model_routes._filename_from_url(
+        "https://example.com/models/gonzalomo-xlfluxpony"
+    ) == "gonzalomo-xlfluxpony.safetensors"
+    # Recognized model extensions are preserved untouched.
+    assert model_routes._filename_from_url(
+        "https://example.com/a/model.safetensors"
+    ) == "model.safetensors"
+    assert model_routes._filename_from_url(
+        "https://example.com/a/model.ckpt"
+    ) == "model.ckpt"
+    assert model_routes._filename_from_url("https://example.com/") == "download.safetensors"
 
 
 def test_delete_uses_canonical_paths_and_cleans_only_lora_metadata(client, monkeypatch, tmp_path) -> None:

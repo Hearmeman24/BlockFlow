@@ -56,7 +56,13 @@ import {
   buildOverrides as buildOverridesPure,
   computeAutomationAxes as computeAxesPure,
   cartesianProduct,
+  resolveMoeSteps,
+  isVisibleSampler,
+  buildMoeOwnedSets,
+  buildMoeInferenceSettings,
   type AutomationAxis,
+  type MoePairInfo,
+  type MoeOverride,
 } from '@/lib/comfygen-overrides'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockById, findBlockInTree } from '@/lib/pipeline/tree-utils'
@@ -104,6 +110,12 @@ interface KSamplerInfo {
   sampler_name?: string
   scheduler?: string
   override_map?: Record<string, string>
+  // sgs-ui-8zu: present only on ClownsharKSampler_Beta entries — curated
+  // RES4LYF sampler/scheduler enums attached by the backend. Absence ⇒ the
+  // frontend falls back to the global availableSamplers/availableSchedulers
+  // cache (no class_type switch; presence of the field is the discriminator).
+  sampler_options?: string[]
+  scheduler_options?: string[]
 }
 
 interface TextOverrideInfo {
@@ -565,6 +577,12 @@ function ComfyGenBlock({
   const [presetApplyError, setPresetApplyError] = useState('')
   const [ksamplers, setKsamplers] = useSessionState<KSamplerInfo[]>(`block_${blockId}_ksamplers`, [])
   const [ksamplerOverrides, setKsamplerOverrides] = useSessionState<Record<string, KSamplerOverride>>(`block_${blockId}_ksampler_overrides`, {})
+  // sgs-ui-8zu: detected MoE sampler pairs (KSamplerAdvanced / ClownsharKSampler_Beta).
+  // The MoE panel owns one Total Steps + one Split per pair; edits are stored raw
+  // (MoeOverride strings) keyed by the pair's high_node_id and resolved via
+  // resolveMoeSteps so clamping/defaults live in one place (the lib).
+  const [moePairs, setMoePairs] = useSessionState<MoePairInfo[]>(`block_${blockId}_moe_pairs`, [])
+  const [moeOverrides, setMoeOverrides] = useSessionState<Record<string, MoeOverride>>(`block_${blockId}_moe_overrides`, {})
   const [textOverrides, setTextOverrides] = useSessionState<TextOverrideInfo[]>(`block_${blockId}_text_overrides`, [])
   const [textValues, setTextValues] = useSessionState<Record<string, string>>(`block_${blockId}_text_values`, {})
   const [resolutionNodes, setResolutionNodes] = useSessionState<ResolutionNodeInfo[]>(`block_${blockId}_resolution_nodes`, [])
@@ -637,13 +655,19 @@ function ComfyGenBlock({
 
   const automationAxes = useMemo(() => {
     if (!automateEnabled) return []
-    return computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags })
-  }, [automateEnabled, ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags])
+    return computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags, moePairs })
+  }, [automateEnabled, ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags, moePairs])
 
   const combinationCount = useMemo(() => {
     if (automationAxes.length === 0) return 1
     return automationAxes.reduce((acc, a) => acc * a.values.length, 1)
   }, [automationAxes])
+
+  // sgs-ui-8zu: node IDs (high + low) owned by a MoE pair. Used by the
+  // isVisibleSampler predicate (a MoE-owned sampler renders/submits even past
+  // the first-3 cap) and to hide the per-sampler `steps` input (the MoE panel
+  // owns it). Built once from the lib so the set logic stays single-sourced.
+  const moeOwnedNodeIds = useMemo(() => buildMoeOwnedSets(moePairs).moeOwnedNodeIds, [moePairs])
 
   const applyCacheData = useCallback((d: { samplers?: string[]; schedulers?: string[]; loras?: string[]; fetched_at?: number }) => {
     if (Array.isArray(d.samplers)) setAvailableSamplers(d.samplers)
@@ -988,6 +1012,23 @@ function ComfyGenBlock({
           return next
         })
 
+        // sgs-ui-8zu: MoE pairs. Drop any pair whose high OR low node is hidden
+        // (a pair can't be partially driven). Seed empty MoeOverrides (raw
+        // strings) keyed by high_node_id; resolveMoeSteps applies detected
+        // defaults when the strings are empty.
+        const detectedMoePairs = ((data.moe_pairs || []) as MoePairInfo[])
+          .filter((mp) => !hidden.has(mp.high_node_id) && !hidden.has(mp.low_node_id))
+        setMoePairs(detectedMoePairs)
+        setMoeOverrides((prev) => {
+          const next: Record<string, MoeOverride> = {}
+          for (const mp of detectedMoePairs) {
+            next[mp.high_node_id] = preserve && prev[mp.high_node_id]
+              ? prev[mp.high_node_id]
+              : { total: '', split: '' }
+          }
+          return next
+        })
+
         const detectedTextOverrides = dropHidden((data.text_overrides || []) as TextOverrideInfo[], hidden)
         setTextOverrides(detectedTextOverrides)
         setTextValues((prev) => {
@@ -1076,6 +1117,8 @@ function ComfyGenBlock({
       setNodeMappings([])
       setKsamplers([])
       setKsamplerOverrides({})
+      setMoePairs([])
+      setMoeOverrides({})
       setTextOverrides([])
       setTextValues({})
       setResolutionNodes([])
@@ -1127,6 +1170,19 @@ function ComfyGenBlock({
               sampler_name: prev[ks.node_id]?.sampler_name ?? (ks.sampler_name ?? ''),
               scheduler: prev[ks.node_id]?.scheduler ?? (ks.scheduler ?? ''),
             }
+          }
+          return merged
+        })
+
+        // sgs-ui-8zu: refresh MoE pairs from latest backend detection; preserve
+        // any existing raw override strings for pairs that still exist.
+        const detectedMoePairs = ((data.moe_pairs || []) as MoePairInfo[])
+          .filter((mp) => !hidden.has(mp.high_node_id) && !hidden.has(mp.low_node_id))
+        setMoePairs(detectedMoePairs)
+        setMoeOverrides((prev) => {
+          const merged: Record<string, MoeOverride> = {}
+          for (const mp of detectedMoePairs) {
+            merged[mp.high_node_id] = prev[mp.high_node_id] ?? { total: '', split: '' }
           }
           return merged
         })
@@ -1390,10 +1446,12 @@ function ComfyGenBlock({
   // wins. Logic lives in workflow-settings.ts so the overlap rule is
   // unit-testable without mounting the 2,500-line component.
   const autoDetectedKeys = useMemo(
+    // sgs-ui-8zu: MoE owned_keys are suppressed from the generic Workflow
+    // Settings panel so the paired steps/boundary fields aren't double-exposed.
     () => collectAutoDetectedKeys({
-      ksamplers, loraNodes, resolutionNodes, frameCounts, refVideo, loadNodes, textOverrides,
+      ksamplers, loraNodes, resolutionNodes, frameCounts, refVideo, loadNodes, textOverrides, moePairs,
     }),
-    [ksamplers, loraNodes, resolutionNodes, frameCounts, refVideo, loadNodes, textOverrides],
+    [ksamplers, loraNodes, resolutionNodes, frameCounts, refVideo, loadNodes, textOverrides, moePairs],
   )
 
   const visibleWorkflowSettings = useMemo(
@@ -1440,11 +1498,16 @@ function ComfyGenBlock({
     }
     const upstreamPromptText = typeof freshInputs.prompt === 'string' ? freshInputs.prompt.trim()
       : Array.isArray(freshInputs.prompt) ? ((freshInputs.prompt as string[]).filter(Boolean)[0] || '').trim() : ''
+    // sgs-ui-8zu: buildOverrides strips MoE-owned steps/boundary keys from the
+    // per-sampler loop and writes them via the post-loop MoE fan-out instead
+    // (single-writer; chip-bypassing). resolveMoeSteps inside the lib applies
+    // the clamp/default math, so the call site only forwards raw state.
     const { overrides, bypassLoras } = buildOverridesPure({
       ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides,
       frameCounts, frameOverrides, refVideo, refVideoOverrides,
       loraNodes, loraOverrides, autoSelect, autoNumeric,
       textOverrides, textValues, textUpstreamFlags, upstreamPromptText,
+      moePairs, moeOverrides,
     })
     // sgs-ui-gb4: merge user-edited Workflow Settings knobs as additional
     // <node_id>.<field> entries. Auto-detected fields win (the panel doesn't
@@ -1452,7 +1515,7 @@ function ComfyGenBlock({
     // existing key either — belt + suspenders).
     const merged = mergeSettingsOverrides(overrides, visibleWorkflowSettings, workflowSettingsOverrides)
     return { fileInputs, overrides: merged, bypassLoras }
-  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, visibleWorkflowSettings, workflowSettingsOverrides])
+  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, moePairs, moeOverrides, visibleWorkflowSettings, workflowSettingsOverrides])
 
   // Timers/listeners live inside registerExecute's closure and are cleared
   // on AbortSignal (see onAbort handlers below) — react-doctor's
@@ -1475,7 +1538,7 @@ function ComfyGenBlock({
 
       // --- BATCH PATH ---
       const axes = automateEnabled
-        ? computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags })
+        ? computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags, moePairs })
         : []
 
       // Auto-detect upstream prompt array → add as batch axis
@@ -1626,14 +1689,26 @@ function ComfyGenBlock({
                   seed: ja.seed,
                   software: 'ComfyUI (comfy-gen)',
                 }
-                // Extract KSampler settings from the merged overrides
+                // Extract KSampler settings from the merged overrides.
+                // sgs-ui-8zu (NO DOUBLE-REPORT): the per-node loop SKIPS any
+                // MoE-owned node entirely (same moeOwnedNodeIds set as the
+                // override loop + render). A MoE pair contributes ONLY via the
+                // pair-level total_steps + split below (from resolveMoeSteps —
+                // never reverse-read end_at_step/start_at_step/steps_to_run), so
+                // a MoE node's raw steps/cfg is not emitted alongside the pair.
                 const inferenceSettings: Record<string, string> = {}
-                for (const ks of ksamplers.slice(0, 3)) {
+                for (const ks of ksamplers.filter((k, i) => isVisibleSampler(k, i, moeOwnedNodeIds))) {
+                  if (moeOwnedNodeIds.has(ks.node_id)) continue
                   for (const f of ['steps', 'cfg', 'denoise', 'sampler_name', 'scheduler'] as const) {
                     const key = `${ks.node_id}.${f}`
                     if (allOverrides[key]) inferenceSettings[f] = allOverrides[key]
                   }
                 }
+                // Pair-level total_steps + split, qualified by high_node_id (so
+                // two MoE pairs never clobber each other on a flat key). The
+                // keying lives in the unit-tested buildMoeInferenceSettings
+                // helper — single source, no inline duplication.
+                Object.assign(inferenceSettings, buildMoeInferenceSettings(moePairs, moeOverrides))
                 if (Object.keys(inferenceSettings).length > 0) jobMeta.inference_settings = inferenceSettings
                 // LoRA info
                 const loraNames: string[] = []
@@ -1742,14 +1817,22 @@ function ComfyGenBlock({
       const singleMeta: Record<string, unknown> = {
         job_ids: [jobId], seed: jobAny.seed, software: 'ComfyUI (comfy-gen)',
       }
-      // KSampler settings from what we submitted
+      // KSampler settings from what we submitted.
+      // sgs-ui-8zu (NO DOUBLE-REPORT): same as the multi-job reporter — the
+      // per-node loop SKIPS any MoE-owned node entirely (same moeOwnedNodeIds
+      // set); the MoE pair contributes ONLY pair-level total_steps + split (via
+      // resolveMoeSteps, never reverse-read from boundary fields).
       const singleInference: Record<string, string> = {}
-      for (const ks of ksamplers.slice(0, 3)) {
+      for (const ks of ksamplers.filter((k, i) => isVisibleSampler(k, i, moeOwnedNodeIds))) {
+        if (moeOwnedNodeIds.has(ks.node_id)) continue
         for (const f of ['steps', 'cfg', 'denoise', 'sampler_name', 'scheduler'] as const) {
           const key = `${ks.node_id}.${f}`
           if (baseOverrides[key]) singleInference[f] = baseOverrides[key]
         }
       }
+      // Pair-level metadata via the same unit-tested helper as the multi-job
+      // reporter — qualified by high_node_id, no inline keying duplication.
+      Object.assign(singleInference, buildMoeInferenceSettings(moePairs, moeOverrides))
       if (Object.keys(singleInference).length > 0) singleMeta.inference_settings = singleInference
       // LoRAs
       const singleLoras: string[] = []
@@ -2296,6 +2379,59 @@ function ComfyGenBlock({
         </CollapsibleSection>
       ))}
 
+      {/* sgs-ui-8zu: MoE Sampler — one Total Steps + one Split per detected
+          high/low expert pair. Owns the paired `steps` + boundary fields; the
+          underlying experts still render in the KSampler section below for
+          per-expert cfg/sampler/scheduler/seed. resolveMoeSteps is the single
+          source for the displayed {total,split} (display-clamp, raw store). */}
+      {moePairs.map((mp) => {
+        const ov = moeOverrides[mp.high_node_id] ?? { total: '', split: '' }
+        const { total, split } = resolveMoeSteps(mp, ov)
+        const setOv = (patch: Partial<MoeOverride>) =>
+          setMoeOverrides((prev) => ({
+            ...prev,
+            [mp.high_node_id]: { ...(prev[mp.high_node_id] ?? { total: '', split: '' }), ...patch },
+          }))
+        return (
+          <CollapsibleSection
+            key={`moe-${mp.high_node_id}`}
+            label="MoE Sampler"
+            badge={`${mp.label || 'MoE'} · ${mp.high_node_id}→${mp.low_node_id}`}
+          >
+            <div className="space-y-2">
+              {mp.steps_mismatch && (
+                <p className="text-[10px] text-yellow-500">
+                  samplers shipped with different step counts (high #{mp.high_node_id} runs {mp.total}); editing Total re-syncs both
+                </p>
+              )}
+              <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                <div className="space-y-0.5">
+                  <span className="text-[10px] text-muted-foreground">Total Steps</span>
+                  <Input
+                    type="number"
+                    value={ov.total}
+                    onChange={(e) => setOv({ total: e.target.value })}
+                    placeholder={String(mp.total)}
+                    className="h-7 text-xs"
+                  />
+                </div>
+                <div className="space-y-0.5">
+                  <span className="text-[10px] text-muted-foreground">Split (high steps)</span>
+                  <Input
+                    type="number"
+                    value={ov.split}
+                    onChange={(e) => setOv({ split: e.target.value })}
+                    placeholder={String(mp.split)}
+                    className="h-7 text-xs"
+                  />
+                  <span className="text-[10px] text-muted-foreground">high: {split} · low: {total - split}</span>
+                </div>
+              </div>
+            </div>
+          </CollapsibleSection>
+        )
+      })}
+
       {/* KSampler overrides */}
       {ksamplers.length > 0 && (
         <CollapsibleSection
@@ -2316,15 +2452,21 @@ function ComfyGenBlock({
             </button>
           }
         >
-          {ksamplers.slice(0, 3).map((ks) => {
+          {ksamplers.filter((ks, i) => isVisibleSampler(ks, i, moeOwnedNodeIds)).map((ks) => {
+            // sgs-ui-8zu: `steps` is hidden for a MoE-owned node — its step count
+            // is driven by the MoE Sampler panel above (one steps input per
+            // expert pair). cfg/denoise stay per-expert.
+            const isMoeOwned = moeOwnedNodeIds.has(ks.node_id)
             const numericFields = [
               { key: 'steps' as const, label: 'Steps', props: { type: 'number' as const } },
               { key: 'cfg' as const, label: 'CFG', props: { type: 'number' as const, step: '0.1' } },
               { key: 'denoise' as const, label: 'Denoise', props: { type: 'number' as const, step: '0.01', min: '0', max: '1' } },
-            ].filter((f) => ks[f.key] != null)
+            ].filter((f) => ks[f.key] != null && !(isMoeOwned && f.key === 'steps'))
             const selectFields = [
-              { key: 'sampler_name' as const, label: 'Sampler', options: availableSamplers, fallback: ks.sampler_name },
-              { key: 'scheduler' as const, label: 'Scheduler', options: availableSchedulers, fallback: ks.scheduler },
+              // sgs-ui-8zu: ClownShark entries carry curated RES4LYF enums via
+              // sampler_options/scheduler_options; absence ⇒ the global cache list.
+              { key: 'sampler_name' as const, label: 'Sampler', options: ks.sampler_options ?? availableSamplers, fallback: ks.sampler_name },
+              { key: 'scheduler' as const, label: 'Scheduler', options: ks.scheduler_options ?? availableSchedulers, fallback: ks.scheduler },
             ].filter((f) => f.fallback)
             if (numericFields.length === 0 && selectFields.length === 0) return null
             return (
@@ -2373,11 +2515,16 @@ function ComfyGenBlock({
             </div>
             )
           })}
-          {ksamplers.length > 3 && (
-            <p className="text-[10px] text-yellow-500">
-              {ksamplers.length} KSamplers detected; only showing first 3
-            </p>
-          )}
+          {(() => {
+            // sgs-ui-8zu: a sampler is hidden only if it is past the first-3 cap
+            // AND not MoE-owned (MoE experts always render via isVisibleSampler).
+            const hiddenCount = ksamplers.filter((ks, i) => !isVisibleSampler(ks, i, moeOwnedNodeIds)).length
+            return hiddenCount > 0 ? (
+              <p className="text-[10px] text-yellow-500">
+                {ksamplers.length} KSamplers detected; {hiddenCount} hidden ({ksamplers.length - hiddenCount} shown)
+              </p>
+            ) : null
+          })()}
         </CollapsibleSection>
       )}
 

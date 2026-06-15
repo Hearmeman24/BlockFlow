@@ -25,6 +25,8 @@ export interface AutoDetectSources {
   refVideo: { node_id: string; controls: { field: string }[] }[]
   loadNodes: { node_id: string; field: string }[]
   textOverrides: { node_id: string; input_name: string }[]
+  /** MoE pairs own steps/boundary keys; suppress them from generic settings. */
+  moePairs: { owned_keys: string[] }[]
 }
 
 const KSAMPLER_FIELDS = ['seed', 'steps', 'cfg', 'sampler_name', 'scheduler', 'denoise'] as const
@@ -51,6 +53,7 @@ export function collectAutoDetectedKeys(src: AutoDetectSources): Set<string> {
   }
   for (const ln of src.loadNodes) s.add(`${ln.node_id}.${ln.field}`)
   for (const to of src.textOverrides) s.add(`${to.node_id}.${to.input_name}`)
+  for (const mp of src.moePairs) for (const k of mp.owned_keys) s.add(k)
   return s
 }
 

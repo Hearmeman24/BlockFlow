@@ -536,6 +536,47 @@ def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 
         samplers.append(entry)
 
+    # ClownsharKSampler_Beta nodes — all params inline, RES4LYF-specific enums
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        if node.get("class_type") != "ClownsharKSampler_Beta":
+            continue
+        inputs = node.get("inputs", {})
+        meta_title = node.get("_meta", {}).get("title", "")
+        entry: dict[str, Any] = {
+            "node_id": node_id,
+            "class_type": "ClownsharKSampler_Beta",
+        }
+        if meta_title and meta_title != "ClownsharKSampler_Beta":
+            entry["label"] = meta_title
+        steps = _resolve_input(workflow, inputs.get("steps"))
+        if isinstance(steps, (int, float)):
+            entry["steps"] = int(steps)
+        cfg = _resolve_input(workflow, inputs.get("cfg"))
+        if isinstance(cfg, (int, float)):
+            entry["cfg"] = cfg
+        # seed from "seed" field — NOT noise_seed. Must emit seed=0 (no truthiness check).
+        seed_raw = inputs.get("seed")
+        seed_resolved = _resolve_input(workflow, seed_raw)
+        if isinstance(seed_resolved, (int, float)):
+            entry["seed"] = int(seed_resolved)
+        denoise = _resolve_input(workflow, inputs.get("denoise"))
+        if isinstance(denoise, (int, float)):
+            entry["denoise"] = round(float(denoise), 3)
+        sampler_name = inputs.get("sampler_name")
+        if isinstance(sampler_name, str):
+            entry["sampler_name"] = sampler_name
+        scheduler = inputs.get("scheduler")
+        if isinstance(scheduler, str):
+            entry["scheduler"] = scheduler
+        # Attach curated RES4LYF option lists so the frontend uses the correct
+        # namespace instead of the generic KSampler enum.  Presence of these
+        # fields on the entry is the frontend discriminator (see DESIGN.md).
+        entry["sampler_options"] = _union(CLOWNSHARK_SAMPLERS, [sampler_name] if isinstance(sampler_name, str) else [])
+        entry["scheduler_options"] = _union(CLOWNSHARK_SCHEDULERS, [scheduler] if isinstance(scheduler, str) else [])
+        samplers.append(entry)
+
     # SamplerCustom nodes — inline cfg/noise_seed, wired sampler/sigmas
     for node_id, node in workflow.items():
         if not isinstance(node, dict):
@@ -609,6 +650,280 @@ _KNOWN_LATENT_NODES = {
     "EmptyFlux2LatentImage",
     "WanAnimateToVideo",
 }
+
+# ---------------------------------------------------------------------------
+# ClownsharKSampler_Beta curated sampler / scheduler lists (O3 — IN v1)
+#
+# These are the RES4LYF-namespace enums.  Standard ComfyUI sampler names
+# (euler, dpmpp_2m, …) are a different namespace and must NOT be offered.
+# The current node value is always unioned in at detection time, so a future
+# RES4LYF sampler not yet listed here will still appear for that node.
+#
+# Source of truth: hardcoded here (see DESIGN.md "Curated ClownShark
+# sampler/scheduler list" for the rationale over live object_info).
+# ---------------------------------------------------------------------------
+CLOWNSHARK_SAMPLERS: list[str] = [
+    "res_2s",
+    "res_3m",
+    "res_2m",
+    "res_5s",
+    "linear/euler",
+    "multistep/res_3m",
+    "multistep/res_2m",
+    "rk4",
+    "dpm_fast",
+    "dpm_adaptive",
+    "heun",
+    "bogacki_shampine",
+    "dormand_prince",
+]
+
+CLOWNSHARK_SCHEDULERS: list[str] = [
+    "beta",
+    "bong_tangent",
+    "normal",
+    "simple",
+    "karras",
+    "exponential",
+    "sgm_uniform",
+    "polyexponential",
+    "linear_quadratic",
+    "kl_optimal",
+    "laplace",
+]
+
+
+def _union(base: list[str], extras: list[str]) -> list[str]:
+    """Return base with any extras not already present appended, preserving order."""
+    seen = set(base)
+    result = list(base)
+    for x in extras:
+        if x and x not in seen:
+            seen.add(x)
+            result.append(x)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# MoE pair detection
+# ---------------------------------------------------------------------------
+
+# Pass-through latent node types the upstream walk may traverse.  v1: empty
+# (direct wire only required).  Extend with evidence (e.g. LatentUpscale that
+# does not meaningfully change the latent) in a follow-up bead.
+_LATENT_PASSTHROUGH: frozenset[str] = frozenset()
+
+# Supported MoE families (same class_type on both experts)
+_MOE_FAMILIES = frozenset({"KSamplerAdvanced", "ClownsharKSampler_Beta"})
+
+
+def _chain_links_directly(workflow: dict[str, Any], low_id: str, high_id: str) -> bool:
+    """Return True if the LOW sampler's latent_image is a DIRECT ["high_id", 0] wire.
+
+    v1: direct-only (no passthrough walk).  _LATENT_PASSTHROUGH is reserved for
+    follow-up when a concrete passthrough use-case appears.
+    """
+    low_node = workflow.get(str(low_id))
+    if not isinstance(low_node, dict):
+        return False
+    latent_ref = low_node.get("inputs", {}).get("latent_image")
+    if not isinstance(latent_ref, list) or len(latent_ref) != 2:
+        return False
+    return str(latent_ref[0]) == str(high_id) and latent_ref[1] == 0
+
+
+def _ksa_boundary_ok(high_inputs: dict, low_inputs: dict) -> bool:
+    """Check KSamplerAdvanced boundary signals (signal-3 in DESIGN.md).
+
+    HIGH: add_noise=="enable" AND end_at_step in [1, steps-1].
+    LOW:  add_noise=="disable" AND start_at_step == HIGH.end_at_step.
+    """
+    if high_inputs.get("add_noise") != "enable":
+        return False
+    if low_inputs.get("add_noise") != "disable":
+        return False
+    steps = high_inputs.get("steps")
+    end_at = high_inputs.get("end_at_step")
+    if not isinstance(steps, (int, float)) or not isinstance(end_at, (int, float)):
+        return False
+    steps = int(steps)
+    end_at = int(end_at)
+    if end_at < 1 or end_at >= steps:
+        return False
+    start_at = low_inputs.get("start_at_step")
+    if not isinstance(start_at, (int, float)):
+        return False
+    return int(start_at) == end_at
+
+
+def _clownshark_boundary_ok(high_inputs: dict, low_inputs: dict) -> bool:
+    """Check ClownsharKSampler_Beta boundary signals (signal-3 in DESIGN.md).
+
+    HIGH: sampler_mode=="standard" AND steps_to_run in [1, steps-1].
+    LOW:  sampler_mode=="resample".
+    """
+    if high_inputs.get("sampler_mode") != "standard":
+        return False
+    if low_inputs.get("sampler_mode") != "resample":
+        return False
+    steps = high_inputs.get("steps")
+    run = high_inputs.get("steps_to_run")
+    if not isinstance(steps, (int, float)) or not isinstance(run, (int, float)):
+        return False
+    steps = int(steps)
+    run = int(run)
+    return 1 <= run <= steps - 1
+
+
+def _detect_moe_pairs(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    """Find MoE sampler pairs (KSamplerAdvanced or ClownsharKSampler_Beta).
+
+    Returns a list of dicts per DESIGN.md "MoE pair output dict" — one entry
+    per detected pair.  A pair requires ALL three signals (DESIGN "Detection
+    contract"):
+      1. Same class_type in a supported MoE family.
+      2. LOW.latent_image is a DIRECT ["high", 0] wire (v1: no passthrough).
+      3. Family-specific boundary signals are present and well-formed.
+
+    If direction (signal-2) and marker (signal-3) disagree, the pair is
+    rejected — no guessing.  If a same-family connected component has size != 2,
+    no pair is emitted for that component (handles 3+ chains conservatively).
+    Two independent pairs in one workflow both emit.
+    """
+    pairs: list[dict[str, Any]] = []
+
+    # Collect all supported-family nodes grouped by class_type
+    by_family: dict[str, list[str]] = {}
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        ct = node.get("class_type", "")
+        if ct in _MOE_FAMILIES:
+            by_family.setdefault(ct, []).append(node_id)
+
+    for family, node_ids in by_family.items():
+        # Build the chain graph within this family: which node feeds which via
+        # latent_image?  Each node in this family that directly receives from
+        # another family node is a "LOW"; the feeder is "HIGH".
+        family_set = set(node_ids)
+
+        # Find direct chain links within the family
+        # links: list of (high_id, low_id)
+        links: list[tuple[str, str]] = []
+        for low_id in node_ids:
+            low_node = workflow.get(str(low_id))
+            if not isinstance(low_node, dict):
+                continue
+            latent_ref = low_node.get("inputs", {}).get("latent_image")
+            if not isinstance(latent_ref, list) or len(latent_ref) != 2:
+                continue
+            high_id = str(latent_ref[0])
+            if high_id in family_set and latent_ref[1] == 0:
+                links.append((high_id, low_id))
+
+        # Build adjacency: who is fed by whom (same-family only)
+        # feeds[X] = set of Y where X feeds Y (X is HIGH for Y)
+        feeds: dict[str, set[str]] = {nid: set() for nid in node_ids}
+        is_low: set[str] = set()
+        for hi, lo in links:
+            feeds[hi].add(lo)
+            is_low.add(lo)
+
+        # Connected components in the undirected version of the chain graph
+        # (we need to check component size before pairing)
+        adj: dict[str, set[str]] = {nid: set() for nid in node_ids}
+        for hi, lo in links:
+            adj[hi].add(lo)
+            adj[lo].add(hi)
+
+        visited: set[str] = set()
+
+        def _component(start: str) -> set[str]:
+            comp: set[str] = set()
+            stack = [start]
+            while stack:
+                cur = stack.pop()
+                if cur in comp:
+                    continue
+                comp.add(cur)
+                stack.extend(adj[cur] - comp)
+            return comp
+
+        for nid in node_ids:
+            if nid in visited:
+                continue
+            comp = _component(nid)
+            visited.update(comp)
+
+            # Only pair when the connected component has exactly two members
+            # (one source, one sink).  3+ → no pair (O1 deferred).
+            if len(comp) != 2:
+                continue
+
+            # Extract the single link within this 2-node component
+            comp_links = [(hi, lo) for hi, lo in links if hi in comp and lo in comp]
+            if len(comp_links) != 1:
+                continue
+            high_id, low_id = comp_links[0]
+
+            high_node = workflow.get(str(high_id), {})
+            low_node = workflow.get(str(low_id), {})
+            high_inputs = high_node.get("inputs", {})
+            low_inputs = low_node.get("inputs", {})
+
+            # Signal-3: family-specific boundary check
+            if family == "KSamplerAdvanced":
+                if not _ksa_boundary_ok(high_inputs, low_inputs):
+                    continue
+                # Direction-marker consistency: signal-2 says high_id is feeder,
+                # signal-3 confirms add_noise=enable on high.  Already checked above.
+                split = int(high_inputs["end_at_step"])
+                split_targets = {
+                    f"{high_id}.end_at_step": "split",
+                    f"{low_id}.start_at_step": "split",
+                }
+                owned_keys = [
+                    f"{high_id}.steps", f"{low_id}.steps",
+                    f"{high_id}.end_at_step", f"{low_id}.start_at_step",
+                ]
+            else:  # ClownsharKSampler_Beta
+                if not _clownshark_boundary_ok(high_inputs, low_inputs):
+                    continue
+                split = int(high_inputs["steps_to_run"])
+                split_targets = {
+                    f"{high_id}.steps_to_run": "split",
+                }
+                owned_keys = [
+                    f"{high_id}.steps", f"{low_id}.steps",
+                    f"{high_id}.steps_to_run",
+                ]
+
+            high_steps = int(high_inputs.get("steps", 0))
+            low_steps = int(low_inputs.get("steps", 0))
+            steps_mismatch = high_steps != low_steps
+
+            meta_title = high_node.get("_meta", {}).get("title", "")
+            label: str | None = None
+            if meta_title and meta_title not in ("KSamplerAdvanced", "ClownsharKSampler_Beta"):
+                label = meta_title
+
+            pair: dict[str, Any] = {
+                "family": family,
+                "high_node_id": high_id,
+                "low_node_id": low_id,
+                "total": high_steps,
+                "split": split,
+                "steps_mismatch": steps_mismatch,
+                "total_targets": [f"{high_id}.steps", f"{low_id}.steps"],
+                "split_targets": split_targets,
+                "owned_keys": owned_keys,
+            }
+            if label is not None:
+                pair["label"] = label
+
+            pairs.append(pair)
+
+    return pairs
 
 _PRIMITIVE_TYPES = {"PrimitiveInt", "PrimitiveFloat", "Primitive int [Crystools]"}
 
@@ -1606,6 +1921,7 @@ async def parse_workflow(request: Request) -> JSONResponse:
     try:
         nodes = _detect_load_nodes(workflow)
         ksamplers = _detect_ksamplers(workflow)
+        moe_pairs = _detect_moe_pairs(workflow)
         text_overrides = _detect_text_overrides(workflow)
         resolution_nodes = _detect_resolution_nodes(workflow)
         frame_counts = _detect_frame_count(workflow)
@@ -1619,6 +1935,7 @@ async def parse_workflow(request: Request) -> JSONResponse:
         "ok": True,
         "load_nodes": nodes,
         "ksamplers": ksamplers,
+        "moe_pairs": moe_pairs,
         "text_overrides": text_overrides,
         "resolution_nodes": resolution_nodes,
         "frame_counts": frame_counts,

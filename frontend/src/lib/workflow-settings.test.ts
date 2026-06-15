@@ -16,6 +16,7 @@ const emptySources: AutoDetectSources = {
   refVideo: [],
   loadNodes: [],
   textOverrides: [],
+  moePairs: [],
 }
 
 describe('collectAutoDetectedKeys', () => {
@@ -44,6 +45,7 @@ describe('collectAutoDetectedKeys', () => {
       refVideo: [{ node_id: '100', controls: [{ field: 'cap' }, { field: 'fps' }] }],
       loadNodes: [{ node_id: '417', field: 'video' }],
       textOverrides: [{ node_id: '7', input_name: 'text' }],
+      moePairs: [],
     })
     expect(keys.has('61.lora_name')).toBe(true)
     expect(keys.has('61.strength_model')).toBe(true)
@@ -59,6 +61,21 @@ describe('collectAutoDetectedKeys', () => {
     expect(keys.has('100.fps')).toBe(true)
     expect(keys.has('417.video')).toBe(true)
     expect(keys.has('7.text')).toBe(true)
+  })
+
+  it('includes every MoE pair owned_key (suppressed from generic settings)', () => {
+    const keys = collectAutoDetectedKeys({
+      ...emptySources,
+      moePairs: [
+        { owned_keys: ['401.steps', '402.steps', '401.end_at_step', '402.start_at_step'] },
+        { owned_keys: ['407.steps', '408.steps', '407.steps_to_run'] },
+      ],
+    })
+    expect(keys.has('401.steps')).toBe(true)
+    expect(keys.has('402.steps')).toBe(true)
+    expect(keys.has('401.end_at_step')).toBe(true)
+    expect(keys.has('402.start_at_step')).toBe(true)
+    expect(keys.has('407.steps_to_run')).toBe(true)
   })
 
   it('falls back to the node id when source overrides are missing on resolution/frame nodes', () => {

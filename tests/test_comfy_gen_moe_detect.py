@@ -474,13 +474,32 @@ def test_clownshark_curated_list_contains_known_values():
     samplers = comfy_gen.CLOWNSHARK_SAMPLERS
     schedulers = comfy_gen.CLOWNSHARK_SCHEDULERS
 
-    # Values seen in Wan2.2_T2V_Lightning.json and Wan2.2_T2V_RES4LYF_Full.json
+    # The full RES4LYF RK_SAMPLER_NAMES_BETA_FOLDERS list (folder-prefixed form),
+    # not a hand-picked subset.
+    assert len(samplers) == 119
+
+    # Values seen in the reference workflows (folder-prefixed form).
     assert "linear/euler" in samplers
     assert "multistep/res_3m" in samplers
-    assert "res_2s" in samplers
+    assert "exponential/res_2s" in samplers
+    # A spread across the real RES4LYF families.
+    assert "fully_implicit/gauss-legendre_2s" in samplers
+    assert "linear/dormand-prince_6s" in samplers
+    assert "diag_implicit/crouzeix_2s" in samplers
+    assert "none" in samplers
 
-    assert "beta" in schedulers
-    assert "bong_tangent" in schedulers
+    # Fabricated / standard-ComfyUI names that are NOT ClownShark samplers must
+    # be absent (regression guard against the original guessed list).
+    for bogus in ("dpm_fast", "dpm_adaptive", "rk4", "heun", "bogacki_shampine"):
+        assert bogus not in samplers, bogus
+
+    # Schedulers = comfy core SCHEDULER_NAMES + RES4LYF bong_tangent + beta57.
+    assert len(schedulers) == 11
+    for s in ("beta", "bong_tangent", "beta57", "ddim_uniform", "kl_optimal"):
+        assert s in schedulers, s
+    # Names that were in the original guess but are not real comfy/RES4LYF schedulers.
+    for bogus in ("polyexponential", "laplace"):
+        assert bogus not in schedulers, bogus
 
 
 def test_clownshark_curated_options_union_current_value():
@@ -506,5 +525,5 @@ def test_clownshark_curated_options_union_current_value():
     assert "future/sampler_not_in_const" in e["sampler_options"]
     assert "future_scheduler" in e["scheduler_options"]
     # Known constants still present
-    assert "res_2s" in e["sampler_options"]
+    assert "exponential/res_2s" in e["sampler_options"]
     assert "beta" in e["scheduler_options"]

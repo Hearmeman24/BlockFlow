@@ -186,6 +186,11 @@ export interface UpstreamProducer {
   blockLabel: string
 }
 
+/** An upstream producer plus its current output value, tagged by blockId. */
+export interface UpstreamProducerValue extends UpstreamProducer {
+  value: unknown
+}
+
 // ---- Context ----
 
 type ExecuteFn = (inputs: Record<string, unknown>, signal: AbortSignal) => Promise<void | BlockExecuteResult>
@@ -287,6 +292,8 @@ interface PipelineContextValue {
   resetRuntimeFromBlock: (blockId: string, opts?: { preserveOutputHint?: boolean }) => void
   /** Get all upstream blocks that produce a given port kind, for a given block */
   getUpstreamProducers: (blockId: string, portKind: PortKind) => UpstreamProducer[]
+  /** Like getUpstreamProducers, but each entry also carries the producer's current output value (tagged by blockId). */
+  getUpstreamProducerValues: (blockId: string, portKind: PortKind) => UpstreamProducerValue[]
   /** Whether any block has unsatisfied required inputs */
   hasMissingRequired: boolean
   /** Import a flow from a JSON string (no file picker). */
@@ -586,6 +593,23 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
       return producerMap.get(canonicalizePortKind(portKind)) ?? []
     },
     [buildProducerMapFromAncestors, pipeline.blocks],
+  )
+
+  // Like getUpstreamProducers, but joins each producer with its current output
+  // value from the accumulator. The resolved inputs.<port> array drops which
+  // block produced which value; consumers that need per-source routing (e.g.
+  // ComfyGen's per-segment prompt sourcing) use this to address values by blockId.
+  const getUpstreamProducerValues = useCallback(
+    (blockId: string, portKind: PortKind): UpstreamProducerValue[] => {
+      const location = findBlockInTree(pipeline.blocks, blockId)
+      if (!location) return []
+      const canonicalKind = canonicalizePortKind(portKind)
+      const producers = buildProducerMapFromAncestors(location.ancestors).get(canonicalKind) ?? []
+      const entries = buildAccumulatorFromAncestors(location.ancestors, blockStatesRef.current).get(canonicalKind) ?? []
+      const valueByBlockId = new Map(entries.map((e) => [e.blockId, e.value]))
+      return producers.map((p) => ({ ...p, value: valueByBlockId.get(p.blockId) }))
+    },
+    [buildAccumulatorFromAncestors, buildProducerMapFromAncestors, pipeline.blocks],
   )
 
   const addBlock = useCallback((type: string, atIndex?: number): string => {
@@ -1475,6 +1499,7 @@ export function PipelineProvider({ tabId, flowJson, children }: PipelineProvider
         clearBlockSource,
         resetRuntimeFromBlock,
         getUpstreamProducers,
+        getUpstreamProducerValues,
         hasMissingRequired,
         hasCompletedBlocks,
         importFlowJson,

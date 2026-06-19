@@ -140,6 +140,10 @@ export interface BuildOverridesInput {
   textValues: Record<string, string>
   textUpstreamFlags: Record<string, boolean>
   upstreamPromptText: string
+  /** Per-field upstream prompt text, keyed by `${node_id}.${input_name}`. When a
+   * field has an entry it wins over the shared upstreamPromptText, letting each
+   * segment resolve a different upstream writer. */
+  upstreamPromptTextByField?: Record<string, string>
   /** Detected MoE pairs; their steps/boundary fan-out is the single writer. */
   moePairs?: MoePairInfo[]
   /** MoE control values keyed by `high_node_id`. */
@@ -323,12 +327,17 @@ export function buildOverrides(input: BuildOverridesInput): { overrides: Record<
   // Text overrides
   for (const to of input.textOverrides) {
     const key = `${to.node_id}.${to.input_name}`
-    if (input.textUpstreamFlags[key] && input.upstreamPromptText) {
-      overrides[key] = input.upstreamPromptText
-    } else {
-      const val = input.textValues[key]
-      if (val != null && val.trim()) overrides[key] = val.trim()
+    if (input.textUpstreamFlags[key]) {
+      // Per-field source wins; fall back to the shared text for legacy callers.
+      const text = input.upstreamPromptTextByField?.[key] ?? input.upstreamPromptText
+      if (text) {
+        overrides[key] = text
+        continue
+      }
+      // No upstream text yet → fall through to any manual value.
     }
+    const val = input.textValues[key]
+    if (val != null && val.trim()) overrides[key] = val.trim()
   }
 
   return { overrides, bypassLoras }

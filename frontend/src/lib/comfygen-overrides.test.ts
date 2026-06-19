@@ -323,6 +323,31 @@ describe('buildOverrides', () => {
       }))
       expect(overrides['100.text']).toBeUndefined()
     })
+
+    it('routes each upstream segment to its own writer via upstreamPromptTextByField', () => {
+      const { overrides } = buildOverrides(makeBaseInput({
+        textOverrides: [
+          { node_id: '6', input_name: 'text', current_value: '', label: 'Segment 1 Prompt' },
+          { node_id: '7', input_name: 'text', current_value: '', label: 'Segment 2 Prompt' },
+        ],
+        textUpstreamFlags: { '6.text': true, '7.text': true },
+        upstreamPromptText: 'shared fallback',
+        upstreamPromptTextByField: { '6.text': 'writer one text', '7.text': 'writer five text' },
+      }))
+      // Two segments → two distinct prompts (the bug sent the same to both).
+      expect(overrides['6.text']).toBe('writer one text')
+      expect(overrides['7.text']).toBe('writer five text')
+    })
+
+    it('falls back to shared upstreamPromptText when a field has no per-field entry', () => {
+      const { overrides } = buildOverrides(makeBaseInput({
+        textOverrides: [{ node_id: '6', input_name: 'text', current_value: '', label: 'Segment 1 Prompt' }],
+        textUpstreamFlags: { '6.text': true },
+        upstreamPromptText: 'shared fallback',
+        upstreamPromptTextByField: {},
+      }))
+      expect(overrides['6.text']).toBe('shared fallback')
+    })
   })
 })
 

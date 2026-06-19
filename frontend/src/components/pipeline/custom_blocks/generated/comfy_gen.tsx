@@ -485,7 +485,7 @@ function ComfyGenBlock({
   setOutputHint,
   setHeaderActions,
 }: BlockComponentProps) {
-  const { pipeline, addBlock, resetRuntimeFromBlock, setBlockSource } = usePipeline()
+  const { pipeline, addBlock, resetRuntimeFromBlock, getUpstreamProducerValues } = usePipeline()
 
   // Endpoint ID resolution (sgs-ui-wisp-las.1 follow-up):
   //   1. localStorage override (user typed something into the field) wins
@@ -638,6 +638,11 @@ function ComfyGenBlock({
 
   // Track which text fields use upstream text (keyed by "nodeId.inputName")
   const [textUpstreamFlags, setTextUpstreamFlags] = useSessionState<Record<string, boolean>>(`block_${blockId}_text_upstream`, {})
+  // Per-field upstream prompt source (which writer feeds this segment), keyed by
+  // "nodeId.inputName" → producer blockId. Unset fields default to the closest
+  // upstream writer, mirroring pipeline resolveInput. Distinct from the single
+  // block.sources['prompt']: each segment routes independently.
+  const [textFieldSource, setTextFieldSource] = useSessionState<Record<string, string>>(`block_${blockId}_text_field_source`, {})
 
   const selectedPresetRootId = useMemo(
     () => selectedPresetId ? parsePresetSelection(selectedPresetId).presetId : '',
@@ -873,28 +878,37 @@ function ComfyGenBlock({
     })
   }, [promptBinding?.sourceOptions, pipeline.blocks])
   const hasUpstreamPrompt = promptSourceOptions.some((o) => o.value !== MANUAL_SOURCE)
-  // sgs-ui-ee0: the prompt input is a single block-level port, so block.sources['prompt']
-  // selects which upstream writer feeds every upstream-bound text field. The per-field
-  // dropdown must therefore expose each writer as a distinct option (its blockId) and
-  // write that choice through setBlockSource — not collapse them all to one boolean flag.
+  // sgs-ui-ee0/o02o: each upstream-bound segment field selects its writer
+  // independently via textFieldSource (keyed per field), so two segments can
+  // pull from two different writers. The dropdown exposes each writer (its
+  // blockId) as a distinct option.
   const upstreamPromptOptions = useMemo(
     () => promptSourceOptions.filter((o) => o.value !== MANUAL_SOURCE),
     [promptSourceOptions],
   )
-  const myPromptBlock = useMemo(() => findBlockById(pipeline.blocks, blockId), [pipeline.blocks, blockId])
-  const resolvedPromptSourceValue = useMemo(() => {
-    const explicit = myPromptBlock?.sources?.['prompt']
+
+  // Each segment can pull from a different writer, but the resolved inputs.prompt
+  // drops which writer produced which text. getUpstreamProducerValues tags the
+  // values by blockId so a per-field source can resolve its own writer's text.
+  const promptTextByBlockId = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const p of getUpstreamProducerValues(blockId, PORT_TEXT)) {
+      if (!upstreamPromptOptions.some((o) => o.value === p.blockId)) continue
+      const text = typeof p.value === 'string' ? p.value
+        : Array.isArray(p.value) ? (p.value as string[]).filter((v) => typeof v === 'string')[0] ?? ''
+        : ''
+      map.set(p.blockId, text.trim())
+    }
+    return map
+  }, [getUpstreamProducerValues, blockId, upstreamPromptOptions])
+
+  // Resolve a field's chosen writer: explicit per-field source if valid, else the
+  // closest writer (last producer) — same default as pipeline resolveInput.
+  const resolveFieldSourceValue = useCallback((key: string): string | undefined => {
+    const explicit = textFieldSource[key]
     if (explicit && upstreamPromptOptions.some((o) => o.value === explicit)) return explicit
-    // Mirror the runtime default (pipeline-context resolveInput): last producer wins.
     return upstreamPromptOptions[upstreamPromptOptions.length - 1]?.value
-  }, [myPromptBlock, upstreamPromptOptions])
-  const resolvedPromptSourceLabel = useMemo(
-    () => upstreamPromptOptions.find((o) => o.value === resolvedPromptSourceValue)?.label,
-    [upstreamPromptOptions, resolvedPromptSourceValue],
-  )
-  const upstreamPromptText = typeof inputs.prompt === 'string' ? inputs.prompt.trim()
-    : Array.isArray(inputs.prompt) ? (inputs.prompt as string[]).filter(Boolean).join('\n\n')
-    : ''
+  }, [textFieldSource, upstreamPromptOptions])
 
   // Find this block's index in the trunk
   const getMyIndex = useCallback((): number => {
@@ -1500,6 +1514,25 @@ function ComfyGenBlock({
     }
     const upstreamPromptText = typeof freshInputs.prompt === 'string' ? freshInputs.prompt.trim()
       : Array.isArray(freshInputs.prompt) ? ((freshInputs.prompt as string[]).filter(Boolean)[0] || '').trim() : ''
+    // Per-field prompt text: resolve each upstream-bound segment to its own
+    // chosen writer (tagged by blockId), so two segments can carry two prompts.
+    const producerValues = getUpstreamProducerValues(blockId, PORT_TEXT)
+    const textByBlockId = new Map<string, string>()
+    for (const p of producerValues) {
+      if (!upstreamPromptOptions.some((o) => o.value === p.blockId)) continue
+      const t = typeof p.value === 'string' ? p.value
+        : Array.isArray(p.value) ? (p.value as string[]).filter((v) => typeof v === 'string')[0] ?? ''
+        : ''
+      textByBlockId.set(p.blockId, t.trim())
+    }
+    const upstreamPromptTextByField: Record<string, string> = {}
+    for (const to of textOverrides) {
+      const key = `${to.node_id}.${to.input_name}`
+      if (!textUpstreamFlags[key]) continue
+      const src = resolveFieldSourceValue(key)
+      const t = src ? textByBlockId.get(src) : undefined
+      if (t) upstreamPromptTextByField[key] = t
+    }
     // sgs-ui-8zu: buildOverrides strips MoE-owned steps/boundary keys from the
     // per-sampler loop and writes them via the post-loop MoE fan-out instead
     // (single-writer; chip-bypassing). resolveMoeSteps inside the lib applies
@@ -1508,7 +1541,7 @@ function ComfyGenBlock({
       ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides,
       frameCounts, frameOverrides, refVideo, refVideoOverrides,
       loraNodes, loraOverrides, autoSelect, autoNumeric,
-      textOverrides, textValues, textUpstreamFlags, upstreamPromptText,
+      textOverrides, textValues, textUpstreamFlags, upstreamPromptText, upstreamPromptTextByField,
       moePairs, moeOverrides,
     })
     // sgs-ui-gb4: merge user-edited Workflow Settings knobs as additional
@@ -1517,7 +1550,7 @@ function ComfyGenBlock({
     // existing key either — belt + suspenders).
     const merged = mergeSettingsOverrides(overrides, visibleWorkflowSettings, workflowSettingsOverrides)
     return { fileInputs, overrides: merged, bypassLoras }
-  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, moePairs, moeOverrides, visibleWorkflowSettings, workflowSettingsOverrides])
+  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, moePairs, moeOverrides, visibleWorkflowSettings, workflowSettingsOverrides, getUpstreamProducerValues, blockId, upstreamPromptOptions, resolveFieldSourceValue])
 
   // Timers/listeners live inside registerExecute's closure and are cleared
   // on AbortSignal (see onAbort handlers below) — react-doctor's
@@ -2818,6 +2851,10 @@ function ComfyGenBlock({
         const renderTextField = (to: TextOverrideInfo, showLabel: boolean) => {
           const key = `${to.node_id}.${to.input_name}`
           const usesUpstream = Boolean(textUpstreamFlags[key])
+          // Per-field source/label/text so two segments can pull from two writers.
+          const fieldSourceValue = resolveFieldSourceValue(key)
+          const fieldSourceLabel = upstreamPromptOptions.find((o) => o.value === fieldSourceValue)?.label
+          const fieldUpstreamText = fieldSourceValue ? (promptTextByBlockId.get(fieldSourceValue) ?? '') : ''
           return (
             <div key={key} className="space-y-1">
               <div className="flex items-center justify-between">
@@ -2831,14 +2868,15 @@ function ComfyGenBlock({
                 </Label>
                 {hasUpstreamPrompt && (
                   <Select
-                    value={usesUpstream ? (resolvedPromptSourceValue ?? MANUAL_SOURCE) : MANUAL_SOURCE}
+                    value={usesUpstream ? (fieldSourceValue ?? MANUAL_SOURCE) : MANUAL_SOURCE}
                     onValueChange={(v) => {
                       if (v === MANUAL_SOURCE) {
                         setTextUpstreamFlags((prev) => ({ ...prev, [key]: false }))
                         return
                       }
                       setTextUpstreamFlags((prev) => ({ ...prev, [key]: true }))
-                      setBlockSource(blockId, 'prompt', v)
+                      // Record this segment's writer independently (not the shared port source).
+                      setTextFieldSource((prev) => ({ ...prev, [key]: v }))
                     }}
                   >
                     <SelectTrigger className="h-6 w-auto max-w-[140px] text-[10px] shrink-0">
@@ -2860,11 +2898,11 @@ function ComfyGenBlock({
                       <path d="M2 6h8M7 3l3 3-3 3" />
                     </svg>
                     <span className="text-[10px] text-blue-400 font-medium">
-                      From {resolvedPromptSourceLabel || 'pipeline'}
+                      From {fieldSourceLabel || 'pipeline'}
                     </span>
                   </div>
-                  {upstreamPromptText ? (
-                    <p className="text-xs text-muted-foreground line-clamp-4">{upstreamPromptText}</p>
+                  {fieldUpstreamText ? (
+                    <p className="text-xs text-muted-foreground line-clamp-4">{fieldUpstreamText}</p>
                   ) : (
                     <p className="text-xs text-muted-foreground/50 italic">Will be provided when pipeline runs</p>
                   )}
@@ -2996,6 +3034,7 @@ export const blockDef: BlockDef = {
     'text_overrides',
     'text_values',
     'text_upstream',
+    'text_field_source',
     'resolution_nodes',
     'resolution_overrides',
     'frame_counts',

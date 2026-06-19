@@ -5,6 +5,7 @@ import { registerBlockDef } from '@/lib/pipeline/registry'
 const pipelineMocks = vi.hoisted(() => ({
   setBlockSource: vi.fn(),
   getUpstreamProducers: vi.fn(() => []),
+  getUpstreamProducerValues: vi.fn(() => [] as Array<{ blockId: string; blockIndex: number; blockLabel: string; value: unknown }>),
   pipeline: {
     blocks: [] as Array<{ id: string; type: string; sources?: Record<string, string> }>,
   },
@@ -21,6 +22,7 @@ vi.mock('@/lib/pipeline/pipeline-context', () => ({
     resetRuntimeFromBlock: vi.fn(),
     setBlockSource: pipelineMocks.setBlockSource,
     getUpstreamProducers: pipelineMocks.getUpstreamProducers,
+    getUpstreamProducerValues: pipelineMocks.getUpstreamProducerValues,
     setBlockSourceMode: vi.fn(),
     setBlockSourceSelection: vi.fn(),
   }),
@@ -90,45 +92,62 @@ beforeEach(() => {
     { id: 'b1', type: 'comfyGen' },
   ]
   pipelineMocks.getUpstreamProducers.mockReturnValue([])
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })))
+  // Each writer carries its own resolved prompt text, addressable by blockId.
+  pipelineMocks.getUpstreamProducerValues.mockReturnValue([
+    { blockId: 'w1', blockIndex: 0, blockLabel: 'Prompt Writer (OpenRouter)', value: 'PROMPT FROM WRITER ONE' },
+    { blockId: 'w5', blockIndex: 4, blockLabel: 'I2V Prompt Writer (OpenRouter)', value: 'PROMPT FROM WRITER FIVE' },
+  ])
+  // The parse-workflow effect overwrites text_overrides from its response; echo
+  // the segment nodes back so detection keeps both segments (otherwise the empty
+  // default response clears them and the panel races to render).
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    const body = url.includes('parse-workflow')
+      ? { ok: true, text_overrides: TEXT_OVERRIDES }
+      : { ok: true }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }))
   sessionStorage.setItem('block_b1_text_overrides', JSON.stringify(TEXT_OVERRIDES))
   sessionStorage.setItem('block_b1_workflow', JSON.stringify(JSON.stringify({ '1': { class_type: 'SaveImage' } })))
 })
 
 describe('ComfyGen segment prompt source selection', () => {
-  test('reflects the explicitly chosen writer (not always the first) for upstream segments', async () => {
-    // Both segments upstream-bound; block source = the SECOND writer.
+  test('each segment resolves its own chosen writer — two segments, two sources', async () => {
     sessionStorage.setItem('block_b1_text_upstream', JSON.stringify({ '6.text': true, '7.text': true }))
-    pipelineMocks.pipeline.blocks = [
-      { id: 'w1', type: 'promptWriter' },
-      { id: 'w5', type: 'i2vPromptWriter' },
-      { id: 'b1', type: 'comfyGen', sources: { prompt: 'w5' } },
-    ]
+    // Segment 1 ← writer 1, Segment 2 ← writer 5. The bug was that one shared
+    // block.sources['prompt'] collapsed both to a single source.
+    sessionStorage.setItem('block_b1_text_field_source', JSON.stringify({ '6.text': 'w1', '7.text': 'w5' }))
 
     renderBlock()
 
-    const fromLabels = await screen.findAllByText(/From .*I2V Prompt Writer/)
+    // Each segment shows a distinct "From X" label AND its own writer's text.
+    expect(await screen.findByText(/From 1\. Prompt Writer \(OpenRouter\)/)).toBeInTheDocument()
+    expect(screen.getByText(/From 5\. I2V Prompt Writer/)).toBeInTheDocument()
+    expect(screen.getByText('PROMPT FROM WRITER ONE')).toBeInTheDocument()
+    expect(screen.getByText('PROMPT FROM WRITER FIVE')).toBeInTheDocument()
+  })
+
+  test('unset segments default to the closest upstream writer (last producer)', async () => {
+    sessionStorage.setItem('block_b1_text_upstream', JSON.stringify({ '6.text': true, '7.text': true }))
+    // No per-field source set → both default to the last writer (w5), mirroring
+    // pipeline resolveInput. This is the pre-selection baseline, not a collapse.
+
+    renderBlock()
+
+    const fromLabels = await screen.findAllByText(/From 5\. I2V Prompt Writer/)
     expect(fromLabels.length).toBe(2)
-    // The buggy version hardcoded the first writer's label.
     expect(screen.queryByText(/From 1\. Prompt Writer \(OpenRouter\)/)).not.toBeInTheDocument()
   })
 
-  test('reflects the first writer when it is the chosen source (writers are independently selectable)', async () => {
-    // Mirror case: block source = the FIRST writer. Before the fix both writers
-    // collapsed to one value, so the second could never be distinguished from
-    // the first; now each resolves to its own label.
+  test('selecting a writer for one segment does not change the other', async () => {
     sessionStorage.setItem('block_b1_text_upstream', JSON.stringify({ '6.text': true, '7.text': true }))
-    pipelineMocks.pipeline.blocks = [
-      { id: 'w1', type: 'promptWriter' },
-      { id: 'w5', type: 'i2vPromptWriter' },
-      { id: 'b1', type: 'comfyGen', sources: { prompt: 'w1' } },
-    ]
+    // Segment 1 explicitly w1; Segment 2 left at default (w5).
+    sessionStorage.setItem('block_b1_text_field_source', JSON.stringify({ '6.text': 'w1' }))
 
     renderBlock()
 
-    const fromLabels = await screen.findAllByText(/From 1\. Prompt Writer \(OpenRouter\)/)
-    expect(fromLabels.length).toBe(2)
-    expect(screen.queryByText(/From .*I2V Prompt Writer/)).not.toBeInTheDocument()
+    expect(await screen.findByText(/From 1\. Prompt Writer \(OpenRouter\)/)).toBeInTheDocument()
+    expect(screen.getByText(/From 5\. I2V Prompt Writer/)).toBeInTheDocument()
+    // The shared block-level source must not be written anymore.
+    expect(pipelineMocks.setBlockSource).not.toHaveBeenCalled()
   })
-
 })

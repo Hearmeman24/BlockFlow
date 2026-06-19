@@ -32,6 +32,7 @@ vi.mock('@/lib/pipeline/pipeline-context', () => ({
     addBlock: vi.fn(),
     resetRuntimeFromBlock: pipelineMocks.resetRuntimeFromBlock,
     getUpstreamProducers: pipelineMocks.getUpstreamProducers,
+    getUpstreamProducerValues: vi.fn(() => []),
     setBlockSourceMode: pipelineMocks.setBlockSourceMode,
     setBlockSourceSelection: pipelineMocks.setBlockSourceSelection,
   }),

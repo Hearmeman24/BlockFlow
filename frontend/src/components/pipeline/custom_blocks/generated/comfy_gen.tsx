@@ -1061,7 +1061,20 @@ function ComfyGenBlock({
         setTextOverrides(detectedTextOverrides)
 
         // sgs-ui-lix0: values from `_ComfyGen`-tagged nodes.
-        setComfygenOverrides(dropHidden((data.comfygen_overrides || []) as ComfygenOverrideInfo[], hidden))
+        const detectedComfygen = dropHidden((data.comfygen_overrides || []) as ComfygenOverrideInfo[], hidden)
+        setComfygenOverrides(detectedComfygen)
+        // Re-seed user edits like every other override map: drop keys not in the
+        // fresh detection, and on a workflow switch (preserve=false) drop ALL
+        // edits so a stale value can't leak onto a reused node id in the new
+        // workflow (e.g. node "5".value carrying over from a different knob).
+        setComfygenOverrideValues((prev) => {
+          const next: Record<string, string> = {}
+          for (const o of detectedComfygen) {
+            const key = `${o.node_id}.${o.field}`
+            if (preserve && prev[key] !== undefined) next[key] = prev[key]
+          }
+          return next
+        })
         setTextValues((prev) => {
           const next: Record<string, string> = {}
           for (const to of detectedTextOverrides) {
@@ -1162,6 +1175,7 @@ function ComfyGenBlock({
       setLoraOverrides({})
       setAddedLoras([])
       setComfygenOverrides([])
+      setComfygenOverrideValues({})
       setOutputType('')
       setOutputHint?.('')
       return ''
@@ -1222,8 +1236,19 @@ function ComfyGenBlock({
         const detectedTextOverrides = dropHidden((data.text_overrides || []) as TextOverrideInfo[], hidden)
         setTextOverrides(detectedTextOverrides)
 
-        // sgs-ui-lix0: values from `_ComfyGen`-tagged nodes.
-        setComfygenOverrides(dropHidden((data.comfygen_overrides || []) as ComfygenOverrideInfo[], hidden))
+        // sgs-ui-lix0: values from `_ComfyGen`-tagged nodes. Mount re-parse
+        // preserves edits (like the other override maps here) but prunes keys
+        // that the latest detection no longer surfaces.
+        const detectedComfygen = dropHidden((data.comfygen_overrides || []) as ComfygenOverrideInfo[], hidden)
+        setComfygenOverrides(detectedComfygen)
+        setComfygenOverrideValues((prev) => {
+          const next: Record<string, string> = {}
+          for (const o of detectedComfygen) {
+            const key = `${o.node_id}.${o.field}`
+            if (prev[key] !== undefined) next[key] = prev[key]
+          }
+          return next
+        })
 
         const detectedResNodes = dropHidden((data.resolution_nodes || []) as ResolutionNodeInfo[], hidden)
         setResolutionNodes(detectedResNodes)

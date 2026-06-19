@@ -648,7 +648,7 @@ _KNOWN_LATENT_NODES = {
     "EmptyLatentImage", "SDXLEmptyLatentSizePicker+",
     "EmptyLTXVLatentVideo", "EmptySD3LatentImage",
     "EmptyFlux2LatentImage",
-    "WanAnimateToVideo",
+    "WanAnimateToVideo", "WanImageToVideo",
 }
 
 # ---------------------------------------------------------------------------
@@ -1039,10 +1039,27 @@ def _detect_moe_pairs(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 _PRIMITIVE_TYPES = {"PrimitiveInt", "PrimitiveFloat", "Primitive int [Crystools]"}
 
 
-def _walk_upstream_value(workflow: dict[str, Any], wired_ref: list, max_depth: int = 8) -> int | float | None:
+def _next_upstream_refs(inputs: dict[str, Any], prefer_keys: tuple[str, ...]) -> list[list]:
+    """Wired (list) inputs to follow upstream. When prefer_keys is set and the
+    node carries a matching wired input (e.g. a resize node with both 'width' and
+    'height'), follow ONLY that dimension so width/height don't conflate. Falls
+    back to all wired inputs when no preferred key is present (e.g. an aspect-ratio
+    switch whose inputs are ANY/IF_TRUE/IF_FALSE)."""
+    wired = [v for v in inputs.values() if isinstance(v, list) and len(v) >= 2]
+    if prefer_keys:
+        preferred = [v for k, v in inputs.items()
+                     if k in prefer_keys and isinstance(v, list) and len(v) >= 2]
+        if preferred:
+            return preferred
+    return wired
+
+
+def _walk_upstream_value(workflow: dict[str, Any], wired_ref: list, max_depth: int = 8,
+                         prefer_keys: tuple[str, ...] = ()) -> int | float | None:
     """Follow a wired input upstream to find its literal numeric value.
 
     Handles chains like: EmptyLTXVLatentVideo.width ← ComfyMathExpression ← PrimitiveInt.
+    prefer_keys biases the walk toward the matching dimension at each hop.
     Returns None if no literal value is found within max_depth hops.
     """
     seen: set[str] = set()
@@ -1074,10 +1091,9 @@ def _walk_upstream_value(workflow: dict[str, Any], wired_ref: list, max_depth: i
         if "value" in inputs and isinstance(inputs["value"], (int, float)):
             return inputs["value"]
 
-        # Follow wired inputs upstream — look for numeric-like input names
-        for key, val in inputs.items():
-            if isinstance(val, list) and len(val) >= 2:
-                queue.append((str(val[0]), depth + 1))
+        # Follow wired inputs upstream — biased toward the matching dimension.
+        for val in _next_upstream_refs(inputs, prefer_keys):
+            queue.append((str(val[0]), depth + 1))
 
     return None
 
@@ -1116,8 +1132,8 @@ def _detect_resolution_nodes(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 
         # For known latent nodes with wired values, walk upstream to find source
         if is_known and (w_wired or h_wired):
-            upstream_w = _walk_upstream_value(workflow, w_val) if w_wired else None
-            upstream_h = _walk_upstream_value(workflow, h_val) if h_wired else None
+            upstream_w = _walk_upstream_value(workflow, w_val, prefer_keys=("width", "width_override")) if w_wired else None
+            upstream_h = _walk_upstream_value(workflow, h_val, prefer_keys=("height", "height_override")) if h_wired else None
             literal_w = int(w_val) if not w_wired and isinstance(w_val, (int, float)) else None
             literal_h = int(h_val) if not h_wired and isinstance(h_val, (int, float)) else None
 
@@ -1126,8 +1142,8 @@ def _detect_resolution_nodes(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 
             if resolved_w is not None or resolved_h is not None:
                 # Find the actual source nodes for overriding
-                w_source = _find_upstream_source(workflow, w_val) if w_wired else None
-                h_source = _find_upstream_source(workflow, h_val) if h_wired else None
+                w_source = _find_upstream_source(workflow, w_val, prefer_keys=("width", "width_override")) if w_wired else None
+                h_source = _find_upstream_source(workflow, h_val, prefer_keys=("height", "height_override")) if h_wired else None
 
                 entry: dict[str, Any] = {
                     "node_id": node_id,
@@ -1173,9 +1189,12 @@ def _detect_resolution_nodes(workflow: dict[str, Any]) -> list[dict[str, Any]]:
     return results
 
 
-def _find_upstream_source(workflow: dict[str, Any], wired_ref: list, max_depth: int = 8) -> tuple[str, str] | None:
+def _find_upstream_source(workflow: dict[str, Any], wired_ref: list, max_depth: int = 8,
+                          prefer_keys: tuple[str, ...] = ()) -> tuple[str, str] | None:
     """Find the upstream source node and field that holds a literal numeric value.
 
+    prefer_keys biases the walk toward the matching dimension at each hop, so a
+    resize node carrying both width+height routes to the right source primitive.
     Returns (node_id, field_name) of the node whose value should be overridden.
     """
     seen: set[str] = set()
@@ -1204,10 +1223,9 @@ def _find_upstream_source(workflow: dict[str, Any], wired_ref: list, max_depth: 
         if "value" in inputs and isinstance(inputs["value"], (int, float)):
             return (node_id, "value")
 
-        # Follow wired inputs upstream
-        for key, val in inputs.items():
-            if isinstance(val, list) and len(val) >= 2:
-                queue.append((str(val[0]), depth + 1))
+        # Follow wired inputs upstream — biased toward the matching dimension.
+        for val in _next_upstream_refs(inputs, prefer_keys):
+            queue.append((str(val[0]), depth + 1))
 
     return None
 

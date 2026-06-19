@@ -112,6 +112,50 @@ def test_existing_latent_workflows_unchanged_wired_via_primitive():
     assert ltxv[0]["height_source_node"] == "11"
 
 
+def _wan_i2v_workflow() -> dict:
+    """Sanitized minimum from WanI2V.json: WanImageToVideo's width/height are
+    wired through an ImageResizeKJv2 (which carries BOTH dimensions) into a pair
+    of aspect-ratio switches that pick between two PrimitiveInts (RES 1 / RES 2).
+    The walker must follow the matching dimension so width→RES1 and height→RES2,
+    not collapse both onto whichever literal it hits first."""
+    return {
+        "364": {"class_type": "PrimitiveInt", "inputs": {"value": 960},
+                "_meta": {"title": "RES 1"}},
+        "365": {"class_type": "PrimitiveInt", "inputs": {"value": 544},
+                "_meta": {"title": "RES 2"}},
+        "362": {"class_type": "Image Aspect Ratio", "inputs": {"image": ["352", 0]},
+                "_meta": {"title": "Image Aspect Ratio"}},
+        "363": {"class_type": "If ANY return A else B", "inputs": {
+            "ANY": ["362", 2], "IF_TRUE": ["364", 0], "IF_FALSE": ["365", 0],
+        }},
+        "366": {"class_type": "If ANY return A else B", "inputs": {
+            "ANY": ["362", 2], "IF_TRUE": ["365", 0], "IF_FALSE": ["364", 0],
+        }},
+        "354": {"class_type": "ImageResizeKJv2", "inputs": {
+            "width": ["363", 0], "height": ["366", 0], "image": ["352", 0],
+        }, "_meta": {"title": "Image Resize KJ v2"}},
+        "350": {"class_type": "WanImageToVideo", "inputs": {
+            "width": ["354", 1], "height": ["354", 2], "length": 81,
+        }, "_meta": {"title": "WanImageToVideo"}},
+        "352": {"class_type": "LoadImage", "inputs": {"image": "x.png"}},
+    }
+
+
+def test_wan_image_to_video_resolution_dimension_aware():
+    res = _detect(_wan_i2v_workflow())
+    wan = [r for r in res if r["class_type"] == "WanImageToVideo"]
+    assert len(wan) == 1, f"expected 1 WanImageToVideo entry, got {res}"
+    e = wan[0]
+    assert e["category"] == "latent"
+    # width must trace its OWN dimension to RES 1, height to RES 2 — not collapse.
+    assert e["width"] == 960
+    assert e["height"] == 544
+    assert e["width_source_node"] == "364"
+    assert e["width_source_field"] == "value"
+    assert e["height_source_node"] == "365"
+    assert e["height_source_field"] == "value"
+
+
 def test_crop_like_node_with_wired_wh_not_surfaced():
     """A non-whitelisted node with width+height both wired must NOT be
     surfaced as a resolution entry — otherwise editing 'resolution' in the

@@ -226,7 +226,27 @@ def test_create_endpoint_posts_to_rest_with_full_config(monkeypatch):
     assert body["scalerType"] == "QUEUE_DELAY"
     assert body["scalerValue"] == 4
     assert body["flashboot"] is True
-    assert body["allowedCudaVersions"] == ["12.9", "12.8"]
+    # CUDA floor (default) — no exact-version whitelist (sgs-ui-80r)
+    assert body["minCudaVersion"] == "12.8"
+    assert "allowedCudaVersions" not in body
+
+
+def test_create_endpoint_uses_supplied_min_cuda(monkeypatch):
+    post = MagicMock(return_value=_resp(200, {"id": "ep"}))
+    monkeypatch.setattr(runpod_api._cffi_requests, "post", post)
+    runpod_api.create_endpoint(
+        "rpa_x", name="n", template_id="t", gpu_type_ids=["g"],
+        network_volume_id="v", min_cuda_version="13.0",
+    )
+    assert post.call_args.kwargs["json"]["minCudaVersion"] == "13.0"
+
+
+def test_update_endpoint_cuda_sets_floor_and_clears_whitelist(monkeypatch):
+    patch = MagicMock(return_value=_resp(200, {"id": "ep"}))
+    monkeypatch.setattr(runpod_api._cffi_requests, "patch", patch)
+    runpod_api.update_endpoint_cuda("rpa_x", "ep1", "13.0")
+    assert patch.call_args.args[0] == f"{runpod_api.REST_BASE}/endpoints/ep1"
+    assert patch.call_args.kwargs["json"] == {"minCudaVersion": "13.0", "allowedCudaVersions": []}
 
 
 def test_create_endpoint_raises_on_400(monkeypatch):

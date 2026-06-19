@@ -41,6 +41,14 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_manifest, "_CACHE_PATH", tmp_path / "runtime_manifest_cache.json")
     runtime_manifest._cache_reset()
 
+    # No network in tests: manifest fetch falls back to FALLBACK image / no CUDA
+    # floor. Tests that care about the resolved image mock resolve_comfygen_image
+    # directly; this only governs the provision CUDA lookup (latest_comfygen).
+    def _no_network(*_a, **_k):
+        raise RuntimeError("runtime manifest fetch disabled in tests")
+
+    monkeypatch.setattr(runtime_manifest._cffi_requests, "get", _no_network)
+
     fastapi_app = FastAPI()
     fastapi_app.include_router(wizard_routes.router)
     return fastapi_app

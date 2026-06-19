@@ -25,8 +25,6 @@ V2_BASE = "https://api.runpod.ai/v2"
 BASE_TEMPLATE_ID = "bdy0gkebsg"
 BASE_DOCKER_IMAGE = "hearmeman/comfyui-serverless:v24"
 RUNTIME_REPO_URL = "https://github.com/Hearmeman24/remote-comfy-gen-handler.git"
-# Docker image is CUDA 12.8.1 — only allow worker GPUs reporting compatible CUDA.
-ALLOWED_CUDA_VERSIONS = ["12.9", "12.8"]
 
 # UA matches ComfyGen's value because Cloudflare in front of RunPod blocks
 # Python's default urllib UA. curl_cffi handles this differently but we keep
@@ -340,6 +338,7 @@ def create_endpoint(
     workers_max: int = 3,
     idle_timeout: int = 5,
     execution_timeout_ms: int = 3600000,  # 1h — needed for preset installs
+    min_cuda_version: str = "12.8",
 ) -> dict[str, Any]:
     body = {
         "name": name,
@@ -354,7 +353,9 @@ def create_endpoint(
         "scalerType": "QUEUE_DELAY",
         "scalerValue": 4,
         "flashboot": True,
-        "allowedCudaVersions": ALLOWED_CUDA_VERSIONS,
+        # CUDA floor (host driver gate) tracks the image tag's requirement;
+        # no allowedCudaVersions whitelist — the floor is authoritative.
+        "minCudaVersion": min_cuda_version,
     }
     return _rest_post(api_key, "/endpoints", body)
 
@@ -373,8 +374,43 @@ def update_endpoint_workers(
     })
 
 
+def update_endpoint_cuda(api_key: str, endpoint_id: str, min_cuda_version: str) -> dict[str, Any]:
+    """Set the endpoint's host-CUDA floor and clear any legacy whitelist.
+
+    `allowedCudaVersions: []` clears a stale whitelist (e.g. ['12.9','12.8'] from
+    a pre-sgs-ui-80r provision) that would otherwise intersect the floor to an
+    empty host set and strand the endpoint on a v26→v27 upgrade.
+    """
+    return _rest_patch(api_key, f"/endpoints/{endpoint_id}", {
+        "minCudaVersion": min_cuda_version,
+        "allowedCudaVersions": [],
+    })
+
+
 def delete_endpoint(api_key: str, endpoint_id: str) -> None:
     _rest_delete(api_key, f"/endpoints/{endpoint_id}")
+
+
+# === image update (sgs-ui-cxs) ==============================================
+# Mirrors the ComfyGen `update_endpoint` CI step: resolve the endpoint's
+# template, then PATCH the template's imageName. RunPod rolls the endpoint's
+# pods onto the new tag (~1h). The endpoint itself has no image field.
+
+def get_endpoint_image(api_key: str, endpoint_id: str) -> str | None:
+    """Current Docker image of the endpoint's template, or None if unknown."""
+    template_id = _rest_get(api_key, f"/endpoints/{endpoint_id}").get("templateId")
+    if not template_id:
+        return None
+    image = _rest_get(api_key, f"/templates/{template_id}").get("imageName")
+    return image if isinstance(image, str) and image else None
+
+
+def update_endpoint_image(api_key: str, endpoint_id: str, image_name: str) -> dict[str, Any]:
+    """Re-image the endpoint by PATCHing its template's imageName."""
+    template_id = _rest_get(api_key, f"/endpoints/{endpoint_id}").get("templateId")
+    if not template_id:
+        raise RunPodAPIError(f"endpoint {endpoint_id} has no templateId")
+    return _rest_patch(api_key, f"/templates/{template_id}", {"imageName": image_name})
 
 
 def get_endpoint_health(api_key: str, endpoint_id: str) -> dict[str, Any]:

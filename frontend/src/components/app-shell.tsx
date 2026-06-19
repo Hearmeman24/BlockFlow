@@ -10,6 +10,7 @@ import { Sidebar } from '@/components/sidebar'
 import { PipelineTabs } from '@/components/pipeline/pipeline-tabs'
 import { WelcomeToBlockFlow } from '@/components/welcome-to-blockflow'
 import { ComfyGenWizard } from '@/components/wizard/comfygen-wizard'
+import { ComfyGenUpdateBanner } from '@/components/comfygen-update-banner'
 import { setAdvancedMode } from '@/lib/pipeline/registry'
 import { ASSET_STORAGE_MODE_PREF, getAppPref, isAssetStorageMode } from '@/lib/settings/client'
 import '@/components/pipeline/custom_blocks/_register'
@@ -76,6 +77,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <PipelineTabsProvider>
           {mounted && <NavBar />}
           {mounted && <Sidebar />}
+          {mounted && <ComfyGenUpdateBanner />}
           <main className={pipelineShellClass}>
             <PipelineTabs />
           </main>

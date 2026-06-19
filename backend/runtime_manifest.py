@@ -83,22 +83,54 @@ def _image_from_manifest(manifest: dict | None) -> str | None:
     return image if _IMAGE_RE.match(image) else None
 
 
-def resolve_comfygen_image() -> str:
+def _current_manifest() -> dict | None:
+    """Best available manifest: fresh fetch (cached on success), else cache/disk.
+    Only caches a fetched manifest that yields a valid image."""
     if _cache_is_fresh():
-        return _image_from_manifest(_cache["manifest"]) or FALLBACK_DOCKER_IMAGE
+        return _cache["manifest"]
 
     try:
         manifest = _fetch_manifest()
     except Exception:
-        manifest = _cache["manifest"] or _load_disk_cache()
-        return _image_from_manifest(manifest) or FALLBACK_DOCKER_IMAGE
+        return _cache["manifest"] or _load_disk_cache()
 
-    image = _image_from_manifest(manifest)
-    if not image:
-        manifest = _cache["manifest"] or _load_disk_cache()
-        return _image_from_manifest(manifest) or FALLBACK_DOCKER_IMAGE
+    if not _image_from_manifest(manifest):
+        return _cache["manifest"] or _load_disk_cache()
 
     _cache["manifest"] = manifest
     _cache["fetched_at"] = time.time()
     _save_disk_cache(manifest)
-    return image
+    return manifest
+
+
+def resolve_comfygen_image() -> str:
+    return _image_from_manifest(_current_manifest()) or FALLBACK_DOCKER_IMAGE
+
+
+_CUDA_RE = re.compile(r"^[0-9]+\.[0-9]+$")  # ASCII only — \d matches Unicode digits
+
+
+def latest_comfygen() -> dict:
+    """The published ComfyGen runtime: {image, tag, release_notes, min_cuda_version}.
+
+    `tag` is derived from the image's regex-validated `:vN` suffix (not the
+    manifest's free-form `tag` field), so a malformed `tag` can never mask a
+    real update. release_notes and min_cuda_version are None if absent/invalid;
+    min_cuda_version is the host CUDA floor required by this image tag."""
+    manifest = _current_manifest()
+    image = _image_from_manifest(manifest) or FALLBACK_DOCKER_IMAGE
+    section = manifest.get("comfygen_serverless") if isinstance(manifest, dict) else None
+    section = section if isinstance(section, dict) else {}
+
+    notes = section.get("release_notes")
+    notes = notes.strip() if isinstance(notes, str) and notes.strip() else None
+
+    cuda = section.get("min_cuda_version")
+    cuda = cuda.strip() if isinstance(cuda, str) and _CUDA_RE.match(cuda.strip()) else None
+
+    return {
+        "image": image,
+        "tag": image.rsplit(":", 1)[-1],
+        "release_notes": notes,
+        "min_cuda_version": cuda,
+    }

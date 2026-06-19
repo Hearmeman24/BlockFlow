@@ -581,6 +581,7 @@ def provision(body: ProvisionBody) -> JSONResponse:
             network_volume_id=volume_id,
             workers_min=0,
             workers_max=body.max_workers,
+            min_cuda_version=runtime_manifest.latest_comfygen()["min_cuda_version"] or "12.8",
         )
     except runpod_api.RunPodAPIError as exc:
         _safe_delete_template(api_key, template_name)

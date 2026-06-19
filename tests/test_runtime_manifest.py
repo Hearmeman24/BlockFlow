@@ -90,3 +90,86 @@ def test_resolve_comfygen_image_keeps_disk_cache_when_remote_is_invalid(monkeypa
     })))
 
     assert runtime_manifest.resolve_comfygen_image() == "hearmeman/comfyui-serverless:v25"
+
+
+def test_latest_comfygen_returns_tag_and_notes(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_manifest, "_CACHE_PATH", tmp_path / "m.json")
+    runtime_manifest._cache_reset()
+    body = {
+        "manifest_version": 1,
+        "comfygen_serverless": {
+            "image": "hearmeman/comfyui-serverless:v25",
+            "tag": "v25",
+            "release_notes": "  faster sampler  ",
+        },
+    }
+    monkeypatch.setattr(runtime_manifest._cffi_requests, "get", MagicMock(return_value=_response(body)))
+    assert runtime_manifest.latest_comfygen() == {
+        "image": "hearmeman/comfyui-serverless:v25",
+        "tag": "v25",
+        "release_notes": "faster sampler",
+        "min_cuda_version": None,
+    }
+
+
+def test_latest_comfygen_derives_tag_and_null_notes(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_manifest, "_CACHE_PATH", tmp_path / "m.json")
+    runtime_manifest._cache_reset()
+    body = {
+        "manifest_version": 1,
+        "comfygen_serverless": {"image": "hearmeman/comfyui-serverless:v25"},
+    }
+    monkeypatch.setattr(runtime_manifest._cffi_requests, "get", MagicMock(return_value=_response(body)))
+    out = runtime_manifest.latest_comfygen()
+    assert out["tag"] == "v25"
+    assert out["release_notes"] is None
+
+
+def test_latest_comfygen_falls_back_to_image_constant(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_manifest, "_CACHE_PATH", tmp_path / "m.json")
+    runtime_manifest._cache_reset()
+    monkeypatch.setattr(runtime_manifest._cffi_requests, "get",
+                        MagicMock(side_effect=RuntimeError("offline")))
+    out = runtime_manifest.latest_comfygen()
+    assert out["image"] == runtime_manifest.FALLBACK_DOCKER_IMAGE
+    assert out["tag"] == "v24"
+
+
+def test_latest_comfygen_ignores_malformed_tag_field(monkeypatch, tmp_path):
+    # Regression (sgs-ui-cxs breaker HIGH): a non-vN `tag` field must NOT mask a
+    # real update — the comparable tag comes from the validated image suffix.
+    monkeypatch.setattr(runtime_manifest, "_CACHE_PATH", tmp_path / "m.json")
+    runtime_manifest._cache_reset()
+    body = {
+        "manifest_version": 1,
+        "comfygen_serverless": {
+            "image": "hearmeman/comfyui-serverless:v25",
+            "tag": "stable",
+            "channel": "stable",
+        },
+    }
+    monkeypatch.setattr(runtime_manifest._cffi_requests, "get", MagicMock(return_value=_response(body)))
+    assert runtime_manifest.latest_comfygen()["tag"] == "v25"
+
+
+def test_latest_comfygen_parses_min_cuda_version(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_manifest, "_CACHE_PATH", tmp_path / "m.json")
+    runtime_manifest._cache_reset()
+    body = {
+        "manifest_version": 1,
+        "comfygen_serverless": {"image": "hearmeman/comfyui-serverless:v27", "min_cuda_version": "13.0"},
+    }
+    monkeypatch.setattr(runtime_manifest._cffi_requests, "get", MagicMock(return_value=_response(body)))
+    assert runtime_manifest.latest_comfygen()["min_cuda_version"] == "13.0"
+
+
+def test_latest_comfygen_min_cuda_none_when_absent_or_invalid(monkeypatch, tmp_path):
+    monkeypatch.setattr(runtime_manifest, "_CACHE_PATH", tmp_path / "m.json")
+    for cuda in (None, "thirteen", "13", "", "١٣.٠"):  # last: Unicode digits must be rejected
+        runtime_manifest._cache_reset()
+        section = {"image": "hearmeman/comfyui-serverless:v27"}
+        if cuda is not None:
+            section["min_cuda_version"] = cuda
+        body = {"manifest_version": 1, "comfygen_serverless": section}
+        monkeypatch.setattr(runtime_manifest._cffi_requests, "get", MagicMock(return_value=_response(body)))
+        assert runtime_manifest.latest_comfygen()["min_cuda_version"] is None, cuda

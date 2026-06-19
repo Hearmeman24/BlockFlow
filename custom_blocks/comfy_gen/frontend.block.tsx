@@ -126,6 +126,13 @@ interface TextOverrideInfo {
   field_name?: string
 }
 
+// sgs-ui-lix0: a value surfaced from a node tagged `<title>_ComfyGen`. Shaped as
+// a WorkflowSetting (so it reuses the settings panel + merge plumbing) plus the
+// node's current literal value for pre-populating the input.
+interface ComfygenOverrideInfo extends WorkflowSetting {
+  current_value: number | string
+}
+
 interface ResolutionNodeInfo {
   node_id: string
   class_type: string
@@ -605,6 +612,11 @@ function ComfyGenBlock({
   // mount-time re-parse to drop suppressed nodes from all 7 detection arrays.
   const [hiddenNodes, setHiddenNodes] = useSessionState<string[]>(`block_${blockId}_hidden_nodes`, [])
   const [workflowSettingsOverridesByScope, setWorkflowSettingsOverridesByScope] = useSessionState<Record<string, Record<string, string>>>(`block_${blockId}_workflow_settings_overrides`, {})
+  // sgs-ui-lix0: values surfaced from `_ComfyGen`-tagged nodes (detected by the
+  // backend) + the user's edits keyed `<node_id>.<field>`. Rendered in their own
+  // "Workflow-Specific Overrides" section and applied via mergeSettingsOverrides.
+  const [comfygenOverrides, setComfygenOverrides] = useSessionState<ComfygenOverrideInfo[]>(`block_${blockId}_comfygen_overrides`, [])
+  const [comfygenOverrideValues, setComfygenOverrideValues] = useSessionState<Record<string, string>>(`block_${blockId}_comfygen_override_values`, {})
   const [availableLoras, setAvailableLoras] = useState<string[]>([])
   const [availableSamplers, setAvailableSamplers] = useState<string[]>([])
   const [availableSchedulers, setAvailableSchedulers] = useState<string[]>([])
@@ -1045,6 +1057,9 @@ function ComfyGenBlock({
 
         const detectedTextOverrides = dropHidden((data.text_overrides || []) as TextOverrideInfo[], hidden)
         setTextOverrides(detectedTextOverrides)
+
+        // sgs-ui-lix0: values from `_ComfyGen`-tagged nodes.
+        setComfygenOverrides(dropHidden((data.comfygen_overrides || []) as ComfygenOverrideInfo[], hidden))
         setTextValues((prev) => {
           const next: Record<string, string> = {}
           for (const to of detectedTextOverrides) {
@@ -1144,6 +1159,7 @@ function ComfyGenBlock({
       setLoraNodes([])
       setLoraOverrides({})
       setAddedLoras([])
+      setComfygenOverrides([])
       setOutputType('')
       setOutputHint?.('')
       return ''
@@ -1203,6 +1219,9 @@ function ComfyGenBlock({
 
         const detectedTextOverrides = dropHidden((data.text_overrides || []) as TextOverrideInfo[], hidden)
         setTextOverrides(detectedTextOverrides)
+
+        // sgs-ui-lix0: values from `_ComfyGen`-tagged nodes.
+        setComfygenOverrides(dropHidden((data.comfygen_overrides || []) as ComfygenOverrideInfo[], hidden))
 
         const detectedResNodes = dropHidden((data.resolution_nodes || []) as ResolutionNodeInfo[], hidden)
         setResolutionNodes(detectedResNodes)
@@ -1501,6 +1520,27 @@ function ComfyGenBlock({
     })
   }, [settingsScope, setWorkflowSettingsOverridesByScope])
 
+  // sgs-ui-lix0: hide _ComfyGen-detected fields whose <node_id>.<field> is
+  // already driven by an auto-detected panel OR declared as a preset knob —
+  // the existing panel wins, only un-claimed inputs show in their own section.
+  const visibleComfygenOverrides = useMemo(() => {
+    const presetKeys = new Set(workflowSettings.map((s) => `${s.node_id}.${s.field}`))
+    return comfygenOverrides.filter((o) => {
+      const key = `${o.node_id}.${o.field}`
+      return !autoDetectedKeys.has(key) && !presetKeys.has(key)
+    })
+  }, [comfygenOverrides, autoDetectedKeys, workflowSettings])
+  const setComfygenOverrideValue = useCallback((key: string, value: string) => {
+    setComfygenOverrideValues((prev) => ({ ...prev, [key]: value }))
+  }, [setComfygenOverrideValues])
+  const resetComfygenOverrideValue = useCallback((key: string) => {
+    setComfygenOverrideValues((prev) => {
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+  }, [setComfygenOverrideValues])
+
   // Build base overrides from current UI state (shared by single and batch paths)
   const buildBaseOverrides = useCallback((freshInputs: Record<string, unknown>) => {
     const fileInputs: Record<string, { field: string; media_url: string }> = {}
@@ -1547,8 +1587,11 @@ function ComfyGenBlock({
     // render an overlapping row, and mergeSettingsOverrides won't clobber an
     // existing key either — belt + suspenders).
     const merged = mergeSettingsOverrides(overrides, visibleWorkflowSettings, workflowSettingsOverrides)
-    return { fileInputs, overrides: merged, bypassLoras }
-  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, moePairs, moeOverrides, visibleWorkflowSettings, workflowSettingsOverrides, getUpstreamProducerValues, blockId, upstreamPromptOptions, resolveFieldSourceValue])
+    // sgs-ui-lix0: layer _ComfyGen-tagged overrides on top. Same merge helper, so
+    // any key an earlier panel already set still wins (won't be clobbered).
+    const mergedAll = mergeSettingsOverrides(merged, visibleComfygenOverrides, comfygenOverrideValues)
+    return { fileInputs, overrides: mergedAll, bypassLoras }
+  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, moePairs, moeOverrides, visibleWorkflowSettings, workflowSettingsOverrides, visibleComfygenOverrides, comfygenOverrideValues, getUpstreamProducerValues, blockId, upstreamPromptOptions, resolveFieldSourceValue])
 
   // Timers/listeners live inside registerExecute's closure and are cleared
   // on AbortSignal (see onAbort handlers below) — react-doctor's
@@ -2844,6 +2887,57 @@ function ComfyGenBlock({
         </CollapsibleSection>
       )}
 
+      {/* sgs-ui-lix0: Workflow-Specific Overrides — values from nodes the author
+          tagged `<title>_ComfyGen`, minus any input another panel already drives. */}
+      {visibleComfygenOverrides.length > 0 && (
+        <CollapsibleSection
+          label="Workflow-Specific Overrides"
+          badge={visibleComfygenOverrides.length > 1 ? `${visibleComfygenOverrides.length} fields` : undefined}
+        >
+          {visibleComfygenOverrides.map((o) => {
+            const key = `${o.node_id}.${o.field}`
+            const raw = comfygenOverrideValues[key]
+            const hasOverride = raw !== undefined && raw !== ''
+            const defaultVal = String(o.current_value)
+            const display = hasOverride ? raw : defaultVal
+            return (
+              <div key={key} className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <Label className="text-xs">{o.label}</Label>
+                  {hasOverride && (
+                    <button
+                      type="button"
+                      onClick={() => resetComfygenOverrideValue(key)}
+                      title="Reset to workflow value"
+                      className="text-[10px] text-muted-foreground hover:text-foreground px-1"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+                {o.type === 'int' || o.type === 'float' ? (
+                  <Input
+                    type="number"
+                    value={display}
+                    onChange={(e) => setComfygenOverrideValue(key, e.target.value)}
+                    placeholder="Workflow value"
+                    step={o.type === 'int' ? 1 : undefined}
+                    className="h-7 text-xs"
+                  />
+                ) : (
+                  <Input
+                    value={display}
+                    onChange={(e) => setComfygenOverrideValue(key, e.target.value)}
+                    placeholder="Workflow value"
+                    className="h-7 text-xs"
+                  />
+                )}
+              </div>
+            )
+          })}
+        </CollapsibleSection>
+      )}
+
       {/* Text overrides — grouped by node label */}
       {Object.entries(textOverrideGroups).map(([groupLabel, items]) => {
         const renderTextField = (to: TextOverrideInfo, showLabel: boolean) => {
@@ -3044,6 +3138,9 @@ export const blockDef: BlockDef = {
     // Workflow Settings panel just like the other panels.
     'workflow_settings',
     'workflow_settings_overrides',
+    // sgs-ui-lix0: _ComfyGen-tagged detected fields + the user's edits.
+    'comfygen_overrides',
+    'comfygen_override_values',
     'output_type',
     'lock_seed',
     'automate_enabled',

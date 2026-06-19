@@ -1593,6 +1593,71 @@ def _detect_text_overrides(workflow: dict[str, Any]) -> list[dict[str, Any]]:
     return overrides
 
 
+_COMFYGEN_SUFFIX = "_ComfyGen"
+
+
+def _comfygen_value_type(value: Any) -> str | None:
+    """Map a literal input value to a WorkflowSetting type, or None if it is not
+    an overrideable String/Int/Float. bool is a subclass of int in Python, so it
+    must be rejected before the int check."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "string"
+    return None
+
+
+def _detect_comfygen_overrides(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    """Surface overrideable values from nodes tagged via their title.
+
+    Any node whose _meta.title ends with "_ComfyGen" exposes EACH of its literal
+    String/Int/Float (non-bool) inputs as an entry {node_id, field, label, type,
+    current_value}, keyed <node_id>.<field> for runtime override. Wired inputs
+    (value is [node_id, slot]) are skipped. The label strips the suffix; when a
+    node yields more than one field, each is disambiguated by its input name.
+    """
+    results: list[dict[str, Any]] = []
+
+    for node_id, node in workflow.items():
+        if not isinstance(node, dict):
+            continue
+        title = node.get("_meta", {}).get("title", "")
+        if not isinstance(title, str) or not title.endswith(_COMFYGEN_SUFFIX):
+            continue
+
+        stripped = title[: -len(_COMFYGEN_SUFFIX)].rstrip(" _")
+        inputs = node.get("inputs", {})
+        if not isinstance(inputs, dict):
+            continue
+
+        # Collect qualifying literal inputs in declaration order.
+        fields: list[tuple[str, str, Any]] = []  # (input_name, type, value)
+        for input_name, value in inputs.items():
+            vtype = _comfygen_value_type(value)
+            if vtype is not None:
+                fields.append((input_name, vtype, value))
+
+        multi = len(fields) > 1
+        for input_name, vtype, value in fields:
+            if multi:
+                label = f"{stripped} · {input_name}" if stripped else input_name
+            else:
+                label = stripped or input_name
+            results.append({
+                "node_id": node_id,
+                "field": input_name,
+                "label": label,
+                "type": vtype,
+                "current_value": value,
+            })
+
+    return results
+
+
 # ---- Progress parsing ----
 
 # Matches: [258s] inference: (33/57) KSampler Step 1/4 (38%
@@ -2056,6 +2121,7 @@ async def parse_workflow(request: Request) -> JSONResponse:
         frame_counts = _detect_frame_count(workflow)
         ref_video = _detect_reference_video(workflow)
         lora_nodes = _detect_lora_nodes(workflow)
+        comfygen_overrides = _detect_comfygen_overrides(workflow)
         output_type = _detect_output_type(workflow)
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to parse workflow: {e}"}, status_code=400)
@@ -2070,6 +2136,7 @@ async def parse_workflow(request: Request) -> JSONResponse:
         "frame_counts": frame_counts,
         "ref_video": ref_video,
         "lora_nodes": lora_nodes,
+        "comfygen_overrides": comfygen_overrides,
         "output_type": output_type,
     })
 

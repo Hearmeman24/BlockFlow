@@ -30,7 +30,7 @@ The lint steps are currently `continue-on-error: true` while pre-existing debt i
 
 The repo supports two block sources:
 
-- `custom_blocks/` — public, ships in the OSS build, must not contain hardcoded private values.
+- `custom_blocks/` — public, ships in the source-available build, must not contain hardcoded private values.
 - `private_blocks/` — gitignored overlay for blocks that depend on private infrastructure (private RunPod endpoints, internal LoRA volumes, etc.). The codegen + backend block-sidecar loader scan both dirs. See [`private-blocks.md`](private-blocks.md).
 
 If your block can ship with sensible defaults and Settings-based configuration, it belongs in `custom_blocks/`. If it depends on infrastructure that other users won't have, put it in `private_blocks/` and gitignore your local copy.
@@ -48,5 +48,10 @@ If your block can ship with sensible defaults and Settings-based configuration, 
 
 ## License
 
-By contributing you agree your contribution will be licensed under the MIT
-License (see [`../LICENSE`](../LICENSE)).
+By contributing you agree that your contribution may be licensed as part of
+BlockFlow under the PolyForm Noncommercial License 1.0.0 (see
+[`../LICENSE`](../LICENSE)).
+
+You also grant the project maintainers permission to include your contribution
+in separately licensed commercial versions of BlockFlow. If you cannot grant
+both rights, do not submit the contribution.

@@ -1,8 +1,8 @@
 # sgs-ui / BlockFlow
 
 Distributed visual pipeline UI for AI image and video generation. BlockFlow runs
-locally for each user, but this repository is a released OSS/npm project rather
-than a private scratch app.
+locally for each user, but this repository is a released source-available/npm
+project rather than a private scratch app.
 
 ## Tech Stack
 

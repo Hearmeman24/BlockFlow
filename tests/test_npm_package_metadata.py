@@ -52,6 +52,8 @@ def test_npm_package_smoke_script_exercises_clean_packaged_launch():
     assert "BLOCKFLOW_NO_OPEN" in script
     assert "comfy-gen" in script
     assert "/api/runs?limit=1" in script
+    assert "SMOKE_STARTUP_TIMEOUT_MS" in script
+    assert "process.platform === 'win32' ? 420_000 : 180_000" in script
 
 
 def test_npm_publish_workflow_runs_cross_platform_smoke_before_publish():

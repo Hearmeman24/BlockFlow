@@ -1,8 +1,8 @@
 {
   "name": "@hearmeman24/blockflow",
-  "version": "0.1.8",
+  "version": "0.1.11",
   "description": "Local visual pipeline UI for AI image/video generation via RunPod serverless",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "bin": {
     "blockflow": "bin/blockflow.mjs"

@@ -1,9 +1,9 @@
-"""Tests for the seedance VIP `duration` ⇄ `video_urls` interaction.
+"""Tests for the Seedance less-restriction `duration` ⇄ `video_urls` interaction.
 
-PiAPI preview-VIP models (`seedance-2-preview-vip`,
-`seedance-2-fast-preview-vip`) only accept the 5/10/15 duration enum, even
+PiAPI less-restriction models (`seedance-2-less-restriction`,
+`seedance-2-fast-less-restriction`) only accept the 5/10/15 duration enum, even
 when `video_urls` is present. The docs say video references should drive output
-length, but live preview-VIP tasks reject `duration: 0` with
+length, but live less-restriction tasks reject `duration: 0` with
 "invalid duration, use '5' as default".
 
 These tests pin the defensive local behavior: keep the selected enum duration
@@ -30,12 +30,12 @@ mod = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = mod
 _spec.loader.exec_module(mod)
 
-VIP_TYPES = ["seedance-2-preview-vip", "seedance-2-fast-preview-vip"]
+LESS_RESTRICTION_TYPES = ["seedance-2-less-restriction", "seedance-2-fast-less-restriction"]
 
 
-@pytest.mark.parametrize("task_type", VIP_TYPES)
-def test_vip_with_video_keeps_selected_duration(task_type):
-    """With a video reference, preview-VIP still needs a valid duration enum."""
+@pytest.mark.parametrize("task_type", LESS_RESTRICTION_TYPES)
+def test_less_restriction_with_video_keeps_selected_duration(task_type):
+    """With a video reference, less-restriction still needs a valid duration enum."""
     payload = mod._validate_and_build_input(
         {
             "prompt": "make it cinematic",
@@ -50,9 +50,9 @@ def test_vip_with_video_keeps_selected_duration(task_type):
     assert payload["video_urls"] == ["https://tmpfiles.org/dl/abc/clip.mp4"]
 
 
-@pytest.mark.parametrize("task_type", VIP_TYPES)
-def test_vip_without_video_keeps_duration(task_type):
-    """Image/text VIP runs still carry the chosen duration enum (5/10/15)."""
+@pytest.mark.parametrize("task_type", LESS_RESTRICTION_TYPES)
+def test_less_restriction_without_video_keeps_duration(task_type):
+    """Image/text less-restriction runs still carry the chosen duration enum (5/10/15)."""
     payload = mod._validate_and_build_input(
         {
             "prompt": "a woman walks",
@@ -78,15 +78,14 @@ def test_seedance_converts_local_output_image_refs_to_public_urls(monkeypatch):
     payload = mod._validate_and_build_input(
         {
             "prompt": "make it move",
-            "mode": "omni_reference",
             "duration": 5,
-            "resolution": "480p",
+            "resolution": "720p",
             "aspect_ratio": "3:4",
             "image_urls": ["/outputs/gpt_image_piapi/frame.png"],
             "video_urls": ["/outputs/video_viewer/clip.mp4"],
             "audio_urls": ["/outputs/tts/voice.mp3"],
         },
-        "seedance-2-fast",
+        "seedance-2-fast-less-restriction",
     )
 
     assert payload["image_urls"] == ["https://tmpfiles.test/dl/frame.png"]
@@ -94,8 +93,8 @@ def test_seedance_converts_local_output_image_refs_to_public_urls(monkeypatch):
     assert payload["audio_urls"] == ["https://tmpfiles.test/dl/voice.mp3"]
 
 
-@pytest.mark.parametrize("task_type", VIP_TYPES)
-def test_vip_with_video_rejects_invalid_duration(task_type):
+@pytest.mark.parametrize("task_type", LESS_RESTRICTION_TYPES)
+def test_less_restriction_with_video_rejects_invalid_duration(task_type):
     """Avoid sending invalid auto sentinels that PiAPI turns into 5s outputs."""
     with pytest.raises(ValueError, match="duration"):
         mod._validate_and_build_input({
@@ -105,6 +104,33 @@ def test_vip_with_video_rejects_invalid_duration(task_type):
             "aspect_ratio": "16:9",
             "video_urls": ["https://tmpfiles.org/dl/abc/clip.mp4"],
         }, task_type)
+
+
+@pytest.mark.parametrize(
+    ("task_type", "resolution"),
+    [("seedance-2", "1080p"), ("seedance-2-fast", "480p")],
+)
+def test_standard_seedance_models_keep_mode_driven_payload(task_type, resolution):
+    payload = mod._validate_and_build_input(
+        {
+            "prompt": "x",
+            "mode": "omni_reference",
+            "duration": 7,
+            "resolution": resolution,
+            "aspect_ratio": "9:16",
+            "image_urls": ["https://tmpfiles.org/dl/abc/frame.png"],
+        },
+        task_type,
+    )
+
+    assert payload == {
+        "prompt": "x",
+        "mode": "omni_reference",
+        "duration": 7,
+        "resolution": resolution,
+        "aspect_ratio": "9:16",
+        "image_urls": ["https://tmpfiles.org/dl/abc/frame.png"],
+    }
 
 
 def test_run_route_passes_selected_duration_to_job(monkeypatch):
@@ -136,7 +162,7 @@ def test_run_route_passes_selected_duration_to_job(monkeypatch):
         "/run",
         json={
             "piapi_api_key": "test-key",
-            "task_type": "seedance-2-preview-vip",
+            "task_type": "seedance-2-less-restriction",
             "prompt": "make it cinematic",
             "duration": 10,
             "resolution": "720p",
@@ -147,7 +173,7 @@ def test_run_route_passes_selected_duration_to_job(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert captured["task_type"] == "seedance-2-preview-vip"
+    assert captured["task_type"] == "seedance-2-less-restriction"
     assert captured["input_payload"] == {
         "prompt": "make it cinematic",
         "aspect_ratio": "16:9",

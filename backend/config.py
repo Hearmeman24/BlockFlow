@@ -251,7 +251,7 @@ DEFAULT_FIXED_SEED = int(os.getenv("DEFAULT_FIXED_SEED", "42"))
 DEFAULT_NEGATIVE_PROMPT = os.getenv("DEFAULT_NEGATIVE_PROMPT", "")
 
 # Named-LoRA defaults used by private blocks (generation, wan_22_image_to_video).
-# Public OSS build defaults are empty; private deployments supply via env.
+# Public build defaults are empty; private deployments supply via env.
 DEFAULT_NAMED_LORA = os.getenv("DEFAULT_NAMED_LORA", "")
 DEFAULT_NAMED_LORA_BRANCH = os.getenv("DEFAULT_NAMED_LORA_BRANCH", "low")
 DEFAULT_NAMED_LORA_STRENGTH = float(os.getenv("DEFAULT_NAMED_LORA_STRENGTH", "1.0"))

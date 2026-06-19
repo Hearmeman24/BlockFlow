@@ -24,6 +24,6 @@ so it can evolve independently.
 
 ## Reference
 
-- License: [`../LICENSE`](../LICENSE) (MIT)
+- License: [`../LICENSE`](../LICENSE) (PolyForm Noncommercial 1.0.0)
 - Issue tracker: GitHub Issues on the repo
 - Discussions: GitHub Discussions on the repo (Q&A, show-and-tell, preset ideas)

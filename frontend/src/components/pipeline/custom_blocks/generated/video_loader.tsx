@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react'
 import { pickFiles } from '@/lib/file-picker'
 import { postFile } from '@/lib/post-file'
+import { directBackendUrl } from '@/lib/backend-url'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -17,8 +18,8 @@ import {
 } from '@/lib/pipeline/registry'
 import type { VideoRef } from '@/lib/video-ref'
 
-const UPLOAD_ENDPOINT = '/api/blocks/video_loader/upload'
-const SAVE_LOCAL_ENDPOINT = '/api/blocks/video_loader/save-local'
+const UPLOAD_ENDPOINT = directBackendUrl('/api/blocks/video_loader/upload')
+const SAVE_LOCAL_ENDPOINT = directBackendUrl('/api/blocks/video_loader/save-local')
 const FILE_META_ENDPOINT = '/api/file-metadata'
 
 async function fingerprintFile(file: File): Promise<string> {

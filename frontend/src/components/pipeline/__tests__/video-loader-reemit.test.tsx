@@ -11,9 +11,18 @@
  * upload_image_to_tmpfiles already re-emits, which is why image survived.
  */
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { blockDef } from '../custom_blocks/generated/video_loader'
 import { toPublicUrls } from '@/lib/video-ref'
+import { pickFiles } from '@/lib/file-picker'
+
+vi.mock('@/lib/file-picker', () => ({
+  pickFiles: vi.fn(),
+}))
+
+vi.mock('@/lib/settings/client', () => ({
+  getAssetStorageMode: vi.fn().mockResolvedValue('tmpfiles'),
+}))
 
 type ExecuteFn = (inputs: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
 
@@ -40,6 +49,7 @@ describe('video_loader run-time re-emit', () => {
   beforeEach(() => {
     sessionStorage.clear()
     vi.restoreAllMocks()
+    vi.mocked(pickFiles).mockResolvedValue(null)
   })
 
   it('re-emits a VideoRef from execute when URLs come from restored session state (no re-selected file)', async () => {
@@ -88,5 +98,52 @@ describe('video_loader run-time re-emit', () => {
   it('throws from execute when nothing is loaded', async () => {
     const { getExecute } = renderBlock('vl2')
     await expect(getExecute()!({}, new AbortController().signal)).rejects.toThrow(/select a video/i)
+  })
+
+  it('posts selected video bytes directly to FastAPI instead of the Next proxy', async () => {
+    const file = new File(['video-bytes'], 'large clip.mp4', { type: 'video/mp4' })
+    vi.mocked(pickFiles).mockResolvedValue([file])
+    const fetchMock = vi.fn(async (...args: [RequestInfo | URL, RequestInit?]) => {
+      const [url] = args
+      const textUrl = String(url)
+      if (textUrl.endsWith('/save-local')) {
+        return new Response(JSON.stringify({ ok: true, video_url: '/outputs/large-clip.mp4' }), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      if (textUrl.endsWith('/upload')) {
+        return new Response(
+          JSON.stringify({ ok: true, video_url: 'https://tmpfiles.org/dl/abc/large-clip.mp4' }),
+          { headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+      return new Response(JSON.stringify({ has_meta: false }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    renderBlock('direct-upload')
+    fireEvent.click(screen.getByRole('button', { name: /browse/i }))
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:8000/api/blocks/video_loader/save-local',
+        expect.objectContaining({ method: 'POST' }),
+      )
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:8000/api/blocks/video_loader/upload',
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+
+    const saveCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/save-local'))
+    expect(saveCall?.[1]).toEqual(expect.objectContaining({
+      headers: expect.objectContaining({
+        'Content-Type': 'application/octet-stream',
+        'X-Filename': 'large clip.mp4',
+        'X-Content-Type': 'video/mp4',
+      }),
+    }))
   })
 })

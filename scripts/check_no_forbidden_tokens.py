@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """CI gate: refuse public-code paths that contain forbidden tokens.
 
-The OSS build must not ship with private RunPod endpoint IDs, internal
+The public build must not ship with private RunPod endpoint IDs, internal
 bucket names, SSH targets, or other tokens that only make sense for the
 project owner's private deployment. This script enforces that contract.
 
@@ -35,7 +35,7 @@ TOKENS_CS: tuple[str, ...] = (
     "x06nemnipd7rru",
     # Private S3 bucket name
     "hearmeman-loras",
-    # Internal repo name (referenced in docstrings before the OSS push)
+    # Internal repo name (referenced in docstrings before the public push)
     "hearmemanai_lora_training_app_v",
     # NOTE: `LORA_SOURCE_SSH` was on this list during .9 grilling, but it's a
     # variable name (a key) — not a value-leak. The runtime value is env-driven

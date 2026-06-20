@@ -1,5 +1,5 @@
 import { describe, expect, test, vi, beforeAll, beforeEach } from 'vitest'
-import { render, screen, within, fireEvent } from '@testing-library/react'
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react'
 
 // The section is a CollapsibleSection (closed by default) — open it to assert fields.
 async function openSection() {
@@ -111,6 +111,22 @@ describe('ComfyGen _ComfyGen suffix overrides', () => {
     expect(floatInput).toHaveAttribute('step', 'any')
     const intInput = within((await screen.findByText('Steps')).closest('div')!.parentElement!).getByRole('spinbutton')
     expect(intInput).toHaveAttribute('step', '1')
+  })
+
+  test('refreshes a stale persisted int type to float from the backend on mount', async () => {
+    // User's exact situation: the block was detected BEFORE the typing fix, so
+    // sessionStorage holds type:int; the backend now returns type:float. The
+    // mount re-parse must overwrite the stale persisted type.
+    const stale = [{ node_id: '7', field: 'shift', label: 'LowShift', type: 'int', current_value: 5 }]
+    const fresh = [{ node_id: '7', field: 'shift', label: 'LowShift', type: 'float', current_value: 5 }]
+    sessionStorage.setItem('block_b1_comfygen_overrides', JSON.stringify(stale))
+    parseResponse.value = { ok: true, comfygen_overrides: fresh }
+
+    renderBlock()
+    await openSection()
+
+    const input = within((await screen.findByText('LowShift')).closest('div')!.parentElement!).getByRole('spinbutton')
+    await waitFor(() => expect(input).toHaveAttribute('step', 'any'))
   })
 
   test('hides a field already driven by another panel (KSampler steps), keeps siblings', async () => {

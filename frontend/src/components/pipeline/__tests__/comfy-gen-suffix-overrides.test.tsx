@@ -95,6 +95,24 @@ describe('ComfyGen _ComfyGen suffix overrides', () => {
     expect(screen.getByDisplayValue('hi')).toBeInTheDocument()
   })
 
+  test('float field allows decimals (step=any); int restricts to whole (step=1)', async () => {
+    const overrides = [
+      // a whole-number float (e.g. ModelSamplingSD3.shift=5) must still accept decimals
+      { node_id: '7', field: 'shift', label: 'LowShift', type: 'float', current_value: 5 },
+      { node_id: '8', field: 'value', label: 'Steps', type: 'int', current_value: 20 },
+    ]
+    sessionStorage.setItem('block_b1_comfygen_overrides', JSON.stringify(overrides))
+    parseResponse.value = { ok: true, comfygen_overrides: overrides }
+
+    renderBlock()
+    await openSection()
+
+    const floatInput = within((await screen.findByText('LowShift')).closest('div')!.parentElement!).getByRole('spinbutton')
+    expect(floatInput).toHaveAttribute('step', 'any')
+    const intInput = within((await screen.findByText('Steps')).closest('div')!.parentElement!).getByRole('spinbutton')
+    expect(intInput).toHaveAttribute('step', '1')
+  })
+
   test('hides a field already driven by another panel (KSampler steps), keeps siblings', async () => {
     const ksamplers = [{ node_id: '9', class_type: 'KSampler' }]
     const overrides = [

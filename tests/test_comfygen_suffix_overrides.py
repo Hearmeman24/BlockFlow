@@ -59,18 +59,20 @@ def test_string_and_float_types():
 
 
 def test_multi_input_node_surfaces_each_literal_input():
+    # Custom node (not in the object_info map) so the value-guess path is what's
+    # under test here; schema-driven combo skipping is covered separately.
     wf = {
-        "9": {"class_type": "KSamplerAdvanced", "inputs": {
-            "steps": 8, "cfg": 1.0, "sampler_name": "euler",
+        "9": {"class_type": "MyCustomMultiNode", "inputs": {
+            "steps": 8, "cfg": 1.0, "mode": "fast",
             "add_noise": True,            # bool — excluded
             "model": ["3", 0],            # wired — excluded
         }, "_meta": {"title": "Sampler_ComfyGen"}},
     }
     res = _by_key(_detect(wf))
-    assert set(res) == {"9.steps", "9.cfg", "9.sampler_name"}
+    assert set(res) == {"9.steps", "9.cfg", "9.mode"}
     assert res["9.steps"]["type"] == "int"
     assert res["9.cfg"]["type"] == "float"
-    assert res["9.sampler_name"]["type"] == "string"
+    assert res["9.mode"]["type"] == "string"
     # multiple fields → label disambiguated by input name
     assert res["9.steps"]["label"] == "Sampler · steps"
     assert res["9.cfg"]["label"] == "Sampler · cfg"
@@ -117,3 +119,84 @@ def test_all_wired_node_surfaces_nothing():
         }, "_meta": {"title": "Thing_ComfyGen"}},
     }
     assert _detect(wf) == []
+
+
+# ---- Authoritative typing via object_info map + title hints (sgs-ui-xaqf) ----
+
+
+def test_whole_number_float_typed_via_object_info_map():
+    """The core bug: ModelSamplingSD3.shift is FLOAT but ComfyUI saves the
+    whole-number value as bare `5` (a JSON int). The static type map must type
+    it float so the UI allows decimals."""
+    wf = {
+        "292": {"class_type": "ModelSamplingSD3",
+                "inputs": {"model": ["304", 0], "shift": 5},
+                "_meta": {"title": "LowShift_ComfyGen"}},
+    }
+    res = _by_key(_detect(wf))
+    assert "292.shift" in res
+    assert res["292.shift"]["type"] == "float"     # not 'int'
+    assert res["292.shift"]["current_value"] == 5
+    assert res["292.shift"]["label"] == "LowShift"
+    assert "292.model" not in res                  # wired, skipped
+
+
+def test_int_field_stays_int_via_map():
+    wf = {
+        "5": {"class_type": "PrimitiveInt", "inputs": {"value": 20},
+              "_meta": {"title": "Steps_ComfyGen"}},
+    }
+    assert _by_key(_detect(wf))["5.value"]["type"] == "int"
+
+
+def test_combo_input_skipped_via_map():
+    """A tagged node's enum (COMBO) inputs must NOT surface as free-text — only
+    its real int/float/string inputs do. KSampler.sampler_name/scheduler are
+    combos; steps/cfg are int/float."""
+    wf = {
+        "9": {"class_type": "KSampler", "inputs": {
+            "seed": 1, "steps": 8, "cfg": 7.0, "denoise": 1.0,
+            "sampler_name": "euler", "scheduler": "simple",
+        }, "_meta": {"title": "Sampler_ComfyGen"}},
+    }
+    res = _by_key(_detect(wf))
+    assert res["9.steps"]["type"] == "int"
+    assert res["9.cfg"]["type"] == "float"
+    assert "9.sampler_name" not in res
+    assert "9.scheduler" not in res
+
+
+def test_title_type_hint_forces_type_for_unknown_node():
+    """A custom node not in the map: an explicit _ComfyGen_<type> hint forces
+    the type and is stripped from the label."""
+    wf = {
+        "1": {"class_type": "TotallyCustomNode", "inputs": {"value": 5},
+              "_meta": {"title": "Knob_ComfyGen_float"}},
+    }
+    res = _by_key(_detect(wf))
+    assert res["1.value"]["type"] == "float"
+    assert res["1.value"]["label"] == "Knob"       # hint stripped
+
+
+def test_title_hint_overrides_object_info_map():
+    """Explicit author intent beats the schema: _ComfyGen_int on a FLOAT field."""
+    wf = {
+        "292": {"class_type": "ModelSamplingSD3",
+                "inputs": {"model": ["304", 0], "shift": 5},
+                "_meta": {"title": "LowShift_ComfyGen_int"}},
+    }
+    assert _by_key(_detect(wf))["292.shift"]["type"] == "int"
+
+
+def test_unknown_node_no_hint_falls_back_to_value_guess():
+    """No map entry, no hint → legacy value-based guess (imperfect but the
+    documented fallback)."""
+    wf = {
+        "1": {"class_type": "TotallyCustomNode",
+              "inputs": {"a": 5, "b": 5.5, "c": "x"},
+              "_meta": {"title": "Custom_ComfyGen"}},
+    }
+    res = _by_key(_detect(wf))
+    assert res["1.a"]["type"] == "int"
+    assert res["1.b"]["type"] == "float"
+    assert res["1.c"]["type"] == "string"

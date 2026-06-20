@@ -2946,7 +2946,10 @@ function ComfyGenBlock({
                     value={display}
                     onChange={(e) => setComfygenOverrideValue(key, e.target.value)}
                     placeholder="Workflow value"
-                    step={o.type === 'int' ? 1 : undefined}
+                    // float allows decimals; int restricts the spinner to whole
+                    // steps. Types are authoritative (object_info schema), so a
+                    // whole-number float like shift=5 still accepts decimals.
+                    step={o.type === 'float' ? 'any' : 1}
                     className="h-7 text-xs"
                   />
                 ) : (

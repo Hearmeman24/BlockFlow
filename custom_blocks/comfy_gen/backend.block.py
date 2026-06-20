@@ -1594,6 +1594,26 @@ def _detect_text_overrides(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 _COMFYGEN_SUFFIX = "_ComfyGen"
+# Title marker with an optional explicit type hint:
+#   "Shift_ComfyGen"        -> base "Shift", no forced type
+#   "Shift_ComfyGen_float"  -> base "Shift", forced type "float"
+_COMFYGEN_RE = re.compile(r"^(?P<base>.*)_ComfyGen(?:_(?P<hint>int|float|string))?$")
+
+# Authoritative ComfyUI input types, baked from /object_info (sgs-ui-xaqf).
+# A workflow's API JSON cannot distinguish INT from FLOAT for whole numbers
+# (`5` is `5`), so the static map is the source of truth: {class_type:
+# {input_name: "INT"|"FLOAT"|"STRING"|"COMBO"|"BOOLEAN"}}. Regenerate with
+# scripts/gen_comfyui_input_types.py. Missing file → empty map → value-guess.
+_INPUT_TYPES_PATH = Path(__file__).resolve().parent / "data" / "comfyui_input_types.json"
+try:
+    _COMFYUI_INPUT_TYPES: dict[str, dict[str, str]] = json.loads(_INPUT_TYPES_PATH.read_text())
+except (OSError, ValueError):
+    _COMFYUI_INPUT_TYPES = {}
+
+# ComfyUI INPUT_TYPES tag -> our WorkflowSetting type. COMBO (enum) and BOOLEAN
+# are deliberately absent: enums aren't free-text str/int/float, and bool is out
+# of scope — both map to None so the field is skipped.
+_SCHEMA_TYPE_MAP = {"INT": "int", "FLOAT": "float", "STRING": "string"}
 
 
 def _comfygen_value_type(value: Any) -> str | None:
@@ -1611,14 +1631,40 @@ def _comfygen_value_type(value: Any) -> str | None:
     return None
 
 
+def _comfygen_field_type(class_type: str, input_name: str, value: Any, hint: str | None) -> str | None:
+    """Resolve the override type for one input, by priority:
+
+    1. Explicit title hint (author intent wins) — applies to any literal scalar.
+    2. Baked ComfyUI object_info schema (authoritative INT vs FLOAT).
+    3. Value-based guess (legacy fallback for nodes not in the schema).
+
+    Returns None when the input should not surface (wired, bool, enum/COMBO, or
+    an unknown non-scalar).
+    """
+    # Wired inputs ([node_id, slot]) are never overrideable.
+    if isinstance(value, list):
+        return None
+    # A hint forces the type, but only for a real scalar literal (not bool/None).
+    if hint is not None:
+        return hint if _comfygen_value_type(value) is not None else None
+    schema_tag = _COMFYUI_INPUT_TYPES.get(class_type, {}).get(input_name)
+    if schema_tag is not None:
+        # Known input: trust the schema. COMBO/BOOLEAN -> None (skip).
+        return _SCHEMA_TYPE_MAP.get(schema_tag)
+    # Unknown node/input: fall back to the literal's runtime type.
+    return _comfygen_value_type(value)
+
+
 def _detect_comfygen_overrides(workflow: dict[str, Any]) -> list[dict[str, Any]]:
     """Surface overrideable values from nodes tagged via their title.
 
-    Any node whose _meta.title ends with "_ComfyGen" exposes EACH of its literal
-    String/Int/Float (non-bool) inputs as an entry {node_id, field, label, type,
-    current_value}, keyed <node_id>.<field> for runtime override. Wired inputs
-    (value is [node_id, slot]) are skipped. The label strips the suffix; when a
-    node yields more than one field, each is disambiguated by its input name.
+    Any node whose _meta.title ends with "_ComfyGen" (optionally
+    "_ComfyGen_<int|float|string>" to force a type) exposes EACH of its literal
+    String/Int/Float inputs as an entry {node_id, field, label, type,
+    current_value}, keyed <node_id>.<field> for runtime override. Types come
+    from the title hint, then the baked object_info schema, then the literal's
+    value. Wired/bool/enum inputs are skipped. The label strips the suffix; when
+    a node yields more than one field, each is disambiguated by its input name.
     """
     results: list[dict[str, Any]] = []
 
@@ -1626,10 +1672,15 @@ def _detect_comfygen_overrides(workflow: dict[str, Any]) -> list[dict[str, Any]]
         if not isinstance(node, dict):
             continue
         title = node.get("_meta", {}).get("title", "")
-        if not isinstance(title, str) or not title.endswith(_COMFYGEN_SUFFIX):
+        if not isinstance(title, str):
+            continue
+        match = _COMFYGEN_RE.match(title)
+        if not match:
             continue
 
-        stripped = title[: -len(_COMFYGEN_SUFFIX)].rstrip(" _")
+        stripped = match.group("base").rstrip(" _")
+        hint = match.group("hint")
+        class_type = node.get("class_type", "")
         inputs = node.get("inputs", {})
         if not isinstance(inputs, dict):
             continue
@@ -1637,7 +1688,7 @@ def _detect_comfygen_overrides(workflow: dict[str, Any]) -> list[dict[str, Any]]
         # Collect qualifying literal inputs in declaration order.
         fields: list[tuple[str, str, Any]] = []  # (input_name, type, value)
         for input_name, value in inputs.items():
-            vtype = _comfygen_value_type(value)
+            vtype = _comfygen_field_type(class_type, input_name, value, hint)
             if vtype is not None:
                 fields.append((input_name, vtype, value))
 

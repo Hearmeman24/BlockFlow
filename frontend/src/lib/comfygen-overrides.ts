@@ -64,6 +64,20 @@ export interface LoraNodeInfo {
   strength_model?: number
   strength_clip?: number
   chain_id?: number
+  // Power Lora Loader (rgthree) fields (sgs-ui-67rq)
+  lora_key?: string
+  on?: boolean
+  is_power?: boolean
+}
+
+/** One entry in the power_lora_overrides run-body field. */
+export interface PowerLoraEntry {
+  node_id: string
+  lora_key: string
+  on: boolean
+  lora: string
+  strength: number
+  add?: true
 }
 
 export interface LoraOverride {
@@ -134,6 +148,8 @@ export interface BuildOverridesInput {
   refVideoOverrides: Record<string, string>
   loraNodes: LoraNodeInfo[]
   loraOverrides: Record<string, LoraOverride>
+  /** Power Lora Loader (rgthree) overrides keyed by `${node_id}::${lora_key}` (sgs-ui-67rq). */
+  powerLoraOverrides?: Record<string, PowerLoraEntry>
   autoSelect: Record<string, string[]>
   autoNumeric: Record<string, string[]>
   textOverrides: TextOverrideInfo[]
@@ -238,7 +254,7 @@ export function buildMoeInferenceSettings(
   return out
 }
 
-export function buildOverrides(input: BuildOverridesInput): { overrides: Record<string, string>; bypassLoras: string[] } {
+export function buildOverrides(input: BuildOverridesInput): { overrides: Record<string, string>; bypassLoras: string[]; powerLoraOverrides: PowerLoraEntry[] } {
   const overrides: Record<string, string> = {}
   // When chips exist, use the first chip value. Otherwise use the input/slider value.
   const chipOrVal = (key: string, userVal: string | undefined, fallback: unknown) => {
@@ -311,9 +327,11 @@ export function buildOverrides(input: BuildOverridesInput): { overrides: Record<
     }
   }
 
-  // LoRAs
+  // LoRAs — regular path (LoraLoader / LoraLoaderModelOnly).
+  // Power Lora Loader (rgthree) rows are routed to powerLoraOverrides below (sgs-ui-67rq).
   const bypassLoras: string[] = []
   for (const ln of input.loraNodes) {
+    if (ln.is_power) continue  // handled below
     const ov = input.loraOverrides[ln.node_id]
     if (ov?.enabled === false) { bypassLoras.push(ln.node_id); continue }
     // Prefer autoSelect (any length) > loraOverrides > workflow default
@@ -322,6 +340,33 @@ export function buildOverrides(input: BuildOverridesInput): { overrides: Record<
     set(`${ln.node_id}.lora_name`, effectiveLoraName, ln.lora_name)
     set(`${ln.node_id}.strength_model`, ov?.strength_model, ln.strength_model)
     if (ln.class_type === 'LoraLoader') set(`${ln.node_id}.strength_clip`, ov?.strength_clip, ln.strength_clip)
+  }
+
+  // Power Lora Loader overrides — collected from powerLoraOverrides state (keyed node_id::lora_key).
+  // These are submitted as the power_lora_overrides run-body field, never via --override.
+  const powerLoraEntries: PowerLoraEntry[] = []
+  // Collect from detected nodes first (in order), then merge in any user overrides.
+  const seenPowerKeys = new Set<string>()
+  for (const ln of input.loraNodes) {
+    if (!ln.is_power || !ln.lora_key) continue
+    const compositeKey = `${ln.node_id}::${ln.lora_key}`
+    const ov = input.powerLoraOverrides?.[compositeKey]
+    powerLoraEntries.push({
+      node_id: ln.node_id,
+      lora_key: ln.lora_key,
+      on: ov !== undefined ? ov.on : (ln.on ?? true),
+      lora: (ov !== undefined ? ov.lora : undefined) ?? ln.lora_name,
+      strength: ov !== undefined ? ov.strength : (ln.strength_model ?? 1),
+    })
+    seenPowerKeys.add(compositeKey)
+  }
+  // Added power rows (add:true) — those in powerLoraOverrides that are NOT in the detected list
+  if (input.powerLoraOverrides) {
+    for (const [compositeKey, ov] of Object.entries(input.powerLoraOverrides)) {
+      if (seenPowerKeys.has(compositeKey)) continue
+      if (!ov.add) continue
+      powerLoraEntries.push(ov)
+    }
   }
 
   // Text overrides
@@ -340,7 +385,7 @@ export function buildOverrides(input: BuildOverridesInput): { overrides: Record<
     if (val != null && val.trim()) overrides[key] = val.trim()
   }
 
-  return { overrides, bypassLoras }
+  return { overrides, bypassLoras, powerLoraOverrides: powerLoraEntries }
 }
 
 export function computeAutomationAxes(input: {

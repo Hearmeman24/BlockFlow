@@ -63,6 +63,7 @@ import {
   type AutomationAxis,
   type MoePairInfo,
   type MoeOverride,
+  type PowerLoraEntry,
 } from '@/lib/comfygen-overrides'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockById, findBlockInTree } from '@/lib/pipeline/tree-utils'
@@ -185,6 +186,10 @@ interface LoraNodeInfo {
   strength_model?: number
   strength_clip?: number
   chain_id?: number
+  // Power Lora Loader (rgthree) fields (sgs-ui-67rq)
+  lora_key?: string
+  on?: boolean
+  is_power?: boolean
 }
 
 interface LoraOverride {
@@ -387,6 +392,7 @@ function AutoSliderInput({
   max = 2,
   step = 0.05,
   label,
+  compact = false,
 }: {
   value: string
   onChange: (v: string) => void
@@ -397,6 +403,9 @@ function AutoSliderInput({
   max?: number
   step?: number
   label: string
+  // compact: drop the label gutter and render slider+value on one inline line
+  // (for the single-line LoRA rows). Automate badges still wrap below.
+  compact?: boolean
 }) {
   const numVal = value === '' ? 1 : parseFloat(value)
   const safeVal = isNaN(numVal) ? 1 : Math.min(max, Math.max(min, numVal))
@@ -408,8 +417,8 @@ function AutoSliderInput({
 
   return (
     <div className="space-y-1">
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] text-muted-foreground w-8 shrink-0">{label}</span>
+      <div className="flex items-center gap-1.5">
+        {!compact && <span className="text-[10px] text-muted-foreground w-8 shrink-0">{label}</span>}
         <Slider
           min={min}
           max={max}
@@ -417,14 +426,15 @@ function AutoSliderInput({
           value={[safeVal]}
           onValueChange={([v]) => onChange(v.toFixed(2))}
           className="flex-1"
+          aria-label={label}
         />
-        <span className="text-[10px] text-muted-foreground w-8 text-right tabular-nums">{safeVal.toFixed(2)}</span>
+        <span className="text-[10px] text-muted-foreground w-9 text-right tabular-nums">{safeVal.toFixed(2)}</span>
         {automateEnabled && (
           <button type="button" className="text-amber-400 hover:text-amber-300 text-sm font-bold shrink-0" onClick={addValue}>+</button>
         )}
       </div>
       {automateEnabled && multiValues.length > 0 && (
-        <div className="flex flex-wrap gap-1 pl-10">
+        <div className={`flex flex-wrap gap-1 ${compact ? '' : 'pl-10'}`}>
           {multiValues.map((v) => (
             <Badge key={v} variant="secondary" className="text-[10px] px-1.5 py-0 gap-0.5 cursor-pointer hover:bg-destructive/20" onClick={() => onMultiChange(multiValues.filter((x) => x !== v))}>
               {v} <span className="text-muted-foreground/60">x</span>
@@ -590,6 +600,9 @@ function ComfyGenBlock({
   // resolveMoeSteps so clamping/defaults live in one place (the lib).
   const [moePairs, setMoePairs] = useSessionState<MoePairInfo[]>(`block_${blockId}_moe_pairs`, [])
   const [moeOverrides, setMoeOverrides] = useSessionState<Record<string, MoeOverride>>(`block_${blockId}_moe_overrides`, {})
+  // Per-chain expand/collapse for the LoRAs panel (UI-only). Undefined = use the
+  // dense default (collapse all but the first chain when the panel is long).
+  const [expandedChains, setExpandedChains] = useSessionState<Record<number, boolean>>(`block_${blockId}_lora_chains_expanded`, {})
   const [textOverrides, setTextOverrides] = useSessionState<TextOverrideInfo[]>(`block_${blockId}_text_overrides`, [])
   const [textValues, setTextValues] = useSessionState<Record<string, string>>(`block_${blockId}_text_values`, {})
   const [resolutionNodes, setResolutionNodes] = useSessionState<ResolutionNodeInfo[]>(`block_${blockId}_resolution_nodes`, [])
@@ -601,6 +614,10 @@ function ComfyGenBlock({
   const [loraNodes, setLoraNodes] = useSessionState<LoraNodeInfo[]>(`block_${blockId}_lora_nodes`, [])
   const [loraOverrides, setLoraOverrides] = useSessionState<Record<string, LoraOverride>>(`block_${blockId}_lora_overrides`, {})
   const [addedLoras, setAddedLoras] = useSessionState<AddedLora[]>(`block_${blockId}_added_loras`, [])
+  // sgs-ui-67rq: Power Lora Loader (rgthree) overrides — keyed by `${node_id}::${lora_key}`.
+  // Power rows cannot use the --override CLI path (first-dot split), so edits are collected
+  // here and submitted as the power_lora_overrides run-body field for direct workflow mutation.
+  const [powerLoraOverrides, setPowerLoraOverrides] = useSessionState<Record<string, PowerLoraEntry>>(`block_${blockId}_power_lora_overrides`, {})
   // sgs-ui-gb4: preset.workflows[].settings — author-declared knobs surfaced
   // as a flat 'Workflow Settings' panel. The declarations stay in session
   // state so re-mounts don't need to refetch the preset detail; the override
@@ -1600,10 +1617,10 @@ function ComfyGenBlock({
     // per-sampler loop and writes them via the post-loop MoE fan-out instead
     // (single-writer; chip-bypassing). resolveMoeSteps inside the lib applies
     // the clamp/default math, so the call site only forwards raw state.
-    const { overrides, bypassLoras } = buildOverridesPure({
+    const { overrides, bypassLoras, powerLoraOverrides: powerLoraEntries } = buildOverridesPure({
       ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides,
       frameCounts, frameOverrides, refVideo, refVideoOverrides,
-      loraNodes, loraOverrides, autoSelect, autoNumeric,
+      loraNodes, loraOverrides, powerLoraOverrides, autoSelect, autoNumeric,
       textOverrides, textValues, textUpstreamFlags, upstreamPromptText, upstreamPromptTextByField,
       moePairs, moeOverrides,
     })
@@ -1615,8 +1632,8 @@ function ComfyGenBlock({
     // sgs-ui-lix0: layer _ComfyGen-tagged overrides on top. Same merge helper, so
     // any key an earlier panel already set still wins (won't be clobbered).
     const mergedAll = mergeSettingsOverrides(merged, visibleComfygenOverrides, comfygenOverrideValues)
-    return { fileInputs, overrides: mergedAll, bypassLoras }
-  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, moePairs, moeOverrides, visibleWorkflowSettings, workflowSettingsOverrides, visibleComfygenOverrides, comfygenOverrideValues, getUpstreamProducerValues, blockId, upstreamPromptOptions, resolveFieldSourceValue])
+    return { fileInputs, overrides: mergedAll, bypassLoras, powerLoraEntries }
+  }, [nodeMappings, ksamplers, ksamplerOverrides, resolutionNodes, resolutionOverrides, frameCounts, frameOverrides, refVideo, refVideoOverrides, loraNodes, loraOverrides, powerLoraOverrides, autoSelect, autoNumeric, textOverrides, textValues, textUpstreamFlags, moePairs, moeOverrides, visibleWorkflowSettings, workflowSettingsOverrides, visibleComfygenOverrides, comfygenOverrideValues, getUpstreamProducerValues, blockId, upstreamPromptOptions, resolveFieldSourceValue])
 
   // Timers/listeners live inside registerExecute's closure and are cleared
   // on AbortSignal (see onAbort handlers below) — react-doctor's
@@ -1635,7 +1652,7 @@ function ComfyGenBlock({
       setDownloadError('')
       setDownloadStatus('')
 
-      const { fileInputs, overrides: baseOverrides, bypassLoras } = buildBaseOverrides(freshInputs)
+      const { fileInputs, overrides: baseOverrides, bypassLoras, powerLoraEntries } = buildBaseOverrides(freshInputs)
 
       // --- BATCH PATH ---
       const axes = automateEnabled
@@ -1762,6 +1779,7 @@ function ComfyGenBlock({
                 lock_seed: lockSeed || undefined,
                 bypass_loras: bypassLoras.length > 0 ? bypassLoras : undefined,
                 added_loras: addedLoras.length > 0 ? serializeAddedLoras(addedLoras) : undefined,
+                power_lora_overrides: powerLoraEntries.length > 0 ? powerLoraEntries : undefined,
               }),
             })
             const data = await res.json()
@@ -1897,6 +1915,7 @@ function ComfyGenBlock({
           lock_seed: lockSeed || undefined,
           bypass_loras: bypassLoras.length > 0 ? bypassLoras : undefined,
           added_loras: addedLoras.length > 0 ? serializeAddedLoras(addedLoras) : undefined,
+          power_lora_overrides: powerLoraEntries.length > 0 ? powerLoraEntries : undefined,
         }),
       })
       const data = await res.json()
@@ -2640,43 +2659,98 @@ function ComfyGenBlock({
           chainsMap.set(cid, arr)
         }
         const chains = Array.from(chainsMap.entries()).sort((a, b) => a[0] - b[0])
-        const enabledCount = loraNodes.filter((ln) => loraOverrides[ln.node_id]?.enabled !== false).length
-        const totalCount = loraNodes.length + addedLoras.length
-        const enabledTotal = enabledCount + addedLoras.length
+        const addedPowerCount = Object.values(powerLoraOverrides).filter((v) => v.add).length
+        const enabledCount = loraNodes.filter((ln) => {
+          if (ln.is_power && ln.lora_key) {
+            const ov = powerLoraOverrides[`${ln.node_id}::${ln.lora_key}`]
+            return ov !== undefined ? ov.on : (ln.on ?? true)
+          }
+          return loraOverrides[ln.node_id]?.enabled !== false
+        }).length
+        const totalCount = loraNodes.length + addedLoras.length + addedPowerCount
+        const enabledTotal = enabledCount + addedLoras.length + addedPowerCount
         const showChainBadges = chains.length > 1
 
+        // sgs-ui-67rq: render a Power Lora Loader row (per lora_N entry).
+        // Composite key `${node_id}::${lora_key}` avoids collisions when many rows share node_id.
+        // Enable toggle writes `on` in place (NOT bypass/delete — wrong for a multi-LoRA node).
+        const renderPowerRow = (ln: LoraNodeInfo) => {
+          const compositeKey = `${ln.node_id}::${ln.lora_key}`
+          const ov = powerLoraOverrides[compositeKey]
+          const currentLora = ov?.lora ?? ln.lora_name
+          const currentStrength = ov?.strength ?? ln.strength_model ?? 1
+          const isOn = ov !== undefined ? ov.on : (ln.on ?? true)
+          const update = (patch: Partial<PowerLoraEntry>) =>
+            setPowerLoraOverrides((prev) => {
+              const base: PowerLoraEntry = prev[compositeKey] ?? {
+                node_id: ln.node_id,
+                lora_key: ln.lora_key!,
+                on: isOn,
+                lora: currentLora,
+                strength: currentStrength,
+              }
+              return { ...prev, [compositeKey]: { ...base, ...patch } }
+            })
+          return (
+            <div key={`power-${compositeKey}`} className="flex items-center gap-2" title={`${ln.label} · ${ln.lora_key}`}>
+              <button
+                type="button"
+                aria-label={isOn ? `Disable LoRA ${ln.label} ${ln.lora_key}` : `Enable LoRA ${ln.label} ${ln.lora_key}`}
+                onClick={() => update({ on: !isOn })}
+                className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${
+                  isOn ? 'bg-blue-600' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span className={`absolute top-[2px] left-[2px] w-[14px] h-[14px] rounded-full bg-white transition-transform ${
+                  isOn ? 'translate-x-[14px]' : 'translate-x-0'
+                }`} />
+              </button>
+              <div className={`min-w-0 flex-1 ${isOn ? '' : 'opacity-50 pointer-events-none'}`}>
+                {availableLoras.length > 0 ? (
+                  <AutoSelectMulti
+                    value={currentLora}
+                    onValueChange={(v) => update({ lora: v })}
+                    options={availableLoras}
+                    selectedValues={[]}
+                    onSelectedChange={() => {}}
+                    automateEnabled={false}
+                    placeholder={`${ln.label} · ${ln.lora_key}`}
+                    triggerClassName="h-7 text-xs"
+                  />
+                ) : (
+                  <Input
+                    value={currentLora}
+                    onChange={(e) => update({ lora: e.target.value })}
+                    placeholder={`${ln.label} · ${ln.lora_key}`}
+                    className="h-7 text-xs"
+                  />
+                )}
+              </div>
+              {isOn && (
+                <div className="w-28 shrink-0">
+                  <AutoSliderInput
+                    compact
+                    label="Model"
+                    value={String(currentStrength)}
+                    onChange={(v) => update({ strength: parseFloat(v) || 1 })}
+                    multiValues={[]}
+                    onMultiChange={() => {}}
+                    automateEnabled={false}
+                  />
+                </div>
+              )}
+            </div>
+          )
+        }
+
         const renderOriginalRow = (ln: LoraNodeInfo) => {
+          if (ln.is_power) return renderPowerRow(ln)
           const ov = loraOverrides[ln.node_id]
           const hasClip = ln.class_type === 'LoraLoader'
           const isEnabled = ov?.enabled !== false
           return (
-            <div key={`orig-${ln.node_id}`} className="space-y-1.5">
-              <span className="text-[10px] text-muted-foreground">{ln.label}</span>
+            <div key={`orig-${ln.node_id}`} className="space-y-1" title={ln.label}>
               <div className="flex items-center gap-2">
-                <div className={`min-w-0 flex-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
-                  {availableLoras.length > 0 ? (
-                    <AutoSelectMulti
-                      value={ov?.lora_name || ln.lora_name}
-                      onValueChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], lora_name: v } }))}
-                      options={availableLoras}
-                      selectedValues={autoSelect[`${ln.node_id}.lora_name`] || []}
-                      onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ln.node_id}.lora_name`]: vals }))}
-                      automateEnabled={automateEnabled}
-                      placeholder={ln.lora_name}
-                      triggerClassName="h-7 text-xs"
-                    />
-                  ) : (
-                    <Input
-                      value={ov?.lora_name ?? ln.lora_name}
-                      onChange={(e) => setLoraOverrides((prev) => ({
-                        ...prev,
-                        [ln.node_id]: { ...prev[ln.node_id], lora_name: e.target.value },
-                      }))}
-                      placeholder={ln.lora_name}
-                      className="h-7 text-xs"
-                    />
-                  )}
-                </div>
                 <button
                   type="button"
                   aria-label={isEnabled ? `Disable LoRA ${ln.label}` : `Enable LoRA ${ln.label}`}
@@ -2692,27 +2766,60 @@ function ComfyGenBlock({
                     isEnabled ? 'translate-x-[14px]' : 'translate-x-0'
                   }`} />
                 </button>
-              </div>
-              <div className={`space-y-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
-                <AutoSliderInput
-                  label="Model"
-                  value={ov?.strength_model ?? (ln.strength_model != null ? String(ln.strength_model) : '1')}
-                  onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_model: v } }))}
-                  multiValues={autoNumeric[`${ln.node_id}.strength_model`] || []}
-                  onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_model`]: vals }))}
-                  automateEnabled={automateEnabled}
-                />
-                {hasClip && (
-                  <AutoSliderInput
-                    label="CLIP"
-                    value={ov?.strength_clip ?? (ln.strength_clip != null ? String(ln.strength_clip) : '1')}
-                    onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_clip: v } }))}
-                    multiValues={autoNumeric[`${ln.node_id}.strength_clip`] || []}
-                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_clip`]: vals }))}
-                    automateEnabled={automateEnabled}
-                  />
+                <div className={`min-w-0 flex-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
+                  {availableLoras.length > 0 ? (
+                    <AutoSelectMulti
+                      value={ov?.lora_name || ln.lora_name}
+                      onValueChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], lora_name: v } }))}
+                      options={availableLoras}
+                      selectedValues={autoSelect[`${ln.node_id}.lora_name`] || []}
+                      onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ln.node_id}.lora_name`]: vals }))}
+                      automateEnabled={automateEnabled}
+                      placeholder={ln.label}
+                      triggerClassName="h-7 text-xs"
+                    />
+                  ) : (
+                    <Input
+                      value={ov?.lora_name ?? ln.lora_name}
+                      onChange={(e) => setLoraOverrides((prev) => ({
+                        ...prev,
+                        [ln.node_id]: { ...prev[ln.node_id], lora_name: e.target.value },
+                      }))}
+                      placeholder={ln.label}
+                      className="h-7 text-xs"
+                    />
+                  )}
+                </div>
+                {isEnabled && (
+                  <div className="w-28 shrink-0">
+                    <AutoSliderInput
+                      compact
+                      label="Model"
+                      value={ov?.strength_model ?? (ln.strength_model != null ? String(ln.strength_model) : '1')}
+                      onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_model: v } }))}
+                      multiValues={autoNumeric[`${ln.node_id}.strength_model`] || []}
+                      onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_model`]: vals }))}
+                      automateEnabled={automateEnabled}
+                    />
+                  </div>
                 )}
               </div>
+              {hasClip && isEnabled && (
+                <div className="flex items-center gap-2 pl-10">
+                  <span className="text-[10px] text-muted-foreground w-8 shrink-0">CLIP</span>
+                  <div className="w-28 shrink-0">
+                    <AutoSliderInput
+                      compact
+                      label="CLIP"
+                      value={ov?.strength_clip ?? (ln.strength_clip != null ? String(ln.strength_clip) : '1')}
+                      onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_clip: v } }))}
+                      multiValues={autoNumeric[`${ln.node_id}.strength_clip`] || []}
+                      onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_clip`]: vals }))}
+                      automateEnabled={automateEnabled}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )
         }
@@ -2724,20 +2831,7 @@ function ComfyGenBlock({
           const removeAdded = () =>
             setAddedLoras((prev) => prev.filter((x) => x.id !== a.id))
           return (
-            <div key={`added-${a.id}`} className={`space-y-1.5 pl-2 border-l-2 border-dashed ${colors.border}`}>
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-muted-foreground">
-                  added <span className="text-[9px] opacity-60">({a.class_type === 'LoraLoader' ? 'with CLIP' : 'model only'})</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={removeAdded}
-                  title="Remove added LoRA"
-                  className="text-[10px] text-muted-foreground hover:text-red-400 px-1"
-                >
-                  ✕
-                </button>
-              </div>
+            <div key={`added-${a.id}`} className={`space-y-1 pl-2 border-l-2 border-dashed ${colors.border}`} title={`added (${a.class_type === 'LoraLoader' ? 'with CLIP' : 'model only'})`}>
               <div className="flex items-center gap-2">
                 <div className="min-w-0 flex-1">
                   <AutoSelectMulti
@@ -2751,41 +2845,91 @@ function ComfyGenBlock({
                     triggerClassName="h-7 text-xs"
                   />
                 </div>
-              </div>
-              <div className="space-y-1">
-                <AutoSliderInput
-                  label="Model"
-                  value={a.strength_model}
-                  onChange={(v) => updateAdded({ strength_model: v })}
-                  multiValues={[]}
-                  onMultiChange={() => {}}
-                  automateEnabled={false}
-                />
-                {hasClip && (
+                <div className="w-28 shrink-0">
                   <AutoSliderInput
-                    label="CLIP"
-                    value={a.strength_clip}
-                    onChange={(v) => updateAdded({ strength_clip: v })}
+                    compact
+                    label="Model"
+                    value={a.strength_model}
+                    onChange={(v) => updateAdded({ strength_model: v })}
                     multiValues={[]}
                     onMultiChange={() => {}}
                     automateEnabled={false}
                   />
-                )}
+                </div>
+                <button
+                  type="button"
+                  onClick={removeAdded}
+                  title="Remove added LoRA"
+                  className="text-[10px] text-muted-foreground hover:text-red-400 px-1 shrink-0"
+                >
+                  ✕
+                </button>
               </div>
+              {hasClip && (
+                <div className="flex items-center gap-2 pl-2">
+                  <span className="text-[10px] text-muted-foreground w-8 shrink-0">CLIP</span>
+                  <div className="w-28 shrink-0">
+                    <AutoSliderInput
+                      compact
+                      label="CLIP"
+                      value={a.strength_clip}
+                      onChange={(v) => updateAdded({ strength_clip: v })}
+                      multiValues={[]}
+                      onMultiChange={() => {}}
+                      automateEnabled={false}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )
         }
 
+        // When the panel is long, collapse all chains but the first by default
+        // and cap the panel height so it can't dominate the canvas.
+        const dense = totalCount > 6
         return (
           <CollapsibleSection
             label="LoRAs"
             badge={enabledTotal === totalCount ? `${totalCount}` : `${enabledTotal}/${totalCount}`}
           >
-            {chains.map(([cid, chainNodes]) => {
+           <div className={dense ? 'space-y-2 max-h-[360px] overflow-y-auto pr-1' : 'space-y-2'}>
+            {chains.map(([cid, chainNodes], chainIndex) => {
               const colors = CHAIN_COLORS[cid % CHAIN_COLORS.length]
               const tail = chainNodes[chainNodes.length - 1]
+              const chainOpen = !showChainBadges || (expandedChains[cid] ?? (!dense || chainIndex === 0))
               const addedForChain = addedLoras.filter((a) => a.chain_anchor === tail.node_id)
               const addLora = () => {
+                // sgs-ui-67rq: Power nodes get a new lora_N appended inside the same node,
+                // not a separate LoraLoader spliced in. Regular nodes keep the existing path.
+                if (tail.is_power) {
+                  // Find the highest lora_N index already in the chain for this node
+                  const powerKeysForNode = Object.keys(powerLoraOverrides).filter(
+                    (k) => k.startsWith(`${tail.node_id}::lora_`)
+                  )
+                  const existingKeys = chainNodes
+                    .filter((n) => n.node_id === tail.node_id && n.lora_key)
+                    .map((n) => n.lora_key!)
+                  const allKeys = [...existingKeys, ...powerKeysForNode.map((k) => k.split('::')[1])]
+                  const maxN = allKeys.reduce((m, k) => {
+                    const n = parseInt(k.replace('lora_', ''), 10)
+                    return isNaN(n) ? m : Math.max(m, n)
+                  }, 0)
+                  const newKey = `lora_${maxN + 1}`
+                  const compositeKey = `${tail.node_id}::${newKey}`
+                  setPowerLoraOverrides((prev) => ({
+                    ...prev,
+                    [compositeKey]: {
+                      node_id: tail.node_id,
+                      lora_key: newKey,
+                      on: true,
+                      lora: '',
+                      strength: 1,
+                      add: true,
+                    },
+                  }))
+                  return
+                }
                 const newEntry: AddedLora = {
                   id: (typeof crypto !== 'undefined' && 'randomUUID' in crypto)
                     ? crypto.randomUUID()
@@ -2800,20 +2944,67 @@ function ComfyGenBlock({
                 }
                 setAddedLoras((prev) => [...prev, newEntry])
               }
+              // sgs-ui-67rq: added power rows for this chain (keyed add:true entries in powerLoraOverrides)
+              const addedPowerForChain = Object.entries(powerLoraOverrides)
+                .filter(([k, v]) => k.startsWith(`${tail.node_id}::`) && v.add)
+                .map(([, v]) => v)
+              const chainCount = chainNodes.length + addedForChain.length + addedPowerForChain.length
               return (
                 <div key={`chain-${cid}`} className="space-y-2">
                   {showChainBadges && (
-                    <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedChains((prev) => ({ ...prev, [cid]: !chainOpen }))}
+                      aria-expanded={chainOpen}
+                      className="flex items-center gap-1.5 w-full text-left hover:opacity-80"
+                    >
+                      <span className="text-[10px] text-muted-foreground w-2 shrink-0">{chainOpen ? '▾' : '▸'}</span>
                       <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium border ${colors.badge}`}>
                         Chain {cid + 1}
                       </span>
-                      <span className="text-[10px] text-muted-foreground">
-                        {chainNodes.length + addedForChain.length} LoRA{chainNodes.length + addedForChain.length === 1 ? '' : 's'}
+                      <span className="text-[10px] text-muted-foreground truncate min-w-0">{chainNodes[0]?.label}</span>
+                      <span className="text-[10px] text-muted-foreground ml-auto shrink-0 tabular-nums">
+                        {chainCount} LoRA{chainCount === 1 ? '' : 's'}
                       </span>
-                    </div>
+                    </button>
                   )}
+                  {chainOpen && (<>
                   {chainNodes.map(renderOriginalRow)}
                   {addedForChain.map((a) => renderAddedRow(a, colors))}
+                  {addedPowerForChain.map((entry) => {
+                    const compositeKey = `${entry.node_id}::${entry.lora_key}`
+                    const remove = () => setPowerLoraOverrides((prev) => {
+                      const next = { ...prev }
+                      delete next[compositeKey]
+                      return next
+                    })
+                    const update = (patch: Partial<PowerLoraEntry>) =>
+                      setPowerLoraOverrides((prev) => ({ ...prev, [compositeKey]: { ...prev[compositeKey], ...patch } }))
+                    return (
+                      <div key={`power-added-${compositeKey}`} className={`flex items-center gap-2 pl-2 border-l-2 border-dashed ${colors.border}`} title={`added (power · ${entry.lora_key})`}>
+                        <div className="min-w-0 flex-1">
+                          <Input
+                            value={entry.lora}
+                            onChange={(e) => update({ lora: e.target.value })}
+                            placeholder="Pick a LoRA..."
+                            className="h-7 text-xs"
+                          />
+                        </div>
+                        <div className="w-28 shrink-0">
+                          <AutoSliderInput
+                            compact
+                            label="Model"
+                            value={String(entry.strength)}
+                            onChange={(v) => update({ strength: parseFloat(v) || 1 })}
+                            multiValues={[]}
+                            onMultiChange={() => {}}
+                            automateEnabled={false}
+                          />
+                        </div>
+                        <button type="button" onClick={remove} title="Remove added LoRA" className="text-[10px] text-muted-foreground hover:text-red-400 px-1 shrink-0">✕</button>
+                      </div>
+                    )
+                  })}
                   <button
                     type="button"
                     onClick={addLora}
@@ -2821,9 +3012,11 @@ function ComfyGenBlock({
                   >
                     <span className="text-sm font-bold leading-none">+</span> Add LoRA to {showChainBadges ? `chain ${cid + 1}` : 'chain'}
                   </button>
+                  </>)}
                 </div>
               )
             })}
+           </div>
           </CollapsibleSection>
         )
       })()}

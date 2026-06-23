@@ -1297,63 +1297,110 @@ def _detect_frame_count(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 _LORA_CLASS_TYPES = {"LoraLoader", "LoraLoaderModelOnly"}
+_POWER_LORA_CLASS_TYPE = "Power Lora Loader (rgthree)"
 
 
 def _detect_lora_nodes(workflow: dict[str, Any]) -> list[dict[str, Any]]:
     """Detect LoRA loader nodes and their current settings.
 
     Returns list of {node_id, class_type, label, lora_name, strength_model, strength_clip?}
+    for regular loaders, and {node_id, lora_key, class_type, label, lora_name, strength_model,
+    on, is_power} for each lora_N entry in Power Lora Loader (rgthree) nodes. All entries are
     ordered by their chain position (follows model input wiring).
     """
+    # Collect one entry per node-level chain participant (for ordering); power nodes
+    # contribute a single chain slot but expand to N rows below.
     lora_nodes: dict[str, dict[str, Any]] = {}
+    # Power rows are stored per (node_id, lora_key) so they can be expanded after ordering.
+    power_rows: dict[str, list[dict[str, Any]]] = {}  # node_id -> list of row dicts
+
     for node_id, node in workflow.items():
         if not isinstance(node, dict):
             continue
         class_type = node.get("class_type", "")
-        if class_type not in _LORA_CLASS_TYPES:
-            continue
         inputs = node.get("inputs", {})
         title = node.get("_meta", {}).get("title", "")
-        entry: dict[str, Any] = {
-            "node_id": node_id,
-            "class_type": class_type,
-            "label": title or class_type,
-            "lora_name": inputs.get("lora_name", ""),
-        }
-        sm = inputs.get("strength_model")
-        if isinstance(sm, (int, float)):
-            entry["strength_model"] = round(float(sm), 3)
-        sc = inputs.get("strength_clip")
-        if isinstance(sc, (int, float)) and class_type == "LoraLoader":
-            entry["strength_clip"] = round(float(sc), 3)
-        # Track which node feeds into this one (for ordering)
-        model_input = inputs.get("model")
-        if isinstance(model_input, list) and len(model_input) >= 2:
-            entry["_model_source"] = str(model_input[0])
-        lora_nodes[node_id] = entry
+
+        if class_type in _LORA_CLASS_TYPES:
+            entry: dict[str, Any] = {
+                "node_id": node_id,
+                "class_type": class_type,
+                "label": title or class_type,
+                "lora_name": inputs.get("lora_name", ""),
+            }
+            sm = inputs.get("strength_model")
+            if isinstance(sm, (int, float)):
+                entry["strength_model"] = round(float(sm), 3)
+            sc = inputs.get("strength_clip")
+            if isinstance(sc, (int, float)) and class_type == "LoraLoader":
+                entry["strength_clip"] = round(float(sc), 3)
+            model_input = inputs.get("model")
+            if isinstance(model_input, list) and len(model_input) >= 2:
+                entry["_model_source"] = str(model_input[0])
+            lora_nodes[node_id] = entry
+
+        elif class_type == _POWER_LORA_CLASS_TYPE:
+            # Collect per-lora_N rows; store a chain-level placeholder for ordering.
+            rows: list[dict[str, Any]] = []
+            for key, val in inputs.items():
+                if not (key.startswith("lora_") and key[5:].isdigit()):
+                    continue
+                if not isinstance(val, dict):
+                    continue
+                # Must have at least the 'lora' field to be a real lora entry
+                if "lora" not in val:
+                    continue
+                raw_strength = val.get("strength", 1)
+                strength_model = round(float(raw_strength), 3) if isinstance(raw_strength, (int, float)) else 1.0
+                row: dict[str, Any] = {
+                    "node_id": node_id,
+                    "lora_key": key,
+                    "class_type": class_type,
+                    "label": title or class_type,
+                    "lora_name": val.get("lora", ""),
+                    "strength_model": strength_model,
+                    "on": bool(val.get("on", True)),
+                    "is_power": True,
+                }
+                rows.append(row)
+            if rows:
+                # Sort rows by lora_N index so lora_1 < lora_2 < ...
+                rows.sort(key=lambda r: int(r["lora_key"][5:]))
+                power_rows[node_id] = rows
+                # Chain placeholder — carries model source for ordering; power rows inherit chain_id
+                placeholder: dict[str, Any] = {"node_id": node_id, "_is_power_placeholder": True}
+                model_input = inputs.get("model")
+                if isinstance(model_input, list) and len(model_input) >= 2:
+                    placeholder["_model_source"] = str(model_input[0])
+                lora_nodes[node_id] = placeholder
 
     # Order by chain: start from nodes whose model source is not another LoRA
-    lora_ids = set(lora_nodes.keys())
+    all_lora_ids = set(lora_nodes.keys())
     ordered: list[dict[str, Any]] = []
     remaining = dict(lora_nodes)
 
-    # Find roots (LoRAs whose model source is not another LoRA)
+    # Find roots (LoRAs whose model source is not another LoRA in the set)
     roots = [nid for nid, n in remaining.items()
-             if n.get("_model_source") not in lora_ids]
-    # Follow chains from roots, assigning a chain_id per root
-    placed = set()
+             if n.get("_model_source") not in all_lora_ids]
+    placed: set[str] = set()
     chain_id = 0
     for root in roots:
-        current = root
+        current: str | None = root
         chain_assigned = False
         while current and current in remaining and current not in placed:
-            node = remaining[current]
+            node_entry = remaining[current]
             placed.add(current)
-            clean = {k: v for k, v in node.items() if not k.startswith("_")}
-            clean["chain_id"] = chain_id
-            ordered.append(clean)
+            if node_entry.get("_is_power_placeholder"):
+                # Expand to one row per lora_N, all sharing this chain_id
+                for row in power_rows.get(current, []):
+                    row_copy = dict(row)
+                    row_copy["chain_id"] = chain_id
+                    ordered.append(row_copy)
+            else:
+                clean = {k: v for k, v in node_entry.items() if not k.startswith("_")}
+                clean["chain_id"] = chain_id
+                ordered.append(clean)
             chain_assigned = True
-            # Find next LoRA that uses this one as model source
             current = next(
                 (nid for nid, n in remaining.items()
                  if n.get("_model_source") == current and nid not in placed),
@@ -1361,15 +1408,75 @@ def _detect_lora_nodes(workflow: dict[str, Any]) -> list[dict[str, Any]]:
             )
         if chain_assigned:
             chain_id += 1
-    # Add any remaining (disconnected) LoRAs — each gets its own chain_id
-    for nid, node in remaining.items():
+
+    # Add any remaining (disconnected) nodes — each gets its own chain_id
+    for nid, node_entry in remaining.items():
         if nid not in placed:
-            clean = {k: v for k, v in node.items() if not k.startswith("_")}
-            clean["chain_id"] = chain_id
+            if node_entry.get("_is_power_placeholder"):
+                for row in power_rows.get(nid, []):
+                    row_copy = dict(row)
+                    row_copy["chain_id"] = chain_id
+                    ordered.append(row_copy)
+            else:
+                clean = {k: v for k, v in node_entry.items() if not k.startswith("_")}
+                clean["chain_id"] = chain_id
+                ordered.append(clean)
             chain_id += 1
-            ordered.append(clean)
 
     return ordered
+
+
+def _apply_power_lora_overrides(workflow: dict, entries: list[dict]) -> dict:
+    """Apply Power Lora Loader overrides by direct workflow mutation.
+
+    Each entry: {node_id, lora_key, on, lora, strength, add?: true}.
+    For a normal entry, mutates workflow[node_id]["inputs"][lora_key] in place
+    (preserving any extra keys). For add:true, inserts a new lora_key only if
+    that key does not already exist in the node. Skips gracefully if the node
+    is missing or is not a Power Lora Loader node.
+    """
+    for entry in entries:
+        node_id = str(entry.get("node_id", ""))
+        lora_key = str(entry.get("lora_key", ""))
+        node = workflow.get(node_id)
+        if not node or not isinstance(node, dict):
+            continue
+        if node.get("class_type") != _POWER_LORA_CLASS_TYPE:
+            continue
+        inputs = node.setdefault("inputs", {})
+        is_add = bool(entry.get("add"))
+        if is_add:
+            # Reallocate to the next free lora_N index on collision rather than
+            # silently dropping the entry (e.g. when a lora_N with no 'lora' field
+            # occupies a slot that escaped detection).
+            if lora_key in inputs:
+                existing_ns = {
+                    int(k[5:]) for k in inputs
+                    if k.startswith("lora_") and k[5:].isdigit()
+                }
+                n = 1
+                while n in existing_ns:
+                    n += 1
+                lora_key = f"lora_{n}"
+            inputs[lora_key] = {
+                "on": bool(entry.get("on", True)),
+                "lora": str(entry.get("lora", "")),
+                "strength": float(entry.get("strength", 1.0)),
+            }
+        else:
+            existing = inputs.get(lora_key)
+            if isinstance(existing, dict):
+                # Merge — preserve any unknown extra keys
+                existing["on"] = bool(entry.get("on", True))
+                existing["lora"] = str(entry.get("lora", existing.get("lora", "")))
+                existing["strength"] = float(entry.get("strength", existing.get("strength", 1.0)))
+            else:
+                inputs[lora_key] = {
+                    "on": bool(entry.get("on", True)),
+                    "lora": str(entry.get("lora", "")),
+                    "strength": float(entry.get("strength", 1.0)),
+                }
+    return workflow
 
 
 _REF_VIDEO_NODES = {"VHS_LoadVideo"}
@@ -2312,15 +2419,18 @@ async def run(request: Request) -> JSONResponse:
     raw_overrides = body.get("overrides", {})  # {"node_id.param": "value"}
     bypass_loras = body.get("bypass_loras", [])  # list of node_id strings to bypass
     added_loras = body.get("added_loras", [])  # list of {chain_anchor, class_type, lora_name, strength_model, strength_clip?}
+    power_lora_overrides = body.get("power_lora_overrides", [])  # list of {node_id, lora_key, on, lora, strength, add?}
     endpoint_id = str(body.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
 
-    # Apply LoRA bypass + insertion before processing
-    if bypass_loras or added_loras:
+    # Apply LoRA bypass + insertion + power-lora overrides before processing
+    if bypass_loras or added_loras or power_lora_overrides:
         workflow = copy.deepcopy(workflow)
         if bypass_loras:
             workflow = _bypass_lora_nodes(workflow, bypass_loras)
         if added_loras:
             workflow = _insert_lora_nodes(workflow, added_loras)
+        if power_lora_overrides:
+            workflow = _apply_power_lora_overrides(workflow, power_lora_overrides)
 
     if not workflow:
         return JSONResponse({"ok": False, "error": "workflow is required"}, status_code=400)

@@ -2983,12 +2983,25 @@ function ComfyGenBlock({
                     return (
                       <div key={`power-added-${compositeKey}`} className={`flex items-center gap-2 pl-2 border-l-2 border-dashed ${colors.border}`} title={`added (power · ${entry.lora_key})`}>
                         <div className="min-w-0 flex-1">
-                          <Input
-                            value={entry.lora}
-                            onChange={(e) => update({ lora: e.target.value })}
-                            placeholder="Pick a LoRA..."
-                            className="h-7 text-xs"
-                          />
+                          {availableLoras.length > 0 ? (
+                            <AutoSelectMulti
+                              value={entry.lora}
+                              onValueChange={(v) => update({ lora: v })}
+                              options={availableLoras}
+                              selectedValues={[]}
+                              onSelectedChange={() => {}}
+                              automateEnabled={false}
+                              placeholder="Pick a LoRA..."
+                              triggerClassName="h-7 text-xs"
+                            />
+                          ) : (
+                            <Input
+                              value={entry.lora}
+                              onChange={(e) => update({ lora: e.target.value })}
+                              placeholder="Pick a LoRA..."
+                              className="h-7 text-xs"
+                            />
+                          )}
                         </div>
                         <div className="w-28 shrink-0">
                           <AutoSliderInput

@@ -317,4 +317,37 @@ describe('ComfyGen Power Lora Loader — add LoRA', () => {
     expect(addedEntry).toBeDefined()
     expect(addedEntry.node_id).toBe('1083')
   })
+
+  // Bug: the added power row rendered a free-text <Input> instead of the LoRA
+  // dropdown the existing power rows use. With LoRAs available, the new row must
+  // be a combobox, never a free-text field.
+  test('added power LoRA row renders the LoRA dropdown, not a free-text input', async () => {
+    const loraNodes = [POWER_LORA_NODES[0]]  // just lora_1
+    parseResponse.value = { ok: true, lora_nodes: loraNodes }
+    sessionStorage.setItem('block_b1_lora_nodes', JSON.stringify(loraNodes))
+    // Make availableLoras non-empty so the dropdown branch is exercised.
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (typeof url === 'string' && url.includes('parse-workflow')) {
+        return new Response(JSON.stringify(parseResponse.value), { status: 200 })
+      }
+      if (typeof url === 'string' && url.includes('/api/blocks/comfy_gen/cache')) {
+        return new Response(JSON.stringify({ ok: true, loras: ['alpha.safetensors', 'beta.safetensors'] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }))
+
+    renderBlock()
+    await openLorasSection()
+
+    // Existing power row becomes a combobox once availableLoras loads.
+    await waitFor(() => expect(screen.getAllByRole('combobox').length).toBeGreaterThanOrEqual(1))
+    const before = screen.getAllByRole('combobox').length
+
+    const addBtn = await screen.findByText(/add lora/i, { selector: 'button, [role="button"], span' })
+    fireEvent.click(addBtn.closest('button') ?? addBtn)
+
+    // The added row must be a dropdown (one more combobox), not a free-text input.
+    await waitFor(() => expect(screen.getAllByRole('combobox').length).toBe(before + 1))
+    expect(screen.queryByPlaceholderText('Pick a LoRA...')).toBeNull()
+  })
 })

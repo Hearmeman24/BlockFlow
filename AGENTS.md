@@ -63,45 +63,12 @@ Block API routes must live under `/api/blocks/<slug>/...`.
 | `docs/testing.md` | Testing/TDD standard |
 | `docs/npm-release.md` | npm release flow |
 
-## Beads Issue Tracker
+## Branches
 
-This project uses `bd` (Beads) for task tracking. Use Beads for every code,
-documentation, release, or repo-maintenance change.
-
-Before changing files:
-
-1. Run `bd prime` for the current workflow context.
-2. Create or identify the bead for the work.
-3. Claim it with `bd update <id> --claim`.
-4. Record the plan, scope, or design in the bead for non-trivial changes.
-
-Do not use TodoWrite, TaskCreate, ad hoc markdown TODO lists, or MEMORY.md files
-for project tracking. Use `bd remember` for persistent project knowledge.
-
-Useful commands:
-
-```bash
-bd ready
-bd show <id>
-bd create --title="..." --description="..." --type=task --priority=2
-bd update <id> --claim
-bd close <id> --reason="..."
-bd prime
-```
-
-Issues live in the local Dolt DB and sync through `refs/dolt/data`.
-`.beads/issues.jsonl` is a passive export and is intentionally ignored.
-
-## Branches And Worktrees
-
-- Use a branch/worktree for every non-trivial task.
-- Branch names should include the Bead ID when practical, for example
-  `sgs-ui-abc-short-slug`.
-- Worktrees should live under `.claude/worktrees/<branch>` so the main checkout
-  remains usable.
-- Keep changes scoped to the bead. Do not fold unrelated cleanup into the same
+- Use a branch for every non-trivial task.
+- Keep changes scoped to the task. Do not fold unrelated cleanup into the same
   branch.
-- Small documentation-only edits may happen in the main checkout when the user
+- Small documentation-only edits may happen directly on `main` when the user
   explicitly asks for an immediate update.
 
 ## Test-Driven Development
@@ -126,7 +93,7 @@ Examples:
 - If code calls a downstream service, assert the payload and call behavior.
 - If code returns data, assert the fields that matter.
 
-Every non-trivial bead must identify edge cases before implementation:
+Every non-trivial change must identify edge cases before implementation:
 
 - empty, missing, malformed, null, or undefined inputs
 - network and external-service failures
@@ -161,7 +128,7 @@ shared helpers, then decide whether the fix belongs in:
 - generated block glue
 - each consuming block, with explicit per-block semantics
 
-For every non-trivial bug bead, record:
+For every non-trivial bug fix, record:
 
 - observed failing surface
 - likely shared contract involved
@@ -170,7 +137,7 @@ For every non-trivial bug bead, record:
 - regression tests covering the affected class, not only the first failing block
 
 A surgical fix is allowed only when it is clearly labeled as an immediate local
-fix and follow-up Beads are filed for the broader class of bug.
+fix and follow-up work is tracked for the broader class of bug.
 
 ## CI And Verification
 
@@ -200,11 +167,10 @@ Markdown or line-numbered output and by checking for contradictory instructions.
 
 Default project-owner workflow:
 
-1. Track the work in Beads.
-2. Work on a Bead-named branch/worktree for non-trivial changes.
-3. Validate with the appropriate gates.
-4. Merge locally to `main` after user review/approval.
-5. Push directly to `origin/main` only after validation and explicit
+1. Work on a branch for non-trivial changes.
+2. Validate with the appropriate gates.
+3. Merge locally to `main` after user review/approval.
+4. Push directly to `origin/main` only after validation and explicit
    in-conversation user confirmation.
 
 Do not push autonomously. Do not push merely because a session is ending. Do not
@@ -292,8 +258,7 @@ Before handing off:
 1. Run `git status --short` and identify all changed files.
 2. Confirm no unrelated user changes were modified or reverted.
 3. Run the relevant verification gates.
-4. Update or close the Bead.
-5. Report what changed, what was verified, and what remains unpushed.
+4. Report what changed, what was verified, and what remains unpushed.
 
 Push only when the user explicitly confirms the validated change should be pushed
 to `main`.

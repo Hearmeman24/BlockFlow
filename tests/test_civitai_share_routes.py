@@ -250,3 +250,32 @@ def test_get_token_prefers_saved_settings_credential(tmp_path, monkeypatch):
     settings_store.set_credential("civitai_api_key", "civ_saved")
 
     assert share_backend._get_token() == "civ_saved"
+
+
+# ----- /job-metadata prompt sourcing -----
+
+def test_job_metadata_falls_back_to_top_level_prompt(client, mocker):
+    """ComfyGen persists the real prompt at job["prompt"]; request["prompt"]
+    is often empty (e.g. upstream Prompt Writer). The share enrichment must
+    surface the actual prompt so CivitAI gets it instead of the generic
+    "AI generation with <models>" fallback."""
+    from backend import services
+    mocker.patch.object(services, "_job_snapshot", return_value={
+        "prompt": "a real prompt that was actually used",
+        "request": {"prompt": "", "width": 1024, "height": 1024},
+        "seed": 42,
+        "model_hashes": {},
+    })
+    resp = client.get("/job-metadata/job-123")
+    assert resp.status_code == 200
+    assert resp.json()["meta"]["prompt"] == "a real prompt that was actually used"
+
+
+def test_job_metadata_prefers_request_prompt_when_present(client, mocker):
+    from backend import services
+    mocker.patch.object(services, "_job_snapshot", return_value={
+        "prompt": "top-level fallback",
+        "request": {"prompt": "explicit request prompt", "width": 1024, "height": 1024},
+    })
+    resp = client.get("/job-metadata/job-123")
+    assert resp.json()["meta"]["prompt"] == "explicit request prompt"

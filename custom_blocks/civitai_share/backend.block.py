@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
@@ -145,9 +145,10 @@ def _build_civitai_meta(
 ) -> dict[str, Any]:
     """Build CivitAI metadata dict from generation metadata.
 
-    manual_resources: user-supplied modelVersionId references appended to the
-    resources list as additive credit. Entries without modelVersionId are
-    dropped. Not added to hashes_map (no AutoV2 available locally).
+    manual_resources: user-supplied modelVersionId references emitted under
+    `civitaiResources` (the field CivitAI links by modelVersionId). Entries
+    without modelVersionId are dropped. Not added to hashes_map/resources (no
+    AutoV2 locally, and CivitAI ignores a modelVersionId in `resources`).
     """
     civitai_meta: dict[str, Any] = {}
 
@@ -222,26 +223,35 @@ def _build_civitai_meta(
                 "hash": autov2,
             })
 
+    # Manual resources carry a modelVersionId but no local hash. CivitAI only
+    # honors modelVersionId from `civitaiResources` (the legacy `resources`
+    # array is matched by hash, so a modelVersionId there is silently ignored —
+    # the "resolves locally but never attaches" bug). Type is omitted; CivitAI
+    # derives it from the resolved version.
+    civitai_resources_list: list[dict[str, Any]] = []
     for entry in (manual_resources or []):
         mvid = entry.get("modelVersionId")
         if mvid is None:
             continue
-        resources_list.append({
-            "type": entry.get("type", "model"),
-            "name": entry.get("name", ""),
-            "modelVersionId": int(mvid),
-        })
+        cr: dict[str, Any] = {"modelVersionId": int(mvid)}
+        if entry.get("name"):
+            cr["modelName"] = entry["name"]
+        if entry.get("versionName"):
+            cr["versionName"] = entry["versionName"]
+        civitai_resources_list.append(cr)
 
     if hashes_map:
         civitai_meta["hashes"] = hashes_map
     if resources_list:
         civitai_meta["resources"] = resources_list
+    if civitai_resources_list:
+        civitai_meta["civitaiResources"] = civitai_resources_list
 
     return civitai_meta
 
 
 @router.post("/share")
-async def share(request: Request) -> JSONResponse:
+def share(body: dict) -> JSONResponse:
     """Upload media and create a single CivitAI post with all images.
 
     Accepts either a single media_url or a list of media_urls.
@@ -252,8 +262,13 @@ async def share(request: Request) -> JSONResponse:
     2. Create one post
     3. Add each image/video to the post with incrementing index
     4. Add tags, set NSFW, publish
+
+    Defined `def` (not `async def`) ON PURPOSE: the body does synchronous blocking
+    I/O (urllib presigns + curl S3 PUTs + tRPC calls, one round per image). A sync
+    path-op runs in FastAPI's threadpool, so a 10-image upload no longer freezes the
+    event loop and stall every other request (e.g. the Artifacts /api/runs poll →
+    ECONNRESET). Do not make this async without offloading the I/O via to_thread.
     """
-    body = await request.json()
     token = body.get("token") or _get_token()
     if not token:
         return JSONResponse({"ok": False, "error": "No CivitAI API key"}, status_code=400)
@@ -273,6 +288,10 @@ async def share(request: Request) -> JSONResponse:
     nsfw = body.get("nsfw", False)
     publish = body.get("publish", True)
     meta = body.get("meta", {})
+    # Per-image metadata aligned with media_urls. Prompt/seed/dims differ per image in
+    # a batch (shared `meta` only covers batch-wide resources), so each image gets its
+    # own. Falls back to the single `meta` when absent or short.
+    metas = body.get("metas") or []
     manual_resources = body.get("manual_resources", []) or []
 
     # Resolve all media files to local paths
@@ -302,13 +321,14 @@ async def share(request: Request) -> JSONResponse:
         if not post_id:
             return JSONResponse({"ok": False, "error": f"Failed to create post: {create_resp}"})
 
-        # Step 3: Add each image/video to the post
-        civitai_meta = _build_civitai_meta(meta, manual_resources=manual_resources)
-
+        # Step 3: Add each image/video to the post, each with ITS OWN metadata.
         for idx, (upload_id, media_type, local_file) in enumerate(uploads):
+            img_meta = metas[idx] if idx < len(metas) and isinstance(metas[idx], dict) else meta
+            civitai_meta = _build_civitai_meta(img_meta, manual_resources=manual_resources)
+
             probed = _probe_dimensions(local_file)
-            real_w = probed[0] if probed else meta.get("width", 1024)
-            real_h = probed[1] if probed else meta.get("height", 1024)
+            real_w = probed[0] if probed else img_meta.get("width", 1024)
+            real_h = probed[1] if probed else img_meta.get("height", 1024)
 
             add_image_input: dict[str, Any] = {
                 "json": {
@@ -453,7 +473,11 @@ async def job_metadata(job_id: str) -> JSONResponse:
     try:
         request_data = job.get("request", {})
         meta = {
-            "prompt": request_data.get("prompt", ""),
+            # request["prompt"] is often empty (e.g. upstream Prompt Writer);
+            # ComfyGen persists the real prompt at the top level. Prefer the
+            # explicit request prompt, else fall back so CivitAI gets the
+            # actual prompt instead of the generic synthesised fallback.
+            "prompt": request_data.get("prompt") or job.get("prompt", ""),
             "negative_prompt": request_data.get("negative_prompt", ""),
             "seed": job.get("seed"),
             "model": job.get("model_cls", ""),
@@ -482,10 +506,12 @@ async def job_metadata(job_id: str) -> JSONResponse:
 
 
 @router.post("/file-metadata")
-async def file_metadata(request: Request) -> JSONResponse:
-    """Read embedded generation metadata from a local media file."""
+def file_metadata(body: dict) -> JSONResponse:
+    """Read embedded generation metadata from a local media file.
+
+    Sync (threadpool) — does blocking file I/O; see the note on `share`.
+    """
     from backend import config, media_meta
-    body = await request.json()
     media_url = body.get("media_url", "")
     if not media_url:
         return JSONResponse({"ok": False, "error": "media_url required"}, status_code=400)
@@ -574,14 +600,16 @@ def _extract_video_frames_grid(video_path: Path, num_frames: int = 4) -> bytes:
 
 
 @router.post("/auto-tags")
-async def auto_tags(request: Request) -> JSONResponse:
-    """Generate tags for media using Gemini Flash Lite via OpenRouter."""
+def auto_tags(body: dict) -> JSONResponse:
+    """Generate tags for media using Gemini Flash Lite via OpenRouter.
+
+    Sync (threadpool) — does a blocking OpenRouter HTTP call; see the note on `share`.
+    """
     from backend import config
 
     if not config.OPENROUTER_API_KEY:
         return JSONResponse({"ok": False, "error": "OPENROUTER_API_KEY not set"}, status_code=400)
 
-    body = await request.json()
     media_url = body.get("media_url", "")
     model_name = body.get("model", "")
     loras = body.get("loras", [])
@@ -666,17 +694,17 @@ async def auto_tags(request: Request) -> JSONResponse:
 
 
 @router.post("/resolve-hashes")
-async def resolve_hashes(request: Request) -> JSONResponse:
+def resolve_hashes(body: dict) -> JSONResponse:
     """Batch-resolve detected SHA256 hashes to CivitAI model versions.
 
     Powers the HITL approval gate: the user sees real model names instead
     of raw AutoV2 hex before clicking Approve. Rows whose hash 404s come
     back with resolved=false so the gate renders 'Unknown — not on CivitAI'
     and the share endpoint excludes them from meta.resources.
+
+    Sync (threadpool) — blocking per-hash HTTP calls; see the note on `share`.
     """
     from backend import civitai_client
-
-    body = await request.json()
     hashes_in = body.get("hashes", []) or []
     seen: dict[str, dict[str, Any] | None] = {}
     out: list[dict[str, Any]] = []
@@ -720,16 +748,16 @@ async def resolve_hashes(request: Request) -> JSONResponse:
 
 
 @router.post("/resolve-resource")
-async def resolve_resource(request: Request) -> JSONResponse:
+def resolve_resource(body: dict) -> JSONResponse:
     """Resolve a user-supplied CivitAI URL or ID to a model version.
 
     Used by the 'Linked resources' UI section so the user can credit
     workflows (which have no detectable hash locally) by pasting their
     civitai.com URL.
+
+    Sync (threadpool) — blocking HTTP call; see the note on `share`.
     """
     from backend import civitai_client
-
-    body = await request.json()
     raw = (body.get("input") or "").strip()
     if not raw:
         return JSONResponse({"ok": False, "error": "input required"})

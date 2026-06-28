@@ -62,6 +62,7 @@ import {
   isVisibleSampler,
   buildMoeOwnedSets,
   buildMoeInferenceSettings,
+  buildResourceMeta,
   type AutomationAxis,
   type MoePairInfo,
   type MoeOverride,
@@ -1809,6 +1810,9 @@ function ComfyGenBlock({
                 const jobMeta: Record<string, unknown> = {
                   seed: ja.seed,
                   software: 'ComfyUI (comfy-gen)',
+                  // Resource hashes drive CivitAI model auto-detection on share.
+                  // Dropping these (regression 49a3280) silently broke detection.
+                  ...buildResourceMeta(ja),
                 }
                 // Extract KSampler settings from the merged overrides.
                 // sgs-ui-8zu (NO DOUBLE-REPORT): the per-node loop SKIPS any
@@ -1938,6 +1942,8 @@ function ComfyGenBlock({
       // Build metadata from UI state + backend response
       const singleMeta: Record<string, unknown> = {
         job_ids: [jobId], seed: jobAny.seed, software: 'ComfyUI (comfy-gen)',
+        // Resource hashes for CivitAI auto-detection (parity with batch path).
+        ...buildResourceMeta(jobAny),
       }
       // KSampler settings from what we submitted.
       // sgs-ui-8zu (NO DOUBLE-REPORT): same as the multi-job reporter — the

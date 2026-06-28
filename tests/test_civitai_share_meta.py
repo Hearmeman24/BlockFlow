@@ -1,9 +1,11 @@
 """Tests for _build_civitai_meta — specifically the manual_resources path.
 
 manual_resources are user-supplied modelVersionId references (typically for
-workflows/checkpoints that don't surface a hash locally). They get appended to
-the resources_list as additive credit. They must NOT be added to hashes_map
-because there's no AutoV2 to attach.
+workflows/checkpoints that don't surface a hash locally). CivitAI only honors a
+modelVersionId when it appears in the `civitaiResources` array — NOT the legacy
+`resources` array (which it matches by hash). So manual entries must be emitted
+under `civitaiResources`, otherwise CivitAI resolves them locally but never
+attaches them to the uploaded image.
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ share_backend = _load_share_backend()
 
 
 def test_no_manual_resources_unchanged_behavior():
-    """Sanity: when no manual_resources passed, output matches today's shape."""
+    """Sanity: auto-detected (hash) resources are unchanged."""
     meta = {
         "prompt": "a cat",
         "model_hashes": {
@@ -39,27 +41,32 @@ def test_no_manual_resources_unchanged_behavior():
         {"type": "lora", "name": "char", "weight": 1.0, "hash": ("A" * 10)},
     ]
     assert civitai_meta["hashes"] == {"lora:char": "A" * 10}
+    assert "civitaiResources" not in civitai_meta
 
 
-def test_manual_resources_appended_to_resources_list():
-    """Manual entries are appended after auto-detected ones, identified by
-    modelVersionId (no hash). Strength defaults to 1.0 when unspecified."""
+def test_manual_resources_emitted_as_civitai_resources():
+    """Manual entries go to civitaiResources keyed by modelVersionId — the only
+    field CivitAI reads for modelVersionId-based attribution. modelName +
+    versionName are carried through for display; no hash exists locally."""
     meta = {"prompt": "x"}
     civitai_meta = share_backend._build_civitai_meta(
         meta,
         manual_resources=[
-            {"modelVersionId": 67890, "name": "WAN 2.2 SVI", "type": "workflow"},
+            {"modelVersionId": 67890, "name": "WAN 2.2 SVI", "versionName": "v1.0",
+             "type": "workflow"},
         ],
     )
-    assert civitai_meta["resources"] == [
-        {"type": "workflow", "name": "WAN 2.2 SVI", "modelVersionId": 67890},
+    assert civitai_meta["civitaiResources"] == [
+        {"modelVersionId": 67890, "modelName": "WAN 2.2 SVI", "versionName": "v1.0"},
     ]
-    # No hash for manual resources — they have no AutoV2 locally.
+    # Manual resources do NOT pollute the legacy hash-based `resources`/`hashes`.
+    assert "resources" not in civitai_meta or civitai_meta["resources"] == []
     assert "hashes" not in civitai_meta or civitai_meta["hashes"] == {}
 
 
 def test_manual_resources_coexist_with_detected_loras():
-    """Both auto + manual appear in resources_list; auto comes first."""
+    """Auto (hash) resources stay in `resources`/`hashes`; manual ones land in
+    `civitaiResources`. The two channels are independent."""
     meta = {
         "prompt": "x",
         "model_hashes": {
@@ -72,19 +79,21 @@ def test_manual_resources_coexist_with_detected_loras():
             {"modelVersionId": 111, "name": "Workflow A", "type": "workflow"},
         ],
     )
-    resources = civitai_meta["resources"]
-    assert len(resources) == 2
-    assert resources[0]["name"] == "lora"  # auto
-    assert resources[1]["modelVersionId"] == 111  # manual
+    assert civitai_meta["resources"] == [
+        {"type": "lora", "name": "lora", "weight": 0.8, "hash": "A" * 10},
+    ]
+    assert civitai_meta["civitaiResources"] == [
+        {"modelVersionId": 111, "modelName": "Workflow A"},
+    ]
 
 
 def test_manual_resources_empty_list_is_noop():
     meta = {"prompt": "x"}
     civitai_meta = share_backend._build_civitai_meta(meta, manual_resources=[])
-    assert "resources" not in civitai_meta or civitai_meta["resources"] == []
+    assert "civitaiResources" not in civitai_meta
 
 
-def test_manual_resource_missing_required_fields_skipped():
+def test_manual_resource_missing_modelversionid_skipped():
     """Defensive: a manual resource with no modelVersionId is dropped (can't
     link without one). Don't fail the whole post for a malformed entry."""
     meta = {"prompt": "x"}
@@ -95,6 +104,6 @@ def test_manual_resource_missing_required_fields_skipped():
             {"modelVersionId": 222, "name": "good", "type": "checkpoint"},
         ],
     )
-    resources = civitai_meta.get("resources", [])
-    assert len(resources) == 1
-    assert resources[0]["modelVersionId"] == 222
+    assert civitai_meta["civitaiResources"] == [
+        {"modelVersionId": 222, "modelName": "good"},
+    ]

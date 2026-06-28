@@ -284,31 +284,38 @@ function CivitAIShareBlock({
         if (res.ok) { const data = await res.json(); if (data.ok) jobMeta = data.meta || {} }
       } catch { /* non-critical */ }
     }
-    if (!jobMeta.model_hashes && !jobMeta.lora_hashes && freshMedia.length > 0) {
+    // Fetch each file's embedded metadata once — used both for shared resource
+    // discovery (hashes are batch-wide) AND for per-image prompt/seed (each image
+    // keeps its OWN; a batch only shares the workflow, not the prompt per frame).
+    const perFileMeta: Record<string, Record<string, unknown>> = {}
+    for (const mediaUrl of freshMedia) {
+      try {
+        const res = await fetch(FILE_META_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ media_url: mediaUrl }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.ok && data.meta) perFileMeta[mediaUrl] = data.meta as Record<string, unknown>
+        }
+      } catch { /* per-file best effort */ }
+    }
+    // Shared resources: take the first file that carries model/lora hashes.
+    if (!jobMeta.model_hashes && !jobMeta.lora_hashes) {
       for (const mediaUrl of freshMedia) {
-        try {
-          const res = await fetch(FILE_META_ENDPOINT, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ media_url: mediaUrl }),
-          })
-          if (res.ok) {
-            const data = await res.json()
-            if (data.ok && data.meta) {
-              const fileMeta = data.meta as Record<string, unknown>
-              if (!jobMeta.prompt && fileMeta.prompt) jobMeta.prompt = fileMeta.prompt
-              if (!jobMeta.seed && fileMeta.seed) jobMeta.seed = fileMeta.seed
-              if (!jobMeta.model && fileMeta.model) jobMeta.model = fileMeta.model
-              if (!jobMeta.model_hashes && fileMeta.model_hashes) jobMeta.model_hashes = fileMeta.model_hashes
-              if (!jobMeta.lora_hashes && fileMeta.lora_hashes) jobMeta.lora_hashes = fileMeta.lora_hashes
-              if (!jobMeta.loras && fileMeta.loras) jobMeta.loras = fileMeta.loras
-              if (!jobMeta.inference_settings && fileMeta.inference_settings) jobMeta.inference_settings = fileMeta.inference_settings
-              if (!jobMeta.width && fileMeta.width) jobMeta.width = fileMeta.width
-              if (!jobMeta.height && fileMeta.height) jobMeta.height = fileMeta.height
-              if (jobMeta.model_hashes || jobMeta.lora_hashes) break
-            }
-          }
-        } catch { /* try next */ }
+        const fileMeta = perFileMeta[mediaUrl]
+        if (!fileMeta) continue
+        if (!jobMeta.prompt && fileMeta.prompt) jobMeta.prompt = fileMeta.prompt
+        if (!jobMeta.seed && fileMeta.seed) jobMeta.seed = fileMeta.seed
+        if (!jobMeta.model && fileMeta.model) jobMeta.model = fileMeta.model
+        if (!jobMeta.model_hashes && fileMeta.model_hashes) jobMeta.model_hashes = fileMeta.model_hashes
+        if (!jobMeta.lora_hashes && fileMeta.lora_hashes) jobMeta.lora_hashes = fileMeta.lora_hashes
+        if (!jobMeta.loras && fileMeta.loras) jobMeta.loras = fileMeta.loras
+        if (!jobMeta.inference_settings && fileMeta.inference_settings) jobMeta.inference_settings = fileMeta.inference_settings
+        if (!jobMeta.width && fileMeta.width) jobMeta.width = fileMeta.width
+        if (!jobMeta.height && fileMeta.height) jobMeta.height = fileMeta.height
+        if (jobMeta.model_hashes || jobMeta.lora_hashes) break
       }
     }
     const upstreamPrompt = typeof freshInputs.prompt === 'string' ? freshInputs.prompt.trim()
@@ -328,7 +335,21 @@ function CivitAIShareBlock({
       lora_hashes: (jobMeta.lora_hashes || {}) as Record<string, string>,
       loras: freshMeta.loras || (jobMeta.loras as Array<{ name: string; strength?: number }>) || [],
     }
-    return { jobMeta, freshMeta, shareMeta }
+    // Per-image meta: shared resources from shareMeta, but prompt/seed/dims from each
+    // image's own embedded metadata so a multi-image post credits each frame correctly.
+    const perImageMetas = freshMedia.map((url) => {
+      const fm = perFileMeta[url] || {}
+      return {
+        ...shareMeta,
+        prompt: (fm.prompt as string) || (shareMeta.prompt as string) || '',
+        negative_prompt: (fm.negative_prompt as string) || shareMeta.negative_prompt,
+        seed: (fm.seed as number | undefined) ?? shareMeta.seed,
+        width: (fm.width as number | undefined) ?? shareMeta.width,
+        height: (fm.height as number | undefined) ?? shareMeta.height,
+      }
+    })
+
+    return { jobMeta, freshMeta, shareMeta, perImageMetas }
   }
 
   // Resolve every detected hash to a CivitAI name in one batched request.
@@ -399,7 +420,7 @@ function CivitAIShareBlock({
       setStatusMessage('Fetching metadata...')
       setStatus('Fetching metadata...')
 
-      const { jobMeta, freshMeta, shareMeta } = await collectMeta(freshInputs, freshMedia)
+      const { jobMeta, freshMeta, shareMeta, perImageMetas } = await collectMeta(freshInputs, freshMedia)
 
       if (!jobMeta.model_hashes && !jobMeta.lora_hashes) {
         const scanned = freshMedia.length
@@ -446,6 +467,7 @@ function CivitAIShareBlock({
             nsfw: decision.nsfw,
             publish: true,
             meta: shareMeta,
+            metas: perImageMetas,
             manual_resources: manualResources,
           }),
         })

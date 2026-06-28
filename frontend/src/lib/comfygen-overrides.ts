@@ -451,6 +451,27 @@ export function computeAutomationAxes(input: {
   return axes
 }
 
+/**
+ * Surface the polled job's resource hashes into the per-job metadata output.
+ *
+ * Regression guard: commit 49a3280 dropped `model_hashes` from jobMeta, which
+ * silently killed CivitAI resource auto-detection (extract-shareable ->
+ * _build_civitai_meta build meta.resources/meta.hashes from these maps). Empty
+ * or missing maps are omitted so the share approval gate correctly reads
+ * "no resources" instead of attaching an empty object.
+ */
+export function buildResourceMeta(job: {
+  model_hashes?: unknown
+  lora_hashes?: unknown
+}): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  const nonEmptyMap = (v: unknown): v is Record<string, unknown> =>
+    typeof v === 'object' && v !== null && Object.keys(v as object).length > 0
+  if (nonEmptyMap(job.model_hashes)) out.model_hashes = job.model_hashes
+  if (nonEmptyMap(job.lora_hashes)) out.lora_hashes = job.lora_hashes
+  return out
+}
+
 export function cartesianProduct(axes: AutomationAxis[]): Record<string, string>[] {
   if (axes.length === 0) return [{}]
   let combos: Record<string, string>[] = [{}]

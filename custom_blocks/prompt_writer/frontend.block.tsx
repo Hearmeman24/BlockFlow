@@ -482,7 +482,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
         <CollapsibleContent>
           <Textarea value={activeSystemPrompt}
             onChange={(e) => updateLocal({ system_prompt: e.target.value })}
-            className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto mt-1.5 text-xs" />
+            className="min-h-[60px] max-h-[480px] resize-y overflow-y-auto mt-1.5 text-xs" />
         </CollapsibleContent>
       </Collapsible>
 
@@ -503,7 +503,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
               ? 'Describe what kind of image prompt you want...'
               : 'Describe what kind of video prompt you want...'
           }
-          className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto text-xs" />
+          className="min-h-[60px] max-h-[480px] resize-y overflow-y-auto text-xs" />
         {/* Extra user prompts */}
         {extraUserPrompts.length > 0 && (
           <div className="space-y-1">
@@ -543,7 +543,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
                         value={extra}
                         onChange={(e) => setExtraUserPrompts((prev) => { const arr = [...prev]; arr[idx] = e.target.value; return arr })}
                         placeholder={`User prompt ${idx + 2}...`}
-                        className="min-h-[60px] max-h-[100px] resize-y overflow-y-auto text-xs border-violet-500/30"
+                        className="min-h-[60px] max-h-[480px] resize-y overflow-y-auto text-xs border-violet-500/30"
                       />
                     </div>
                   ) : (
@@ -593,7 +593,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
                 value={ideaDescription}
                 onChange={(e) => setIdeaDescription(e.target.value)}
                 placeholder="e.g., Travel photo pack in Thailand, varied outfits and beach/city locations"
-                className="min-h-[50px] max-h-[80px] resize-y overflow-y-auto text-xs border-amber-500/30"
+                className="min-h-[50px] max-h-[480px] resize-y overflow-y-auto text-xs border-amber-500/30"
               />
             </div>
             <div className="flex items-center gap-2">
@@ -655,7 +655,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
       {output && (
         <div className="space-y-1">
           <Label className="text-xs">Output</Label>
-          <Textarea value={output} readOnly className="min-h-[72px] max-h-[200px] resize-y overflow-y-auto text-xs" />
+          <Textarea value={output} readOnly className="min-h-[72px] max-h-[480px] resize-y overflow-y-auto text-xs" />
         </div>
       )}
     </div>

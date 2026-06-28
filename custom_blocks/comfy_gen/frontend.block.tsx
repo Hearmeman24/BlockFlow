@@ -3245,7 +3245,7 @@ function ComfyGenBlock({
                     value={textValues[key] ?? ''}
                     onChange={(e) => setTextValues((prev) => ({ ...prev, [key]: e.target.value }))}
                     placeholder={to.current_value ? undefined : 'Enter text...'}
-                    className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto"
+                    className="min-h-[60px] max-h-[480px] text-xs resize-y overflow-y-auto"
                   />
                   {/* Extra prompt textareas in automation mode */}
                   {/* Prompt variants have no stable id; values can be empty/duplicate so index is the only viable key. */}
@@ -3259,7 +3259,7 @@ function ComfyGenBlock({
                           return { ...prev, [key]: arr }
                         })}
                         placeholder={`Prompt variant ${idx + 2}...`}
-                        className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto border-amber-500/30"
+                        className="min-h-[60px] max-h-[480px] text-xs resize-y overflow-y-auto border-amber-500/30"
                       />
                       <button
                         type="button"

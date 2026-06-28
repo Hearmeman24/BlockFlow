@@ -86,7 +86,7 @@ export function PromptSourceControl({
           value={prompt}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => onPromptChange(event.target.value)}
           placeholder={placeholder}
-          className={`min-h-[64px] max-h-[140px] text-[11px] resize-y overflow-y-auto bg-input/30 ${textareaClassName ?? ''}`}
+          className={`min-h-[64px] max-h-[480px] text-[11px] resize-y overflow-y-auto bg-input/30 ${textareaClassName ?? ''}`}
         />
       )}
     </div>

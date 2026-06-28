@@ -89,6 +89,57 @@ def test_sampler_custom_override_map_targets_correct_nodes():
     assert om["scheduler"] == "112.scheduler"
 
 
+def _wired_seed_workflow() -> dict:
+    """SamplerCustom with noise_seed WIRED through a PrimitiveInt to a
+    Seed (rgthree) node (API_Wan2.2_SVI_2pass_V3.json shape). The seed value
+    must resolve through the chain, and the seed override must target the
+    shared source node — not the dead `<sampler>.seed` field that ComfyUI
+    ignores (the sampler's own field is `noise_seed`, and it's wired anyway)."""
+    return {
+        "1006": {
+            "class_type": "SamplerCustom",
+            "inputs": {
+                "add_noise": True,
+                "noise_seed": ["980", 0],
+                "cfg": 1,
+                "sampler": ["125", 0],
+                "sigmas": ["112", 0],
+            },
+        },
+        "1007": {
+            "class_type": "SamplerCustom",
+            "inputs": {
+                "add_noise": True,
+                "noise_seed": ["980", 0],
+                "cfg": 1,
+                "sampler": ["125", 0],
+                "sigmas": ["112", 0],
+            },
+        },
+        "980": {"class_type": "PrimitiveInt", "inputs": {"value": ["984", 0]}},
+        "984": {"class_type": "Seed (rgthree)", "inputs": {"seed": 12345}},
+        "112": {"class_type": "BasicScheduler",
+                 "inputs": {"scheduler": "normal", "steps": 6, "denoise": 1}},
+        "125": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+    }
+
+
+def test_sampler_custom_wired_seed_resolves_through_chain():
+    entries = _detect(_wired_seed_workflow())
+    entry = next(e for e in entries if e["node_id"] == "1006")
+    assert entry["seed"] == 12345
+
+
+def test_sampler_custom_wired_seed_override_targets_source_node():
+    entries = _detect(_wired_seed_workflow())
+    # Both samplers share the same seed source — each must point the override at
+    # the source node's literal field, so the run-time randomize hits a real
+    # input (and dedupes to a single shared seed).
+    for nid in ("1006", "1007"):
+        entry = next(e for e in entries if e["node_id"] == nid)
+        assert entry["override_map"]["seed"] == "984.seed", entry["override_map"]
+
+
 def test_sampler_custom_without_kselect_skips_sampler_name():
     """If sampler is wired to a non-KSamplerSelect node (e.g. SamplerLCM)
     with no sampler_name field, we still detect the node but omit

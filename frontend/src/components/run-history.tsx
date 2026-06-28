@@ -6,14 +6,15 @@ import { ChevronLeft, ChevronRight, EyeOff, Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { useRuns } from '@/lib/hooks'
-import type { MediaKindFilter } from '@/lib/api'
+import { useMcpJobs, useMcpStream, useRuns } from '@/lib/hooks'
+import type { MediaKindFilter, RunSource } from '@/lib/api'
 import { RunCard, findPrimaryArtifact, looksLikeTrainedLora } from './run-card'
 import { EmptyState } from '@/components/empty-state'
 import { AlertPanel } from '@/components/alert-panel'
 import { PageHeader } from '@/components/page-header'
 import { DatasetCard } from './dataset-card'
 import { LoraCard } from './lora-card'
+import { McpPlaceholderCard, isActiveJob } from './mcp-placeholder-card'
 import type { RunEntry } from '@/lib/types'
 
 const PAGE_SIZE = 24
@@ -68,6 +69,7 @@ export function RunHistory() {
   const favoritesOnly = searchParams.get('fav') === '1'
   const hidePartial = searchParams.get('hide_partial') !== '0'
   const mediaKind: MediaKindFilter | null = isMediaKind(searchParams.get('kind')) ? (searchParams.get('kind') as MediaKindFilter) : null
+  const source: RunSource | null = searchParams.get('source') === 'mcp' ? 'mcp' : null
   const urlQuery = searchParams.get('q') ?? ''
   const page = Math.max(1, parseInt(searchParams.get('page') ?? '1', 10) || 1)
 
@@ -97,7 +99,17 @@ export function RunHistory() {
   }, [debouncedQuery]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const offset = (page - 1) * PAGE_SIZE
-  const { runs, total, isLoading, error, mutate } = useRuns(PAGE_SIZE, offset, favoritesOnly, mediaKind, debouncedQuery, hidePartial)
+  const mcpView = source === 'mcp'
+  // SSE drives live updates in MCP view; the 15s poll is a fallback if the stream buffers.
+  const { runs, total, isLoading, error, mutate } = useRuns(
+    PAGE_SIZE, offset, favoritesOnly, mediaKind, debouncedQuery, hidePartial, source, mcpView ? 15000 : 0,
+  )
+  const { jobs: mcpJobs, mutate: mutateJobs } = useMcpJobs(mcpView)
+  useMcpStream(mcpView, () => { mutate(); mutateJobs() })
+
+  const activeJobs = useMemo(() => mcpJobs.filter(isActiveJob), [mcpJobs])
+  // Only show placeholders on page 1 (newest), where freshly-started jobs belong.
+  const placeholders = mcpView && page === 1 ? activeJobs : []
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / PAGE_SIZE)), [total])
   const startIndex = total === 0 ? 0 : offset + 1
@@ -113,6 +125,7 @@ export function RunHistory() {
   }, [isLoading, page, runs.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const setPage = (p: number) => updateParams({ page: p === 1 ? null : String(p) })
+  const setSource = (v: RunSource | 'all') => updateParams({ source: v === 'all' ? null : v, page: null })
   const setMediaKind = (v: MediaKindFilter | 'all') => updateParams({ kind: v === 'all' ? null : v, page: null })
   const toggleFavorites = () => updateParams({ fav: favoritesOnly ? null : '1', page: null })
   const toggleHidePartial = () => updateParams({ hide_partial: hidePartial ? '0' : null, page: null })
@@ -134,8 +147,36 @@ export function RunHistory() {
     </div>
   )
 
+  const sourceTabs: { value: RunSource | 'all'; label: string }[] = [
+    { value: 'all', label: 'All' },
+    { value: 'mcp', label: 'MCP' },
+  ]
+
   const filterBar = (
     <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-1 rounded-md border border-border/60 p-0.5">
+        {sourceTabs.map((t) => {
+          const active = (t.value === 'all' && source == null) || t.value === source
+          const showCount = t.value === 'mcp' && activeJobs.length > 0
+          return (
+            <button
+              key={t.value}
+              type="button"
+              onClick={() => setSource(t.value)}
+              className={`h-7 px-2.5 text-xs rounded transition-colors inline-flex items-center gap-1.5 ${active ? 'bg-foreground/10 text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              {t.label}
+              {showCount && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/20 px-1.5 text-[10px] font-medium text-sky-300">
+                  <span className="size-1.5 rounded-full bg-sky-400 animate-pulse" />
+                  {activeJobs.length}
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+
       <div className="relative flex-1 min-w-[200px] max-w-sm">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
         <Input
@@ -239,10 +280,10 @@ export function RunHistory() {
             </Button>
           </div>
         </div>
-      ) : runs.length === 0 ? (
+      ) : runs.length === 0 && placeholders.length === 0 ? (
         <EmptyState
-          title={hasFilters ? 'No runs match these filters.' : 'No pipeline runs yet.'}
-          description={hasFilters ? undefined : 'Run a pipeline from the Generate page to see results here.'}
+          title={hasFilters ? 'No runs match these filters.' : mcpView ? 'No MCP generations yet.' : 'No pipeline runs yet.'}
+          description={hasFilters ? undefined : mcpView ? 'Ask Claude to generate images via the BlockFlow MCP — they appear here live.' : 'Run a pipeline from the Generate page to see results here.'}
           action={hasFilters ? (
             <button type="button" className="text-sm underline hover:text-foreground text-muted-foreground/70" onClick={clearAll}>
               Clear filters
@@ -252,6 +293,7 @@ export function RunHistory() {
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+            {placeholders.map((job) => <McpPlaceholderCard key={job.job_id} job={job} />)}
             {runs.map((run) => renderCard(run, () => mutate()))}
           </div>
           <div className="flex justify-end">

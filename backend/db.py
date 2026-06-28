@@ -138,8 +138,9 @@ def list_runs(
     media_kind: str | None = None,
     prompt_query: str | None = None,
     hide_partial: bool = False,
+    source: str | None = None,
 ) -> list[dict[str, Any]]:
-    if not media_kind and not prompt_query and not hide_partial:
+    if not media_kind and not prompt_query and not hide_partial and not source:
         conn = _get_conn()
         if favorited_only:
             rows = conn.execute(
@@ -154,7 +155,7 @@ def list_runs(
         conn.close()
         return [_row_to_dict(r) for r in rows]
 
-    filtered = _filtered_runs(favorited_only, media_kind, prompt_query, hide_partial)
+    filtered = _filtered_runs(favorited_only, media_kind, prompt_query, hide_partial, source)
     return filtered[offset : offset + limit]
 
 
@@ -163,8 +164,9 @@ def count_runs(
     media_kind: str | None = None,
     prompt_query: str | None = None,
     hide_partial: bool = False,
+    source: str | None = None,
 ) -> int:
-    if not media_kind and not prompt_query and not hide_partial:
+    if not media_kind and not prompt_query and not hide_partial and not source:
         conn = _get_conn()
         if favorited_only:
             row = conn.execute("SELECT COUNT(*) AS count FROM runs WHERE favorited = 1").fetchone()
@@ -173,7 +175,11 @@ def count_runs(
         conn.close()
         return int(row["count"]) if row else 0
 
-    return len(_filtered_runs(favorited_only, media_kind, prompt_query, hide_partial))
+    return len(_filtered_runs(favorited_only, media_kind, prompt_query, hide_partial, source))
+
+
+# MCP-generated runs use this id prefix (see mcp_server / comfy_gen batch upsert).
+_MCP_RUN_PREFIX = "run-mcp-"
 
 
 def _filtered_runs(
@@ -181,6 +187,7 @@ def _filtered_runs(
     media_kind: str | None,
     prompt_query: str | None,
     hide_partial: bool,
+    source: str | None = None,
 ) -> list[dict[str, Any]]:
     """Load candidate rows and apply Python-side filters. Returns newest-first."""
     conn = _get_conn()
@@ -195,6 +202,11 @@ def _filtered_runs(
     out: list[dict[str, Any]] = []
     for r in rows:
         d = _row_to_dict(r)
+        is_mcp = str(d.get("id", "")).startswith(_MCP_RUN_PREFIX)
+        if source == "mcp" and not is_mcp:
+            continue
+        if source == "pipeline" and is_mcp:
+            continue
         if hide_partial and str(d.get("status", "")).lower() in {"partial", "failed"}:
             continue
         br = d.get("block_results") or []

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import os
@@ -15,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from backend import comfy_gen_cli, config, media_meta, services, state
+from backend import comfy_gen_cli, config, db, media_meta, services, state
 
 router = APIRouter()
 
@@ -600,11 +601,23 @@ def _detect_ksamplers(workflow: dict[str, Any]) -> list[dict[str, Any]]:
             entry["cfg"] = cfg_val
             override_map["cfg"] = f"{node_id}.cfg"
 
-        # Inline noise_seed
-        seed_val = _resolve_input(workflow, inputs.get("noise_seed"))
+        # noise_seed: inline literal, or wired through Primitive/Seed nodes.
+        seed_raw = inputs.get("noise_seed")
+        seed_val = _resolve_input(workflow, seed_raw)
         if isinstance(seed_val, (int, float)):
             entry["seed"] = int(seed_val)
             override_map["seed"] = f"{node_id}.noise_seed"
+        elif isinstance(seed_raw, list):
+            # Wired noise_seed (e.g. ← PrimitiveInt ← Seed (rgthree)). Walk to the
+            # literal source so the override targets a real field, not the dead
+            # `<sampler>.seed` fallback. Samplers sharing a source dedupe to one
+            # seed at randomize time.
+            src = _find_upstream_source(workflow, seed_raw, value_keys=_SEED_VALUE_KEYS)
+            if src:
+                walked = _walk_upstream_value(workflow, seed_raw, value_keys=_SEED_VALUE_KEYS)
+                if walked is not None:
+                    entry["seed"] = int(walked)
+                override_map["seed"] = f"{src[0]}.{src[1]}"
 
         # Trace sampler input → KSamplerSelect (if applicable); other sampler
         # nodes (SamplerLCM, etc.) have no sampler_name and are skipped here
@@ -1038,6 +1051,11 @@ def _detect_moe_pairs(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 
 _PRIMITIVE_TYPES = {"PrimitiveInt", "PrimitiveFloat", "Primitive int [Crystools]"}
 
+# Literal-bearing field names a seed wire can terminate in, in priority order:
+# Seed (rgthree) / Seed nodes use `seed`, RandomNoise uses `noise_seed`,
+# PrimitiveInt uses `value`.
+_SEED_VALUE_KEYS = ("seed", "noise_seed", "value")
+
 
 def _next_upstream_refs(inputs: dict[str, Any], prefer_keys: tuple[str, ...]) -> list[list]:
     """Wired (list) inputs to follow upstream. When prefer_keys is set and the
@@ -1055,11 +1073,15 @@ def _next_upstream_refs(inputs: dict[str, Any], prefer_keys: tuple[str, ...]) ->
 
 
 def _walk_upstream_value(workflow: dict[str, Any], wired_ref: list, max_depth: int = 8,
-                         prefer_keys: tuple[str, ...] = ()) -> int | float | None:
+                         prefer_keys: tuple[str, ...] = (),
+                         value_keys: tuple[str, ...] = ("value",)) -> int | float | None:
     """Follow a wired input upstream to find its literal numeric value.
 
-    Handles chains like: EmptyLTXVLatentVideo.width ← ComfyMathExpression ← PrimitiveInt.
-    prefer_keys biases the walk toward the matching dimension at each hop.
+    Handles chains like: EmptyLTXVLatentVideo.width ← ComfyMathExpression ← PrimitiveInt,
+    or SamplerCustom.noise_seed ← PrimitiveInt ← Seed (rgthree).
+    prefer_keys biases the walk toward the matching dimension at each hop;
+    value_keys are the literal-bearing fields to terminate on (e.g. `value` for
+    dimensions, `seed`/`noise_seed`/`value` for seeds).
     Returns None if no literal value is found within max_depth hops.
     """
     seen: set[str] = set()
@@ -1079,17 +1101,11 @@ def _walk_upstream_value(workflow: dict[str, Any], wired_ref: list, max_depth: i
         if not isinstance(node, dict):
             continue
         inputs = node.get("inputs", {})
-        class_type = node.get("class_type", "")
 
-        # If this is a primitive node, return its value directly
-        if class_type in _PRIMITIVE_TYPES:
-            val = inputs.get("value")
-            if isinstance(val, (int, float)):
-                return val
-
-        # Check for a literal "value" field (generic)
-        if "value" in inputs and isinstance(inputs["value"], (int, float)):
-            return inputs["value"]
+        # Terminate on the first literal-bearing field, in priority order.
+        for vk in value_keys:
+            if vk in inputs and isinstance(inputs[vk], (int, float)):
+                return inputs[vk]
 
         # Follow wired inputs upstream — biased toward the matching dimension.
         for val in _next_upstream_refs(inputs, prefer_keys):
@@ -1190,11 +1206,14 @@ def _detect_resolution_nodes(workflow: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _find_upstream_source(workflow: dict[str, Any], wired_ref: list, max_depth: int = 8,
-                          prefer_keys: tuple[str, ...] = ()) -> tuple[str, str] | None:
+                          prefer_keys: tuple[str, ...] = (),
+                          value_keys: tuple[str, ...] = ("value",)) -> tuple[str, str] | None:
     """Find the upstream source node and field that holds a literal numeric value.
 
     prefer_keys biases the walk toward the matching dimension at each hop, so a
     resize node carrying both width+height routes to the right source primitive.
+    value_keys are the literal-bearing fields to terminate on (e.g. `value` for
+    dimensions, `seed`/`noise_seed`/`value` for seeds).
     Returns (node_id, field_name) of the node whose value should be overridden.
     """
     seen: set[str] = set()
@@ -1213,15 +1232,11 @@ def _find_upstream_source(workflow: dict[str, Any], wired_ref: list, max_depth: 
         if not isinstance(node, dict):
             continue
         inputs = node.get("inputs", {})
-        class_type = node.get("class_type", "")
 
-        # Primitive node — this is the source
-        if class_type in _PRIMITIVE_TYPES and "value" in inputs and isinstance(inputs["value"], (int, float)):
-            return (node_id, "value")
-
-        # Any node with a literal "value" field
-        if "value" in inputs and isinstance(inputs["value"], (int, float)):
-            return (node_id, "value")
+        # Terminate on the first node carrying a literal in a value_keys field.
+        for vk in value_keys:
+            if vk in inputs and isinstance(inputs[vk], (int, float)):
+                return (node_id, vk)
 
         # Follow wired inputs upstream — biased toward the matching dimension.
         for val in _next_upstream_refs(inputs, prefer_keys):
@@ -1579,6 +1594,32 @@ def _is_text_input(name: str, value: str) -> bool:
             return False
         return True
     return False
+
+
+def _extract_override_prompt(
+    output_data: dict[str, Any], overrides: dict[str, str] | None
+) -> str:
+    """Resolve the prompt to record for THIS job's artifact metadata.
+
+    A text OVERRIDE wins — it is the prompt actually submitted for this specific
+    job. comfy-gen's returned `prompt` is read from the workflow JSON's node text,
+    which is SHARED across a batch that varies the prompt only via per-job --override
+    flags; preferring it mis-records the same prompt for every image in the batch
+    (sgs-ui-* batch-prompt bug). Falls back to the returned prompt only when no text
+    override was sent (prompt baked into the workflow).
+
+    Uses the SAME heuristic as detection (_is_text_input) so a manual prompt in any
+    text field — `value`, `string`, prose, not just `text` — is captured, and picks
+    the longest match (the prose, not a short config value like a sampler name).
+    """
+    if overrides:
+        text_vals = [
+            v for k, v in overrides.items()
+            if isinstance(v, str) and v.strip() and _is_text_input(k.rsplit(".", 1)[-1], v)
+        ]
+        if text_vals:
+            return max(text_vals, key=len)
+    return output_data.get("prompt", "")
 
 
 def _walk_upstream_text(
@@ -1971,7 +2012,7 @@ def _download_output(url: str, job_id: str) -> Path:
 
 def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
                    overrides: dict[str, str] | None = None,
-                   endpoint_id: str = "") -> None:
+                   endpoint_id: str = "", source: str = "", batch_id: str = "") -> None:
     """Run a ComfyUI workflow via comfy-gen CLI subprocess."""
     t0 = time.time()
     try:
@@ -2135,12 +2176,13 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
             services._update_job(job_id, local_file=str(local_path),
                                  local_video_url=local_url, local_image_url=local_url)
 
-            # Extract prompt from overrides (keys like "65.text") if comfy-gen didn't return it
-            override_prompt = output_data.get("prompt", "")
-            if not override_prompt and overrides:
-                text_vals = [v for k, v in overrides.items() if k.endswith(".text") and v.strip()]
-                if text_vals:
-                    override_prompt = text_vals[0]
+            # Recover the prompt from overrides (any text field, not just `.text`)
+            # if comfy-gen didn't return it. See _extract_override_prompt.
+            override_prompt = _extract_override_prompt(output_data, overrides)
+            # Persist on the job so the frontend run-card metadata panel
+            # (jobAny.prompt) shows it, not just the embedded file metadata.
+            if override_prompt:
+                services._update_job(job_id, prompt=override_prompt)
 
             meta = media_meta.build_generation_meta(
                 prompt=override_prompt,
@@ -2161,6 +2203,20 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
 
             services._update_job(job_id, status="COMPLETED",
                                  elapsed_seconds=round(time.time() - t0, 3))
+
+            if source == "mcp" and batch_id:
+                try:
+                    _upsert_mcp_batch_run(batch_id, job_id, local_url, {
+                        "seed": seed,
+                        "prompt": override_prompt,
+                        "software": "ComfyUI (comfy-gen)",
+                        "job_ids": [job_id],
+                        **({"width": resolution.get("width"), "height": resolution.get("height")}
+                           if isinstance(resolution, dict) and resolution.get("width") else {}),
+                        **({"overrides": overrides} if overrides else {}),
+                    })
+                except Exception as e:
+                    print(f"[comfy-gen] MCP batch run upsert failed for {job_id}: {e}", flush=True)
         except Exception as e:
             services._update_job(job_id, status="COMPLETED_WITH_WARNING",
                                  warning=f"Failed local save: {e}",
@@ -2175,6 +2231,74 @@ def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
             os.unlink(workflow_path)
         except OSError:
             pass
+        if source == "mcp":
+            _publish_event({"type": "mcp", "job_id": job_id, "batch_id": batch_id, "phase": "end"})
+
+
+# MCP batch runs: each completing job appends its output to one gallery run so the
+# Artifacts MCP view fills in live. Read-modify-write of a shared run row, so the
+# concurrent sliding-window completions must serialize.
+_MCP_BATCH_LOCK = threading.Lock()
+_VIDEO_EXT = {"mp4", "webm", "mov", "mkv", "gif"}
+
+# SSE: the Artifacts MCP view subscribes to /events and revalidates on each tick, so
+# new placeholder/finished artifacts appear without polling. Events are published from
+# worker threads (the job executor), delivered to per-client asyncio queues via the
+# subscriber's own loop. The payload is just a "something changed" nudge.
+_EVENT_SUBSCRIBERS: set[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = set()
+_EVENT_LOCK = threading.Lock()
+
+
+def _publish_event(event: dict[str, Any]) -> None:
+    with _EVENT_LOCK:
+        subs = list(_EVENT_SUBSCRIBERS)
+    for loop, q in subs:
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, event)
+        except RuntimeError:
+            pass  # loop already closed
+
+
+def _upsert_mcp_batch_run(batch_id: str, job_id: str, url: str, meta: dict[str, Any]) -> None:
+    """Append (url, meta) to the run `run-mcp-<batch_id>`, creating it on first job.
+    Images/videos are stored as arrays so the run-card renders a growing grid."""
+    run_id = f"run-mcp-{batch_id}"
+    is_video = url.split(".")[-1].split("?")[0].lower() in _VIDEO_EXT
+    kind = "video" if is_video else "image"
+    with _MCP_BATCH_LOCK:
+        existing = db.get_run(run_id)
+        if existing:
+            br = existing["block_results"][0]
+            outputs = br["outputs"]
+            media = outputs.setdefault(kind, {"kind": kind, "value": []})
+            if not isinstance(media["value"], list):
+                media["value"] = [media["value"]]
+            media["value"].append(url)
+            md = outputs.setdefault("metadata", {"kind": "metadata", "value": []})
+            if not isinstance(md["value"], list):
+                md["value"] = [md["value"]]
+            md["value"].append(meta)
+            existing["status"] = "completed"
+            db.save_run(existing)
+            return
+        run = {
+            "id": run_id,
+            "name": f"MCP Run — {time.strftime('%b %d %H:%M')}",
+            "status": "completed",
+            "flow_snapshot": {"blocks": [], "source": "mcp"},
+            "block_results": [{
+                "block_index": 0,
+                "block_type": "comfy_gen",
+                "block_label": "ComfyGen (MCP)",
+                "status": "completed",
+                "outputs": {
+                    kind: {"kind": kind, "value": [url]},
+                    "metadata": {"kind": "metadata", "value": [meta]},
+                },
+            }],
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        db.save_run(run)
 
 
 # ---- API routes ----
@@ -2299,6 +2423,46 @@ async def parse_workflow(request: Request) -> JSONResponse:
     })
 
 
+def _resolve_added_loras(workflow: dict, added: list[dict]) -> tuple[list[dict] | None, str | None]:
+    """Validate + auto-anchor runtime-added LoRAs before insertion. Returns
+    (resolved, None) on success or (None, error). Fails loud instead of letting
+    _insert_lora_nodes silently drop entries with a bad/missing anchor.
+
+    Each input entry: {lora_name, strength_model?, strength_clip?, class_type?,
+    chain_anchor|anchor?}. `anchor` is an existing LoRA loader node_id; when omitted
+    the LoRA stacks onto the first detected LoRA chain (the backend then walks to its
+    current tail). Power Lora Loader rows are not valid anchors.
+    """
+    # node_id -> class_type for the regular (anchorable) loaders only.
+    anchors = {n["node_id"]: n.get("class_type")
+               for n in _detect_lora_nodes(workflow) if "lora_key" not in n}
+    resolved: list[dict] = []
+    for entry in added:
+        anchor = str(entry.get("chain_anchor") or entry.get("anchor") or "").strip()
+        if not anchor:
+            if not anchors:
+                return None, ("Cannot add LoRA: this workflow has no LoRA loader to "
+                              "anchor onto. Add a LoRA node in the workflow first.")
+            anchor = next(iter(anchors))
+        if anchor not in anchors:
+            avail = ", ".join(anchors) or "none"
+            return None, (f"LoRA anchor '{anchor}' is not a LoRA loader node in this "
+                          f"workflow. Valid anchors: {avail}.")
+        lora_name = str(entry.get("lora_name") or "").strip()
+        if not lora_name:
+            return None, "Each added LoRA needs a non-empty lora_name."
+        out = {
+            "chain_anchor": anchor,
+            "class_type": entry.get("class_type") or anchors[anchor] or "LoraLoaderModelOnly",
+            "lora_name": lora_name,
+            "strength_model": entry.get("strength_model", 1.0),
+        }
+        if entry.get("strength_clip") is not None:
+            out["strength_clip"] = entry["strength_clip"]
+        resolved.append(out)
+    return resolved, None
+
+
 def _insert_lora_nodes(workflow: dict, added: list[dict]) -> dict:
     """Splice runtime-added LoRA loaders into the workflow.
 
@@ -2414,13 +2578,24 @@ def _bypass_lora_nodes(workflow: dict, bypass_node_ids: list[str]) -> dict:
 async def run(request: Request) -> JSONResponse:
     """Submit a ComfyUI workflow via comfy-gen CLI."""
     body = await request.json()
-    workflow = body.get("workflow", {})
-    raw_file_inputs = body.get("file_inputs", {})  # {node_id: {field, media_url}}
-    raw_overrides = body.get("overrides", {})  # {"node_id.param": "value"}
-    bypass_loras = body.get("bypass_loras", [])  # list of node_id strings to bypass
-    added_loras = body.get("added_loras", [])  # list of {chain_anchor, class_type, lora_name, strength_model, strength_clip?}
-    power_lora_overrides = body.get("power_lora_overrides", [])  # list of {node_id, lora_key, on, lora, strength, add?}
+    # `... or {}` (not `.get(k, {})`): clients may send explicit JSON null for an
+    # empty field (the MCP does), and a null value bypasses the get() default.
+    workflow = body.get("workflow") or {}
+    raw_file_inputs = body.get("file_inputs") or {}  # {node_id: {field, media_url}}
+    raw_overrides = body.get("overrides") or {}  # {"node_id.param": "value"}
+    bypass_loras = body.get("bypass_loras") or []  # list of node_id strings to bypass
+    added_loras = body.get("added_loras") or []  # list of {chain_anchor, class_type, lora_name, strength_model, strength_clip?}
+    power_lora_overrides = body.get("power_lora_overrides") or []  # list of {node_id, lora_key, on, lora, strength, add?}
     endpoint_id = str(body.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
+    source = str(body.get("source") or "").strip()  # "mcp" tags jobs for the Artifacts MCP view
+    batch_id = str(body.get("batch_id") or "").strip()  # groups MCP jobs into one growing gallery run
+
+    # Validate + auto-anchor added LoRAs up front so a bad anchor errors loudly
+    # rather than being silently dropped during insertion.
+    if added_loras:
+        added_loras, lora_err = _resolve_added_loras(workflow, added_loras)
+        if lora_err:
+            return JSONResponse({"ok": False, "error": lora_err}, status_code=400)
 
     # Apply LoRA bypass + insertion + power-lora overrides before processing
     if bypass_loras or added_loras or power_lora_overrides:
@@ -2469,14 +2644,115 @@ async def run(request: Request) -> JSONResponse:
                 overrides[seed_key] = str(random.randint(0, 2**53))
 
     job_id = str(uuid.uuid4())
+
+    # Log LoRA-chain modifications so an add/bypass leaves a trace (added_loras here
+    # is the RESOLVED list — actual anchor + inserted name — not the raw request).
+    if added_loras:
+        print(f"[comfy-gen] Job {job_id} added_loras: {json.dumps(added_loras, default=str)}", flush=True)
+    if bypass_loras:
+        print(f"[comfy-gen] Job {job_id} bypass_loras: {json.dumps(bypass_loras, default=str)}", flush=True)
+    if power_lora_overrides:
+        print(f"[comfy-gen] Job {job_id} power_lora_overrides: {json.dumps(power_lora_overrides, default=str)}", flush=True)
+
     record = services._new_job_record(job_id, endpoint_id, {"workflow_file": tmp.name})
+    if source:
+        record["source"] = source
+        record["overrides"] = overrides  # live strip shows prompt/settings before completion
+    if batch_id:
+        record["batch_id"] = batch_id
     with state.JOBS_LOCK:
         state.JOBS[job_id] = record
         state._persist_jobs_locked()
 
-    state.EXECUTOR.submit(_run_comfy_job, job_id, tmp.name, file_inputs, overrides, endpoint_id)
+    state.EXECUTOR.submit(_run_comfy_job, job_id, tmp.name, file_inputs, overrides,
+                          endpoint_id, source, batch_id)
+
+    if source == "mcp":
+        _publish_event({"type": "mcp", "job_id": job_id, "batch_id": batch_id, "phase": "start"})
 
     return JSONResponse({"ok": True, "job_id": job_id})
+
+
+def _job_view(job: dict[str, Any]) -> dict[str, Any]:
+    """Compact job shape for the Artifacts MCP live strip."""
+    ov = job.get("overrides") or {}
+    prompt = job.get("prompt") or _prompt_from_overrides(ov)
+    return {
+        "job_id": job.get("job_id"),
+        "status": job.get("status", "UNKNOWN"),
+        "batch_id": job.get("batch_id", ""),
+        "prompt": prompt,
+        "seed": job.get("seed"),
+        "url": job.get("local_image_url") or job.get("local_video_url") or job.get("video_url") or "",
+        "error": job.get("error", ""),
+        "overrides": ov,
+        "progress": job.get("runpod_progress"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+    }
+
+
+def _prompt_from_overrides(overrides: dict[str, str]) -> str:
+    texts = [v for v in overrides.values() if isinstance(v, str) and len(v) > 40 and " " in v]
+    return max(texts, key=len) if texts else ""
+
+
+@router.get("/jobs")
+def list_jobs(source: str = "", limit: int = 50) -> JSONResponse:
+    """List recent jobs (active in-memory + finished from SQLite), newest first.
+    Pass source=mcp to scope to MCP-submitted jobs (Artifacts MCP view)."""
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    with state.JOBS_LOCK:
+        active = [dict(r) for r in state.JOBS.values()]
+    for job in active:
+        if source and job.get("source") != source:
+            continue
+        jid = job.get("job_id")
+        if jid:
+            seen.add(jid)
+        merged.append(job)
+    for job in db.list_jobs(limit=200):
+        if source and job.get("source") != source:
+            continue
+        if job.get("job_id") in seen:
+            continue
+        merged.append(job)
+    merged.sort(key=lambda j: str(j.get("updated_at") or j.get("created_at") or ""), reverse=True)
+    return JSONResponse({"ok": True, "jobs": [_job_view(j) for j in merged[:limit]]})
+
+
+@router.get("/events")
+async def events(request: Request) -> StreamingResponse:
+    """SSE stream for the Artifacts MCP view. Emits a tick whenever an MCP job starts
+    or finishes; the client revalidates its runs/jobs queries on each tick. Heartbeats
+    every 15s keep the connection (and proxies) alive."""
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    sub = (loop, q)
+    with _EVENT_LOCK:
+        _EVENT_SUBSCRIBERS.add(sub)
+
+    async def gen():
+        try:
+            yield "retry: 3000\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        finally:
+            with _EVENT_LOCK:
+                _EVENT_SUBSCRIBERS.discard(sub)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",  # disable proxy buffering so events flush immediately
+    })
 
 
 @router.get("/status/{job_id}")

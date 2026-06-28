@@ -178,11 +178,13 @@ def api_runs_list(
     media_kind: str | None = Query(None),
     q: str | None = Query(None),
     hide_partial: bool = Query(False),
+    source: str | None = Query(None),
 ) -> JSONResponse:
     mk = media_kind if media_kind in ("video", "image", "dataset", "lora", "other") else None
     pq = q.strip() if q and q.strip() else None
-    total = db.count_runs(favorited_only=favorited, media_kind=mk, prompt_query=pq, hide_partial=hide_partial)
-    runs = db.list_runs(limit=limit, offset=offset, favorited_only=favorited, media_kind=mk, prompt_query=pq, hide_partial=hide_partial)
+    src = source if source in ("mcp", "pipeline") else None
+    total = db.count_runs(favorited_only=favorited, media_kind=mk, prompt_query=pq, hide_partial=hide_partial, source=src)
+    runs = db.list_runs(limit=limit, offset=offset, favorited_only=favorited, media_kind=mk, prompt_query=pq, hide_partial=hide_partial, source=src)
     return JSONResponse({"ok": True, "runs": runs, "total": total, "limit": limit, "offset": offset})
 
 

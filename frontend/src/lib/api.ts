@@ -22,6 +22,8 @@ export async function saveRun(run: RunEntry) {
 
 export type MediaKindFilter = 'video' | 'image' | 'dataset' | 'lora' | 'other'
 
+export type RunSource = 'mcp' | 'pipeline'
+
 export async function fetchRuns(
   limit = 50,
   offset = 0,
@@ -29,13 +31,34 @@ export async function fetchRuns(
   mediaKind: MediaKindFilter | null = null,
   promptQuery: string = '',
   hidePartial = true,
+  source: RunSource | null = null,
 ) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
   if (favorited) params.set('favorited', 'true')
   if (mediaKind) params.set('media_kind', mediaKind)
   if (promptQuery) params.set('q', promptQuery)
   params.set('hide_partial', hidePartial ? 'true' : 'false')
+  if (source) params.set('source', source)
   const res = await fetch(`${BASE}/api/runs?${params}`)
+  return res.json()
+}
+
+export interface McpJob {
+  job_id: string
+  status: string
+  batch_id: string
+  prompt: string
+  seed: number | null
+  url: string
+  error: string
+  overrides: Record<string, string>
+  progress: { percent?: number; message?: string } | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export async function fetchMcpJobs(limit = 50): Promise<{ ok: boolean; jobs: McpJob[] }> {
+  const res = await fetch(`${BASE}/api/blocks/comfy_gen/jobs?source=mcp&limit=${limit}`)
   return res.json()
 }
 

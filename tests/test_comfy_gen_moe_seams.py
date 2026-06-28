@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -22,7 +25,15 @@ _spec.loader.exec_module(comfy_gen)
 
 _detect_moe = comfy_gen._detect_moe_pairs
 
-WF_DIR = Path("/Users/avivkaplan/Dump/ComfyUI-Workflows")
+# Real-workflow corpus lives outside the repo (large, not redistributable). Point
+# BLOCKFLOW_REAL_WF_DIR at a dir holding the Wan2.2_T2V_*.json files to run these;
+# absent (e.g. CI), the file-backed tests skip instead of erroring.
+WF_DIR = Path(os.environ.get("BLOCKFLOW_REAL_WF_DIR", str(ROOT / "tests" / "fixtures" / "real_workflows")))
+
+_requires_real_wf = pytest.mark.skipif(
+    not WF_DIR.is_dir(),
+    reason="real workflow corpus absent; set BLOCKFLOW_REAL_WF_DIR to run",
+)
 
 # Field set the TS MoePairInfo interface requires (the py->TS seam contract).
 _REQUIRED_FIELDS = {
@@ -35,6 +46,7 @@ def _load(name: str) -> dict:
     return json.loads((WF_DIR / name).read_text())
 
 
+@_requires_real_wf
 def test_real_lightning_file_detects_ksa_pair_8_4():
     pairs = _detect_moe(_load("Wan2.2_T2V_Lightning.json"))
     assert len(pairs) == 1
@@ -44,6 +56,7 @@ def test_real_lightning_file_detects_ksa_pair_8_4():
     assert p["total"] == 8 and p["split"] == 4
 
 
+@_requires_real_wf
 def test_real_res4lyf_file_detects_clownshark_pair_16_4():
     pairs = _detect_moe(_load("Wan2.2_T2V_RES4LYF_Full.json"))
     assert len(pairs) == 1
@@ -53,6 +66,7 @@ def test_real_res4lyf_file_detects_clownshark_pair_16_4():
     assert p["total"] == 16 and p["split"] == 4
 
 
+@_requires_real_wf
 def test_py_dict_has_every_field_the_ts_interface_requires():
     """Seam: the emitted dict must carry every MoePairInfo field, correct shapes."""
     for name in ("Wan2.2_T2V_Lightning.json", "Wan2.2_T2V_RES4LYF_Full.json"):

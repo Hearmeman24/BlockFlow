@@ -150,6 +150,103 @@ interface UploadState {
   urlError?: string
 }
 
+const GALLERY_PAGE_SIZE = 24
+
+interface GalleryImage { url: string; name: string; created_at: number }
+
+/** Paginated grid of recent generated images (GET /api/images). Single-select:
+ * clicking a thumbnail calls onSelect with its /outputs URL. */
+function GalleryPicker({ selected, onSelect }: { selected: string; onSelect: (url: string) => void }) {
+  const [page, setPage] = useState(0)
+  const [images, setImages] = useState<GalleryImage[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  const load = useCallback((p: number) => {
+    setLoading(true)
+    setError('')
+    fetch(`/api/images?limit=${GALLERY_PAGE_SIZE}&offset=${p * GALLERY_PAGE_SIZE}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!d.ok) throw new Error(d.error || 'Failed to load images')
+        setImages(d.images || [])
+        setTotal(d.total || 0)
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { load(page) }, [page, load])
+
+  const totalPages = Math.max(1, Math.ceil(total / GALLERY_PAGE_SIZE))
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] text-muted-foreground">
+          {total > 0 ? `${total} generated image${total === 1 ? '' : 's'}` : 'No generations yet'}
+        </span>
+        <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-[10px]" onClick={() => load(page)}>
+          Refresh
+        </Button>
+      </div>
+
+      {error ? (
+        <p className="text-[10px] text-destructive">{error}</p>
+      ) : loading && images.length === 0 ? (
+        <div className="grid grid-cols-3 gap-1.5">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="aspect-square rounded bg-muted/30 animate-pulse" />
+          ))}
+        </div>
+      ) : images.length === 0 ? (
+        <div className="flex min-h-[160px] items-center justify-center rounded-md border border-dashed border-border/60">
+          <p className="text-[10px] text-muted-foreground">Run a generation, then pick it here.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-1.5 rounded-md border border-border/60 p-1.5">
+          {images.map((img) => {
+            const isSel = img.url === selected
+            return (
+              <button
+                key={img.url}
+                type="button"
+                onClick={() => onSelect(img.url)}
+                title={img.name}
+                className={`group relative overflow-hidden rounded ring-offset-1 ring-offset-background transition ${
+                  isSel ? 'ring-2 ring-primary' : 'ring-1 ring-border/40 hover:ring-border'
+                }`}
+              >
+                <img src={img.url} alt={img.name} loading="lazy" className="aspect-square w-full object-cover" />
+                {isSel && (
+                  <span className="absolute bottom-0.5 right-0.5 rounded-full bg-primary px-1 text-[8px] leading-tight text-primary-foreground">
+                    selected
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between">
+          <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[10px]"
+            disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+            Prev
+          </Button>
+          <span className="text-[10px] text-muted-foreground">Page {page + 1} / {totalPages}</span>
+          <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-[10px]"
+            disabled={page >= totalPages - 1} onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}>
+            Next
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function UploadImageBlock({
   blockId,
   setOutput,
@@ -172,6 +269,10 @@ function UploadImageBlock({
   const [isDragging, setIsDragging] = useState(false)
   const dragCounterRef = useRef(0)
   const [assetMode, setAssetMode] = useState<AssetStorageMode>('tmpfiles')
+  // 'upload' (drag/drop/pick) | 'gallery' (pick a past generation). The active
+  // tab is the authoritative image source — they don't mix.
+  const [tab, setTab] = useSessionState<'upload' | 'gallery'>(`block_${blockId}_tab`, 'upload')
+  const [galleryUrl, setGalleryUrl] = useSessionState<string>(`block_${blockId}_gallery_url`, '')
 
   useEffect(() => {
     let cancelled = false
@@ -206,6 +307,14 @@ function UploadImageBlock({
   // upload is in flight, the value carries only `local`; consumers that need
   // a URL will wait for it via registerExecute below.
   useEffect(() => {
+    // The gallery tab drives the output when active: a single past-generation
+    // image, referenced by its /outputs path (local-only — downstream blocks that
+    // upload local files, e.g. ComfyGen I2V, resolve it; remote-URL providers would
+    // need a public mirror, not done here).
+    if (tab === 'gallery') {
+      setOutput('image', galleryUrl ? { kind: 'image-ref' as const, local: galleryUrl } : undefined)
+      return
+    }
     const refs: Array<ImageRef> = files.map((entry) => {
       const u = uploads[entry.fingerprint]
       return {
@@ -221,7 +330,7 @@ function UploadImageBlock({
     } else {
       setOutput('image', refs)
     }
-  }, [files, uploads, remoteEnabled, setOutput])
+  }, [tab, galleryUrl, files, uploads, remoteEnabled, setOutput])
 
   const kickOffUploads = useCallback(async (entry: FileEntry) => {
     const fp = entry.fingerprint
@@ -318,6 +427,12 @@ function UploadImageBlock({
 
   useEffect(() => {
     registerExecute(async () => {
+      if (tab === 'gallery') {
+        if (!galleryUrl) throw new Error('Pick a past generation before running this block')
+        setOutput('image', { kind: 'image-ref' as const, local: galleryUrl })
+        setStatusMessage('Image selected')
+        return
+      }
       if (files.length === 0) throw new Error('Select at least one image file before running this block')
       await waitForUploads(files)
       // Build the final output payload from the synchronous ref. We can't
@@ -401,7 +516,25 @@ function UploadImageBlock({
   return (
     <div className="space-y-3">
 
-      {files.length === 0 ? (
+      {/* Source tabs: upload vs pick a past generation */}
+      <div className="flex items-center gap-1 rounded-md border border-border/60 p-0.5">
+        {([['upload', 'Upload'], ['gallery', 'Past generations']] as const).map(([val, lbl]) => (
+          <button
+            key={val}
+            type="button"
+            onClick={() => setTab(val)}
+            className={`h-7 flex-1 text-xs rounded transition-colors ${
+              tab === val ? 'bg-foreground/10 text-foreground' : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {lbl}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'gallery' ? (
+        <GalleryPicker selected={galleryUrl} onSelect={setGalleryUrl} />
+      ) : files.length === 0 ? (
         <div
           className={`flex min-h-[220px] items-center justify-center rounded-md border border-dashed bg-muted/10 transition-colors ${
             isDragging ? 'border-primary bg-primary/5' : 'border-border/60'

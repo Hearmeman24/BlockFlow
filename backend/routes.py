@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import string
 import threading
@@ -220,6 +221,41 @@ def api_run_delete(run_id: str) -> JSONResponse:
     if not deleted:
         return JSONResponse({"ok": False, "error": "run not found"}, status_code=404)
     return JSONResponse({"ok": True})
+
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"}
+
+
+@router.get("/api/images")
+def api_images_list(limit: int = Query(60), offset: int = Query(0)) -> JSONResponse:
+    """Recent generated images from the local outputs dir, newest-first, paginated.
+    Powers the 'past generations' picker in the Upload Image block. Every generated
+    image (UI runs + MCP) lands in this dir, so this is the flat 'all my generations'
+    list. Videos and non-image files are excluded.
+
+    ponytail: scandir + full sort per request — O(n log n) on the outputs dir, fine at
+    personal scale (hundreds–thousands of files). Index by mtime if it ever gets huge.
+    """
+    entries: list[tuple[str, float, int]] = []
+    try:
+        with os.scandir(config.LOCAL_OUTPUT_DIR) as it:
+            for e in it:
+                if not e.is_file() or os.path.splitext(e.name)[1].lower() not in _IMAGE_EXTS:
+                    continue
+                try:
+                    st = e.stat()
+                except OSError:
+                    continue
+                entries.append((e.name, st.st_mtime, st.st_size))
+    except FileNotFoundError:
+        entries = []
+    entries.sort(key=lambda x: x[1], reverse=True)
+    total = len(entries)
+    images = [
+        {"url": f"/outputs/{name}", "name": name, "created_at": mtime, "size": size}
+        for name, mtime, size in entries[offset : offset + limit]
+    ]
+    return JSONResponse({"ok": True, "images": images, "total": total, "limit": limit, "offset": offset})
 
 
 @router.get("/api/file-metadata/{filename:path}")
